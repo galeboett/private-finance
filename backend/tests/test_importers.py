@@ -29,3 +29,14 @@ def test_preview_brokerage_rows_keeps_account_identity():
     assert len(preview.rows) == 1
     assert preview.rows[0]["account_number"] == "Z12345678"
     assert preview.rows[0]["account_name"] == "Taxable Brokerage"
+
+
+def test_preview_brokerage_rows_allows_blank_description():
+    content = (
+        b"Account Number,Account Name,Symbol,Description,Quantity,Last Price,Last Price Change,Current Value\n"
+        b"Z12345678,Taxable Brokerage,VMFXX,,1,1.00,0.00,1.00\n"
+    )
+    preview = preview_import(content, "brokerage_positions")
+
+    assert len(preview.rows) == 1
+    assert preview.rows[0]["description"] == ""

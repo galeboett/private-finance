@@ -260,7 +260,10 @@ async def imports_preview(account_id: int, file: UploadFile = File(...), session
     preset_type = detect_preset_from_content(content.decode("utf-8-sig"))
     if not preset_type:
         raise HTTPException(status_code=400, detail="Could not detect import preset")
-    preview = preview_import(content, preset_type)
+    try:
+        preview = preview_import(content, preset_type)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     return {"preset_type": preset_type, "rows": preview.rows[:25], "warnings": preview.warnings}
 
 
@@ -272,7 +275,10 @@ async def imports_commit(request: Request, account_id: int, preset_id: int | Non
         raise HTTPException(status_code=404, detail="Account not found")
     preset = db.get(ImportPreset, preset_id) if preset_id else None
     content = await file.read()
-    result = commit_import(db, account, preset, file.filename or "import.csv", content)
+    try:
+        result = commit_import(db, account, preset, file.filename or "import.csv", content)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     db.commit()
     return result
 

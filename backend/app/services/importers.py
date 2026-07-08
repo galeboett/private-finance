@@ -83,7 +83,10 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
         if preset_type == "brokerage_positions":
             if row.get("Account Number", "").startswith("Date downloaded") or not row.get("Account Number"):
                 continue
-            if row.get("Description", "").startswith("BROKERAGELINK") or row.get("Description", "").startswith("HELD IN"):
+            description = row.get("Description") or ""
+            if not description and not row.get("Symbol") and not row.get("Current Value"):
+                continue
+            if description.startswith("BROKERAGELINK") or description.startswith("HELD IN"):
                 row_kind = "transaction"
             rows.append(
                 {
@@ -92,7 +95,7 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
                     "snapshot_date": None,
                     "account_number": row.get("Account Number"),
                     "symbol": row.get("Symbol"),
-                    "description": row.get("Description"),
+                    "description": description,
                     "market_value": row.get("Current Value"),
                     "asset_class": row.get("Type"),
                     "account_name": row.get("Account Name"),
