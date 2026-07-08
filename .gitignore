@@ -12,6 +12,8 @@ build/
 *.db
 *.sqlite
 *.sqlite3
+*.egg-info/
 *.log
 .env
 coverage/
+backend/data/

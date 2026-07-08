@@ -33,6 +33,14 @@ This initial implementation includes:
 
 ## Running Locally
 
+### One-command start
+
+```powershell
+.\run.ps1
+```
+
+This builds the frontend, prepares the backend environment, and starts the app at `http://127.0.0.1:8000`.
+
 ### Backend
 
 ```powershell
@@ -68,4 +76,3 @@ The app is intended to grow toward:
 - investment snapshot tracking
 - net-worth summaries
 - secure self-hosted mobile access later
-
