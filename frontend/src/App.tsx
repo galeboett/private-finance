@@ -15,6 +15,7 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  Sparkles,
   TrendingUp,
   WalletCards,
 } from "lucide-react";
@@ -50,6 +51,7 @@ type TransactionRow = {
   transaction_type: string;
   review_status: string;
   transaction_date: string;
+  category_id: number | null;
 };
 
 type ImportPreview = {
@@ -74,6 +76,16 @@ const navItems = [
 ];
 
 const reportTabs = ["Reports", "Cash Flow", "Spending", "Income", "Net Worth"];
+
+const transactionTypes = [
+  { value: "expense", label: "Expense" },
+  { value: "income", label: "Income" },
+  { value: "transfer", label: "Transfer" },
+  { value: "credit_card_payment", label: "Card payment" },
+  { value: "refund", label: "Refund" },
+  { value: "investment_flow", label: "Investment flow" },
+  { value: "adjustment", label: "Adjustment" },
+];
 
 const formatMoney = (cents: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
@@ -276,6 +288,57 @@ export function App() {
     }
   }
 
+  async function updateTransaction(transactionId: number, patch: Partial<Pick<TransactionRow, "category_id" | "transaction_type" | "review_status">>) {
+    setToast(null);
+    try {
+      await api(`/api/transactions/${transactionId}`, {
+        method: "PATCH",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify(patch),
+      });
+      setTransactions((current) =>
+        current.map((transaction) => (transaction.id === transactionId ? { ...transaction, ...patch } : transaction)),
+      );
+      setReview((current) => (patch.review_status === "confirmed" ? current.filter((item) => item.id !== transactionId) : current));
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Transaction could not be updated." });
+    }
+  }
+
+  async function confirmTransaction(transaction: TransactionRow) {
+    if (transaction.transaction_type === "expense" && !transaction.category_id) {
+      showToast({ tone: "error", message: "Choose a category before confirming an expense." });
+      return;
+    }
+    await updateTransaction(transaction.id, { review_status: "confirmed" });
+    showToast({ tone: "success", message: "Transaction confirmed." });
+  }
+
+  async function saveRuleFromTransaction(transaction: TransactionRow) {
+    setToast(null);
+    if (!transaction.category_id) {
+      showToast({ tone: "error", message: "Choose a category before saving a rule." });
+      return;
+    }
+    const matchText = suggestedRuleText(transaction.raw_description);
+    try {
+      await api("/api/rules", {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({
+          category_id: transaction.category_id,
+          field_name: "raw_description",
+          match_text: matchText,
+          suggested_transaction_type: transaction.transaction_type,
+          priority: 100,
+        }),
+      });
+      showToast({ tone: "success", message: `Rule saved for "${matchText}". Future imports can suggest this category.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be saved." });
+    }
+  }
+
   if (!configured) {
     return (
       <div className="authShell">
@@ -320,6 +383,8 @@ export function App() {
   const savingsRate = totalIncomeCents > 0 ? Math.max(0, Math.round((netIncomeCents / totalIncomeCents) * 1000) / 10) : 0;
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId);
   const previewRows = importPreview?.rows.slice(0, 6) ?? [];
+  const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status));
+  const recentTransactions = transactions.slice(0, 8);
 
   return (
     <div className="appFrame">
@@ -484,16 +549,53 @@ export function App() {
           </section>
 
           <section className="toolPanel">
-            <PanelTitle icon={ListChecks} title="Review Inbox" subtitle={`${review.length} items need a human decision.`} />
-            <div className="denseList">
-              {review.slice(0, 6).map((item) => (
-                <div className="reviewRow" key={item.id}>
-                  <span>{item.description}</span>
-                  <strong>{formatMoney(item.amount_cents)}</strong>
-                  <small>{item.review_status}</small>
-                </div>
+            <PanelTitle icon={ListChecks} title="Review Inbox" subtitle={`${reviewTransactions.length} items need a human decision.`} />
+            <div className="reviewEditor">
+              {reviewTransactions.slice(0, 5).map((transaction) => (
+                <article className="reviewCard" key={transaction.id}>
+                  <div className="reviewCardTop">
+                    <div>
+                      <strong>{transaction.raw_description}</strong>
+                      <small>{transaction.transaction_date} · {transaction.review_status}</small>
+                    </div>
+                    <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
+                  </div>
+                  <div className="reviewControls">
+                    <select
+                      value={transaction.transaction_type}
+                      onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value })}
+                    >
+                      {transactionTypes.map((type) => (
+                        <option key={type.value} value={type.value}>
+                          {type.label}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={transaction.category_id ?? ""}
+                      onChange={(event) => void updateTransaction(transaction.id, { category_id: event.target.value ? Number(event.target.value) : null })}
+                    >
+                      <option value="">No category</option>
+                      {categories.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {category.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="reviewActions">
+                    <button className="secondaryButton" onClick={() => void saveRuleFromTransaction(transaction)}>
+                      <Sparkles size={16} />
+                      Save rule
+                    </button>
+                    <button className="primaryButton" onClick={() => void confirmTransaction(transaction)}>
+                      <CheckCircle2 size={16} />
+                      Confirm
+                    </button>
+                  </div>
+                </article>
               ))}
-              {review.length === 0 ? <p className="emptyText">No items waiting for review.</p> : null}
+              {reviewTransactions.length === 0 ? <p className="emptyText">No items waiting for review. New imports will appear here before reports rely on them.</p> : null}
             </div>
           </section>
 
@@ -508,6 +610,34 @@ export function App() {
             </div>
           </section>
         </section>
+
+        <section className="ledgerPanel">
+          <PanelTitle icon={ReceiptText} title="Recent Transactions" subtitle="The ledger after imports, edits, and review decisions." />
+          <div className="ledgerTable">
+            <div className="ledgerHeader">
+              <span>Date</span>
+              <span>Description</span>
+              <span>Type</span>
+              <span>Category</span>
+              <span>Status</span>
+              <span>Amount</span>
+            </div>
+            {recentTransactions.map((transaction) => {
+              const category = categories.find((item) => item.id === transaction.category_id);
+              return (
+                <div className="ledgerRow" key={transaction.id}>
+                  <span>{transaction.transaction_date}</span>
+                  <strong>{transaction.raw_description}</strong>
+                  <span>{readableAccountType(transaction.transaction_type)}</span>
+                  <span>{category?.label ?? "Uncategorized"}</span>
+                  <span>{transaction.review_status}</span>
+                  <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
+                </div>
+              );
+            })}
+            {recentTransactions.length === 0 ? <p className="emptyText">No transactions yet. Import a CSV to start the ledger.</p> : null}
+          </div>
+        </section>
       </main>
     </div>
   );
@@ -520,6 +650,11 @@ function MetricTile({ label, value, tone }: { label: string; value: string; tone
       <span>{label}</span>
     </div>
   );
+}
+
+function suggestedRuleText(description: string) {
+  const cleaned = description.replace(/[^a-zA-Z0-9\s*&]/g, " ").replace(/\s+/g, " ").trim();
+  return cleaned.split(" ").slice(0, 3).join(" ").toUpperCase() || description.slice(0, 40).toUpperCase();
 }
 
 function PanelTitle({ icon: Icon, title, subtitle }: { icon: typeof WalletCards; title: string; subtitle: string }) {
