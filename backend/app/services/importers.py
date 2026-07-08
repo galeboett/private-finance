@@ -4,6 +4,7 @@ import csv
 import hashlib
 import io
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -21,6 +22,7 @@ CARD_REFERENCE_HEADER = "Posted Date,Reference Number,Payee,Address,Amount"
 CHASE_ACTIVITY_HEADER = "Transaction Date,Post Date,Description,Category,Type,Amount,Memo"
 CHECKING_HEADER = "Date,Description,Amount,Running Bal."
 FIDELITY_HEADER = "Account Number,Account Name,Symbol,Description,Quantity,Last Price,Last Price Change,Current Value"
+VENMO_HEADER = ",ID,Datetime,Type,Status,Note,From,To,Amount (total),Amount (tip),Amount (tax),Amount (fee),Tax Rate,Tax Exempt,Funding Source,Destination,Beginning Balance,Ending Balance,Statement Period Venmo Fees,Terminal Location,Year to Date Venmo Fees,Disclaimer"
 
 
 @dataclass
@@ -36,6 +38,7 @@ def detect_preset_from_content(text: str) -> str | None:
         (CHASE_ACTIVITY_HEADER, "card_activity"),
         (CHECKING_HEADER, "checking_running_balance"),
         (FIDELITY_HEADER, "brokerage_positions"),
+        (VENMO_HEADER, "venmo_activity"),
     ):
         if marker in text:
             return preset
@@ -74,10 +77,11 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
             )
         return PreviewResult(rows=rows, warnings=warnings, detected_preset=preset_type)
 
-    header_index = next((i for i, row in enumerate(reader) if ",".join(row).startswith(CARD_REFERENCE_HEADER) or ",".join(row).startswith(CHASE_ACTIVITY_HEADER) or ",".join(row).startswith(FIDELITY_HEADER)), 0)
-    dict_reader = csv.DictReader(io.StringIO(text))
+    header_index = next((i for i, row in enumerate(reader) if ",".join(row).startswith(CARD_REFERENCE_HEADER) or ",".join(row).startswith(CHASE_ACTIVITY_HEADER) or ",".join(row).startswith(FIDELITY_HEADER) or ",".join(row).startswith(VENMO_HEADER)), 0)
+    data_text = "\n".join(",".join(_csv_escape_cell(cell) for cell in row) for row in reader[header_index:])
+    dict_reader = csv.DictReader(io.StringIO(data_text))
     rows = []
-    for idx, row in enumerate(dict_reader, start=2):
+    for idx, row in enumerate(dict_reader, start=header_index + 2):
         if not any((value or "").strip() for value in row.values()):
             continue
         row_kind = "transaction"
@@ -120,6 +124,30 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
                     "bank_category": row.get("Category"),
                 }
             )
+        elif preset_type == "venmo_activity":
+            if not _is_venmo_transaction_row(row):
+                continue
+            status = (row.get("Status") or "").strip().lower()
+            if status and status not in {"complete", "issued"}:
+                row_kind = "ignored"
+            note = (row.get("Note") or "").strip()
+            from_name = (row.get("From") or "").strip()
+            to_name = (row.get("To") or "").strip()
+            amount = _normalize_import_amount(row.get("Amount (total)"))
+            datetime_date = _date_from_iso(row.get("Datetime"))
+            rows.append(
+                {
+                    "row_index": idx,
+                    "row_kind": row_kind,
+                    "transaction_date": _date_from_venmo_note(note, datetime_date),
+                    "posted_date": datetime_date,
+                    "raw_description": _venmo_description(note, from_name, to_name, amount),
+                    "amount": amount,
+                    "source_reference": row.get("ID"),
+                    "bank_category": row.get("Type"),
+                    "transaction_type": _venmo_transaction_type(row, amount),
+                }
+            )
         else:
             rows.append(
                 {
@@ -132,6 +160,128 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
                 }
             )
     return PreviewResult(rows=rows, warnings=warnings, detected_preset=preset_type)
+
+
+def _is_venmo_transaction_row(row: dict) -> bool:
+    venmo_id = (row.get("ID") or "").strip()
+    timestamp = (row.get("Datetime") or "").strip()
+    amount = (row.get("Amount (total)") or "").strip()
+    return venmo_id.isdigit() and "T" in timestamp and bool(amount)
+
+
+def _date_from_venmo_note(note: str, fallback_date: str | None) -> str | None:
+    fallback = _parse_iso_date(fallback_date)
+    year = fallback.year if fallback else date.today().year
+    for pattern in (r"\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b", r"\b(\d{1,2})-(\d{1,2})-(\d{2,4})\b"):
+        match = re.search(pattern, note)
+        if match:
+            parsed = _build_date(int(match.group(1)), int(match.group(2)), _expand_year(int(match.group(3))))
+            if parsed:
+                return _roll_back_future_date(parsed, fallback).isoformat()
+    for pattern in (r"\b(\d{1,2})/(\d{1,2})\b", r"\b(\d{1,2})-(\d{1,2})\b"):
+        match = re.search(pattern, note)
+        if match:
+            parsed = _build_date(int(match.group(1)), int(match.group(2)), year)
+            if parsed:
+                return _roll_back_future_date(parsed, fallback).isoformat()
+    return fallback_date
+
+def _roll_back_future_date(candidate: date, reference: date | None) -> date:
+    if reference and candidate > reference:
+        return date(candidate.year - 1, candidate.month, candidate.day)
+    return candidate
+
+
+def _parse_iso_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _venmo_transaction_type(row: dict, amount: str | None) -> str:
+    amount_cents = parse_decimal_to_cents(amount) or 0
+    type_text = (row.get("Type") or "").lower()
+    destination = (row.get("Destination") or "").lower()
+    funding_source = (row.get("Funding Source") or "").lower()
+    if "transfer" in type_text or "standard" in type_text or "bank" in destination or "bank" in funding_source:
+        return "transfer"
+    if amount_cents > 0:
+        return "refund"
+    if amount_cents < 0:
+        return "expense"
+    return "adjustment"
+
+def _venmo_description(note: str, from_name: str, to_name: str, amount: str | None) -> str:
+    amount_cents = parse_decimal_to_cents(amount)
+    payer, recipient = _venmo_payment_direction(from_name, to_name, amount_cents or 0)
+    payment_text = f"{payer} paid {recipient}" if payer and recipient else ""
+    parts = [part for part in (note, payment_text) if part]
+    return " | ".join(parts) or "Venmo transaction"
+
+def _venmo_payment_direction(from_name: str, to_name: str, amount_cents: int) -> tuple[str | None, str | None]:
+    self_name = _venmo_self_name(from_name, to_name)
+    other_name = _venmo_other_name(from_name, to_name, self_name)
+    if amount_cents < 0:
+        return self_name or from_name or None, other_name or to_name or None
+    if amount_cents > 0:
+        return other_name or to_name or None, self_name or from_name or None
+    return from_name or None, to_name or None
+
+
+def _venmo_self_name(from_name: str, to_name: str) -> str | None:
+    for name in (from_name, to_name):
+        if name and name.strip().lower() == "matt matt":
+            return name
+    return None
+
+
+def _venmo_other_name(from_name: str, to_name: str, self_name: str | None) -> str | None:
+    for name in (from_name, to_name):
+        if name and name != self_name:
+            return name
+    return None
+
+def _year_from_date(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").year
+    except ValueError:
+        return None
+
+
+def _expand_year(value: int) -> int:
+    if value >= 100:
+        return value
+    return 2000 + value
+
+
+def _build_date(month: int, day: int, year: int) -> date | None:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _csv_escape_cell(value: str) -> str:
+    output = io.StringIO()
+    csv.writer(output, lineterminator="").writerow([value])
+    return output.getvalue()
+
+
+def _date_from_iso(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value.split("T", 1)[0]
+
+
+def _normalize_import_amount(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.replace("$", "").replace(",", "").replace(" ", "").strip()
 
 
 def _normalize_transaction_type(description: str, amount_cents: int, account_type: str) -> str:
@@ -241,12 +391,12 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
         transaction = Transaction(
             account_id=account.id,
             import_batch_id=batch.id,
-            transaction_date=datetime.strptime(row.get("transaction_date"), "%m/%d/%Y").date(),
-            posted_date=datetime.strptime(row.get("posted_date"), "%m/%d/%Y").date() if row.get("posted_date") else None,
+            transaction_date=_parse_import_date(row.get("transaction_date")),
+            posted_date=_parse_import_date(row.get("posted_date")) if row.get("posted_date") else None,
             amount_cents=amount_cents,
             raw_description=normalized,
             normalized_payee=normalized[:255],
-            transaction_type=_normalize_transaction_type(normalized, amount_cents, account.account_type),
+            transaction_type=row.get("transaction_type") or _normalize_transaction_type(normalized, amount_cents, account.account_type),
             category_id=category_id,
             review_status=review_status,
             source_hash=source_hash,
@@ -302,6 +452,19 @@ def _parse_decimal_to_basis_points(value: str | int | float | None) -> int | Non
         return int((Decimal(normalized) * Decimal("10000")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     except InvalidOperation as exc:
         raise ValueError(f"Invalid quantity value: {value}") from exc
+
+
+def _parse_import_date(value: str | None) -> date:
+    if not value:
+        raise ValueError("Import row is missing a transaction date")
+    for date_format in ("%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, date_format).date()
+        except ValueError:
+            continue
+    raise ValueError(f"Unsupported import date: {value}")
+
+
 
 
 def _is_possible_duplicate(db: Session, account_id: int, candidate: Transaction) -> bool:
