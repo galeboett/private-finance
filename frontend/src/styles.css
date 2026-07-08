@@ -224,6 +224,24 @@ button:disabled {
   color: #7a382f;
 }
 
+.selectionToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfb;
+}
+
+.selectionToolbar span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .toast {
   display: flex;
   align-items: center;
@@ -739,6 +757,12 @@ textarea {
   color: var(--ink);
 }
 
+input[type="checkbox"] {
+  width: auto;
+  min-height: auto;
+  padding: 0;
+}
+
 textarea {
   min-height: 68px;
   resize: vertical;
@@ -815,9 +839,14 @@ textarea {
   background: #fbfcfb;
 }
 
+.reviewCard.selected,
+.ledgerRow.selected {
+  background: var(--red-soft);
+}
+
 .reviewCardTop {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 12px;
   align-items: start;
 }
@@ -937,9 +966,9 @@ textarea {
 
 .ledgerHeader,
 .ledgerRow {
-  min-width: 860px;
+  min-width: 930px;
   display: grid;
-  grid-template-columns: 108px minmax(220px, 1.4fr) 132px 140px 112px 112px 86px;
+  grid-template-columns: 70px 108px minmax(220px, 1.4fr) 132px 140px 112px 112px 86px;
   gap: 10px;
   align-items: center;
   padding: 9px 0;

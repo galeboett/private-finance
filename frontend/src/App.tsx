@@ -72,6 +72,7 @@ type ToastState = {
 
 type DeleteTarget =
   | { kind: "transaction"; id: number; label: string }
+  | { kind: "transaction_bulk"; ids: number[]; label: string }
   | { kind: "holding"; id: number; label: string };
 
 type SavedRuleAction = {
@@ -196,6 +197,8 @@ export function App() {
   const [lastSavedRule, setLastSavedRule] = useState<SavedRuleAction | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState<number[]>([]);
+  const [lastSelectedTransactionId, setLastSelectedTransactionId] = useState<number | null>(null);
   const [accountForm, setAccountForm] = useState({
     institution_name: "",
     display_name: "",
@@ -521,6 +524,36 @@ export function App() {
     setDeleteConfirmText("");
   }
 
+  function toggleTransactionSelection(transactionId: number, visibleIds: number[], shiftKey: boolean) {
+    setSelectedTransactionIds((current) => {
+      const next = new Set(current);
+      if (shiftKey && lastSelectedTransactionId !== null) {
+        const start = visibleIds.indexOf(lastSelectedTransactionId);
+        const end = visibleIds.indexOf(transactionId);
+        if (start >= 0 && end >= 0) {
+          const [from, to] = start < end ? [start, end] : [end, start];
+          visibleIds.slice(from, to + 1).forEach((id) => next.add(id));
+          return Array.from(next);
+        }
+      }
+      if (next.has(transactionId)) {
+        next.delete(transactionId);
+      } else {
+        next.add(transactionId);
+      }
+      return Array.from(next);
+    });
+    setLastSelectedTransactionId(transactionId);
+  }
+
+  function requestBulkTransactionDelete(ids: number[]) {
+    if (ids.length === 0) {
+      showToast({ tone: "error", message: "Select at least one transaction before bulk delete." });
+      return;
+    }
+    requestDelete({ kind: "transaction_bulk", ids, label: `${ids.length} selected transaction rows` });
+  }
+
   async function confirmDelete() {
     if (!deleteTarget) {
       return;
@@ -529,19 +562,31 @@ export function App() {
       showToast({ tone: "error", message: "Type DELETE to confirm removing this row." });
       return;
     }
-    const path = deleteTarget.kind === "transaction" ? `/api/transactions/${deleteTarget.id}` : `/api/investments/holdings/${deleteTarget.id}`;
     try {
-      await api(path, {
-        method: "DELETE",
-        headers: { "x-csrf-token": csrf },
-        body: JSON.stringify({ confirm_text: deleteConfirmText }),
-      });
+      if (deleteTarget.kind === "transaction_bulk") {
+        for (const id of deleteTarget.ids) {
+          await api(`/api/transactions/${id}`, {
+            method: "DELETE",
+            headers: { "x-csrf-token": csrf },
+            body: JSON.stringify({ confirm_text: deleteConfirmText }),
+          });
+        }
+      } else {
+        const path = deleteTarget.kind === "transaction" ? `/api/transactions/${deleteTarget.id}` : `/api/investments/holdings/${deleteTarget.id}`;
+        await api(path, {
+          method: "DELETE",
+          headers: { "x-csrf-token": csrf },
+          body: JSON.stringify({ confirm_text: deleteConfirmText }),
+        });
+      }
       setDeleteTarget(null);
       setDeleteConfirmText("");
+      setSelectedTransactionIds([]);
+      setLastSelectedTransactionId(null);
       await loadData();
-      showToast({ tone: "success", message: "Row deleted." });
+      showToast({ tone: "success", message: deleteTarget.kind === "transaction_bulk" ? "Selected rows deleted." : "Row deleted." });
     } catch (error) {
-      showToast({ tone: "error", message: error instanceof Error ? error.message : "Row could not be deleted." });
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Rows could not be deleted." });
     }
   }
 
@@ -590,7 +635,12 @@ export function App() {
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId);
   const previewRows = importPreview?.rows.slice(0, 6) ?? [];
   const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status));
+  const visibleReviewTransactions = reviewTransactions.slice(0, 5);
   const recentTransactions = transactions.slice(0, 8);
+  const visibleReviewIds = visibleReviewTransactions.map((transaction) => transaction.id);
+  const recentTransactionIds = recentTransactions.map((transaction) => transaction.id);
+  const selectedVisibleReviewIds = visibleReviewIds.filter((id) => selectedTransactionIds.includes(id));
+  const selectedRecentTransactionIds = recentTransactionIds.filter((id) => selectedTransactionIds.includes(id));
   const reportIncomeCents = cashFlowRows.reduce((sum, row) => sum + row.income_cents, 0);
   const reportExpenseCents = cashFlowRows.reduce((sum, row) => sum + row.expense_cents, 0);
   const reportNetCents = cashFlowRows.reduce((sum, row) => sum + row.net_cents, 0);
@@ -643,7 +693,7 @@ export function App() {
         {deleteTarget ? (
           <section className="deleteConfirmPanel">
             <div>
-              <strong>Delete this {deleteTarget.kind} row?</strong>
+              <strong>{deleteTarget.kind === "transaction_bulk" ? "Delete selected transaction rows?" : `Delete this ${deleteTarget.kind} row?`}</strong>
               <span>{deleteTarget.label}</span>
               <small>This removes the row from reports. Audit history remains append-only.</small>
             </div>
@@ -808,6 +858,17 @@ export function App() {
 
           <section className="toolPanel">
             <PanelTitle icon={ListChecks} title="Review Inbox" subtitle={`${reviewTransactions.length} items need a human decision.`} />
+            {visibleReviewTransactions.length > 0 ? (
+              <div className="selectionToolbar">
+                <span>{selectedVisibleReviewIds.length} selected</span>
+                <button className="dangerTextButton" onClick={() => requestBulkTransactionDelete(selectedVisibleReviewIds)} disabled={selectedVisibleReviewIds.length === 0}>
+                  Delete selected
+                </button>
+                <button className="secondaryButton" onClick={() => setSelectedTransactionIds((current) => current.filter((id) => !visibleReviewIds.includes(id)))}>
+                  Clear
+                </button>
+              </div>
+            ) : null}
             {lastSavedRule ? (
               <div className="ruleApplyPanel">
                 <div>
@@ -825,9 +886,15 @@ export function App() {
               </div>
             ) : null}
             <div className="reviewEditor">
-              {reviewTransactions.slice(0, 5).map((transaction) => (
-                <article className="reviewCard" key={transaction.id}>
+              {visibleReviewTransactions.map((transaction) => (
+                <article className={selectedTransactionIds.includes(transaction.id) ? "reviewCard selected" : "reviewCard"} key={transaction.id}>
                   <div className="reviewCardTop">
+                    <input
+                      type="checkbox"
+                      checked={selectedTransactionIds.includes(transaction.id)}
+                      onChange={(event) => toggleTransactionSelection(transaction.id, visibleReviewIds, (event.nativeEvent as MouseEvent).shiftKey)}
+                      title="Select transaction. Hold Shift to select a range."
+                    />
                     <div>
                       <strong>{transaction.raw_description}</strong>
                       <small>{transaction.transaction_date} / {transaction.review_status}</small>
@@ -868,6 +935,9 @@ export function App() {
                     <button className="secondaryButton" onClick={() => void saveRuleFromTransaction(transaction)}>
                       <Sparkles size={16} />
                       Save rule
+                    </button>
+                    <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>
+                      Delete
                     </button>
                     <button className="primaryButton" onClick={() => void confirmTransaction(transaction)}>
                       <CheckCircle2 size={16} />
@@ -949,8 +1019,20 @@ export function App() {
 
         <section className="ledgerPanel">
           <PanelTitle icon={ReceiptText} title="Recent Transactions" subtitle="The ledger after imports, edits, and review decisions." />
+          {recentTransactions.length > 0 ? (
+            <div className="selectionToolbar">
+              <span>{selectedRecentTransactionIds.length} selected</span>
+              <button className="dangerTextButton" onClick={() => requestBulkTransactionDelete(selectedRecentTransactionIds)} disabled={selectedRecentTransactionIds.length === 0}>
+                Delete selected
+              </button>
+              <button className="secondaryButton" onClick={() => setSelectedTransactionIds((current) => current.filter((id) => !recentTransactionIds.includes(id)))}>
+                Clear
+              </button>
+            </div>
+          ) : null}
           <div className="ledgerTable">
             <div className="ledgerHeader">
+              <span>Select</span>
               <span>Date</span>
               <span>Description</span>
               <span>Type</span>
@@ -962,7 +1044,13 @@ export function App() {
             {recentTransactions.map((transaction) => {
               const category = categories.find((item) => item.id === transaction.category_id);
               return (
-                <div className="ledgerRow" key={transaction.id}>
+                <div className={selectedTransactionIds.includes(transaction.id) ? "ledgerRow selected" : "ledgerRow"} key={transaction.id}>
+                  <input
+                    type="checkbox"
+                    checked={selectedTransactionIds.includes(transaction.id)}
+                    onChange={(event) => toggleTransactionSelection(transaction.id, recentTransactionIds, (event.nativeEvent as MouseEvent).shiftKey)}
+                    title="Select transaction. Hold Shift to select a range."
+                  />
                   <span>{transaction.transaction_date}</span>
                   <strong className="ledgerDescription">
                     {transaction.raw_description}
