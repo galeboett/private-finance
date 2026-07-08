@@ -83,11 +83,11 @@ const readableAccountType = (value: string) => value.replace("_", " ");
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "include",
+    ...init,
     headers: {
       "Content-Type": "application/json",
       ...(init?.headers ?? {}),
     },
-    ...init,
   });
   if (!response.ok) {
     throw new Error(await readableApiError(response));
