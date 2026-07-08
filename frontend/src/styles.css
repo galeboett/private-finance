@@ -622,7 +622,7 @@ button:disabled {
 .holdingsRow {
   min-width: 1060px;
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) 96px minmax(220px, 1.4fr) 96px 112px 112px 112px 86px;
+  grid-template-columns: 56px minmax(140px, 1fr) 96px minmax(220px, 1.4fr) 96px 112px 112px 112px 86px;
   gap: 10px;
   align-items: center;
   padding: 8px 0;
@@ -635,6 +635,10 @@ button:disabled {
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.holdingsRow.selected {
+  background: var(--green-soft);
 }
 
 .holdingsRow strong {
@@ -705,6 +709,19 @@ button:disabled {
 
 .accountRow {
   grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.accountMainButton {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
 }
 
 .accountRow span {
@@ -932,12 +949,14 @@ textarea {
 
 .analysisPanel,
 .suggestedAccountForm,
-.manualOverride {
+.manualOverride,
+.appDataPanel {
   display: grid;
   gap: 10px;
 }
 
-.analysisPanel {
+.analysisPanel,
+.appDataPanel {
   margin-bottom: 12px;
   padding: 12px;
   border: 1px solid #d5e8dc;
@@ -946,7 +965,8 @@ textarea {
 }
 
 .analysisHeader,
-.matchedAccountCard {
+.matchedAccountCard,
+.appDataPanel {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -954,7 +974,8 @@ textarea {
 }
 
 .analysisHeader div,
-.matchedAccountCard div {
+.matchedAccountCard div,
+.appDataPanel div:first-child {
   min-width: 0;
   display: grid;
   gap: 3px;
@@ -962,7 +983,8 @@ textarea {
 
 .analysisHeader span,
 .matchedAccountCard span,
-.manualOverride label {
+.manualOverride label,
+.appDataPanel span {
   color: var(--muted);
   font-size: 12px;
 }

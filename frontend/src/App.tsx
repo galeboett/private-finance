@@ -99,7 +99,10 @@ type ToastState = {
 type DeleteTarget =
   | { kind: "transaction"; id: number; label: string }
   | { kind: "transaction_bulk"; ids: number[]; label: string }
-  | { kind: "holding"; id: number; label: string };
+  | { kind: "account"; id: number; label: string }
+  | { kind: "account_bulk"; ids: number[]; label: string }
+  | { kind: "holding"; id: number; label: string }
+  | { kind: "holding_bulk"; ids: number[]; label: string };
 
 type SavedRuleAction = {
   id: number;
@@ -257,6 +260,11 @@ export function App() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [selectedTransactionIds, setSelectedTransactionIds] = useState<number[]>([]);
   const [lastSelectedTransactionId, setLastSelectedTransactionId] = useState<number | null>(null);
+  const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([]);
+  const [lastSelectedAccountId, setLastSelectedAccountId] = useState<number | null>(null);
+  const [selectedHoldingIds, setSelectedHoldingIds] = useState<number[]>([]);
+  const [lastSelectedHoldingId, setLastSelectedHoldingId] = useState<number | null>(null);
+  const [appImportFile, setAppImportFile] = useState<File | null>(null);
   const [accountForm, setAccountForm] = useState({
     institution_name: "",
     display_name: "",
@@ -583,6 +591,57 @@ export function App() {
     }
   }
 
+  async function downloadAppExport() {
+    setToast(null);
+    try {
+      const response = await fetch(apiUrl("/api/exports/app-data.json"), { credentials: "include" });
+      if (!response.ok) {
+        throw new Error(await readableApiError(response, "/api/exports/app-data.json"));
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `private-finance-app-data-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showToast({ tone: "success", message: "App-data export downloaded. You can import this JSON back later." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Export failed." });
+    }
+  }
+
+  async function restoreAppExport() {
+    setToast(null);
+    if (!appImportFile) {
+      showToast({ tone: "error", message: "Choose an app-data JSON export first." });
+      return;
+    }
+    if (!window.confirm("Importing this file replaces the current accounts, transactions, holdings, rules, and import history in this local app. Continue?")) {
+      return;
+    }
+    const form = new FormData();
+    form.append("file", appImportFile);
+    form.append("confirm_text", "IMPORT");
+    try {
+      const response = await fetch(apiUrl("/api/imports/app-data"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "x-csrf-token": csrf },
+        body: form,
+      });
+      if (!response.ok) {
+        throw new Error(await readableApiError(response, "/api/imports/app-data"));
+      }
+      setAppImportFile(null);
+      await loadData();
+      showToast({ tone: "success", message: "App data restored from export." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Import failed." });
+    }
+  }
   async function detectTransfers() {
     setToast(null);
     try {
@@ -731,6 +790,49 @@ export function App() {
     setLastSelectedTransactionId(transactionId);
   }
 
+  function toggleAccountSelection(accountId: number, visibleIds: number[], shiftKey: boolean) {
+    setSelectedAccountIds((current) => {
+      const next = new Set(current);
+      if (shiftKey && lastSelectedAccountId !== null) {
+        const start = visibleIds.indexOf(lastSelectedAccountId);
+        const end = visibleIds.indexOf(accountId);
+        if (start >= 0 && end >= 0) {
+          const [from, to] = start < end ? [start, end] : [end, start];
+          visibleIds.slice(from, to + 1).forEach((id) => next.add(id));
+          return Array.from(next);
+        }
+      }
+      if (next.has(accountId)) {
+        next.delete(accountId);
+      } else {
+        next.add(accountId);
+      }
+      return Array.from(next);
+    });
+    setLastSelectedAccountId(accountId);
+  }
+
+  function toggleHoldingSelection(holdingId: number, visibleIds: number[], shiftKey: boolean) {
+    setSelectedHoldingIds((current) => {
+      const next = new Set(current);
+      if (shiftKey && lastSelectedHoldingId !== null) {
+        const start = visibleIds.indexOf(lastSelectedHoldingId);
+        const end = visibleIds.indexOf(holdingId);
+        if (start >= 0 && end >= 0) {
+          const [from, to] = start < end ? [start, end] : [end, start];
+          visibleIds.slice(from, to + 1).forEach((id) => next.add(id));
+          return Array.from(next);
+        }
+      }
+      if (next.has(holdingId)) {
+        next.delete(holdingId);
+      } else {
+        next.add(holdingId);
+      }
+      return Array.from(next);
+    });
+    setLastSelectedHoldingId(holdingId);
+  }
   function requestBulkTransactionDelete(ids: number[]) {
     if (ids.length === 0) {
       showToast({ tone: "error", message: "Select at least one transaction before bulk delete." });
@@ -739,12 +841,27 @@ export function App() {
     requestDelete({ kind: "transaction_bulk", ids, label: `${ids.length} selected transaction rows` });
   }
 
+  function requestBulkAccountDelete(ids: number[]) {
+    if (ids.length === 0) {
+      showToast({ tone: "error", message: "Select at least one account before bulk delete." });
+      return;
+    }
+    requestDelete({ kind: "account_bulk", ids, label: `${ids.length} selected accounts and their imported data` });
+  }
+
+  function requestBulkHoldingDelete(ids: number[]) {
+    if (ids.length === 0) {
+      showToast({ tone: "error", message: "Select at least one holding before bulk delete." });
+      return;
+    }
+    requestDelete({ kind: "holding_bulk", ids, label: `${ids.length} selected holding rows` });
+  }
   async function confirmDelete() {
     if (!deleteTarget) {
       return;
     }
     if (deleteConfirmText !== "DELETE") {
-      showToast({ tone: "error", message: "Type DELETE to confirm removing this row." });
+      showToast({ tone: "error", message: "Type DELETE to confirm removing this data." });
       return;
     }
     try {
@@ -756,20 +873,42 @@ export function App() {
             body: JSON.stringify({ confirm_text: deleteConfirmText }),
           });
         }
+      } else if (deleteTarget.kind === "account_bulk") {
+        await api("/api/accounts/bulk-delete", {
+          method: "DELETE",
+          headers: { "x-csrf-token": csrf },
+          body: JSON.stringify({ ids: deleteTarget.ids, confirm_text: deleteConfirmText }),
+        });
+      } else if (deleteTarget.kind === "holding_bulk") {
+        await api("/api/investments/holdings/bulk-delete", {
+          method: "DELETE",
+          headers: { "x-csrf-token": csrf },
+          body: JSON.stringify({ ids: deleteTarget.ids, confirm_text: deleteConfirmText }),
+        });
       } else {
-        const path = deleteTarget.kind === "transaction" ? `/api/transactions/${deleteTarget.id}` : `/api/investments/holdings/${deleteTarget.id}`;
+        const path =
+          deleteTarget.kind === "transaction"
+            ? `/api/transactions/${deleteTarget.id}`
+            : deleteTarget.kind === "account"
+              ? `/api/accounts/${deleteTarget.id}`
+              : `/api/investments/holdings/${deleteTarget.id}`;
         await api(path, {
           method: "DELETE",
           headers: { "x-csrf-token": csrf },
           body: JSON.stringify({ confirm_text: deleteConfirmText }),
         });
       }
+      const deletedKind = deleteTarget.kind;
       setDeleteTarget(null);
       setDeleteConfirmText("");
       setSelectedTransactionIds([]);
       setLastSelectedTransactionId(null);
+      setSelectedAccountIds([]);
+      setLastSelectedAccountId(null);
+      setSelectedHoldingIds([]);
+      setLastSelectedHoldingId(null);
       await loadData();
-      showToast({ tone: "success", message: deleteTarget.kind === "transaction_bulk" ? "Selected rows deleted." : "Row deleted." });
+      showToast({ tone: "success", message: deletedKind.endsWith("bulk") ? "Selected rows deleted." : "Row deleted." });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rows could not be deleted." });
     }
@@ -827,6 +966,10 @@ export function App() {
   const recentTransactionIds = recentTransactions.map((transaction) => transaction.id);
   const selectedVisibleReviewIds = visibleReviewIds.filter((id) => selectedTransactionIds.includes(id));
   const selectedRecentTransactionIds = recentTransactionIds.filter((id) => selectedTransactionIds.includes(id));
+  const accountIds = accounts.map((account) => account.id);
+  const selectedVisibleAccountIds = accountIds.filter((id) => selectedAccountIds.includes(id));
+  const visibleHoldingIds = holdingRows.slice(0, 12).map((row) => row.id);
+  const selectedVisibleHoldingIds = visibleHoldingIds.filter((id) => selectedHoldingIds.includes(id));
   const reportIncomeCents = cashFlowRows.reduce((sum, row) => sum + row.income_cents, 0);
   const reportExpenseCents = cashFlowRows.reduce((sum, row) => sum + row.expense_cents, 0);
   const reportNetCents = cashFlowRows.reduce((sum, row) => sum + row.net_cents, 0);
@@ -879,14 +1022,14 @@ export function App() {
         {deleteTarget ? (
           <section className="deleteConfirmPanel">
             <div>
-              <strong>{deleteTarget.kind === "transaction_bulk" ? "Delete selected transaction rows?" : `Delete this ${deleteTarget.kind} row?`}</strong>
+              <strong>{deleteTarget.kind.endsWith("bulk") ? "Delete selected items?" : deleteTarget.kind === "account" ? "Delete this account and its imported data?" : `Delete this ${deleteTarget.kind} row?`}</strong>
               <span>{deleteTarget.label}</span>
-              <small>This removes the row from reports. Audit history remains append-only.</small>
+              <small>Accounts delete their imported transactions, holdings, presets, and import history. Audit history remains append-only.</small>
             </div>
             <input value={deleteConfirmText} onChange={(event) => setDeleteConfirmText(event.target.value)} placeholder="Type DELETE to confirm" />
             <div className="buttonRow">
               <button className="dangerButton" onClick={() => void confirmDelete()} disabled={deleteConfirmText !== "DELETE"}>
-                Delete row
+                Delete
               </button>
               <button
                 className="secondaryButton"
@@ -931,6 +1074,15 @@ export function App() {
               netWorthAccounts={netWorthAccounts}
               allocationRows={allocationRows}
               holdingRows={holdingRows}
+              selectedHoldingIds={selectedHoldingIds}
+              selectedVisibleHoldingIds={selectedVisibleHoldingIds}
+              visibleHoldingIds={visibleHoldingIds}
+              onToggleHoldingSelection={toggleHoldingSelection}
+              onRequestBulkHoldingDelete={requestBulkHoldingDelete}
+              onClearHoldingSelection={() => {
+                setSelectedHoldingIds((current) => current.filter((id) => !visibleHoldingIds.includes(id)));
+                setLastSelectedHoldingId(null);
+              }}
               onUpdateHoldingDescription={updateHoldingDescription}
               onRequestDelete={requestDelete}
             />
@@ -969,6 +1121,22 @@ export function App() {
               </button>
             </div>
 
+            <div className="appDataPanel">
+              <div>
+                <strong>App data export</strong>
+                <span>Download a JSON backup that can be imported back into this app later.</span>
+              </div>
+              <div className="buttonRow">
+                <button className="secondaryButton" onClick={() => void downloadAppExport()}>
+                  <ArrowDownToLine size={16} />
+                  Export app data
+                </button>
+                <input type="file" accept="application/json,.json" onChange={(event) => setAppImportFile(event.target.files?.[0] ?? null)} />
+                <button className="dangerTextButton" onClick={() => void restoreAppExport()} disabled={!appImportFile}>
+                  Import backup
+                </button>
+              </div>
+            </div>
             {importWorkspaceTab === "smart" ? (
               <>
                 <div className="compactForm">
@@ -1089,17 +1257,49 @@ export function App() {
                     ) : null}
                   </div>
                 </div>
+                {accounts.length > 0 ? (
+                  <div className="selectionToolbar">
+                    <span>{selectedVisibleAccountIds.length} selected</span>
+                    <button className="dangerTextButton" onClick={() => requestBulkAccountDelete(selectedVisibleAccountIds)} disabled={selectedVisibleAccountIds.length === 0}>
+                      Delete selected
+                    </button>
+                    <button
+                      className="secondaryButton"
+                      onClick={() => {
+                        setSelectedAccountIds([]);
+                        setLastSelectedAccountId(null);
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                ) : null}
                 <div className="denseList">
                   {accounts.map((account) => (
-                    <button className={selectedAccountId === account.id ? "accountRow selected" : "accountRow"} key={account.id} onClick={() => beginEditAccount(account)}>
-                      <Landmark size={16} />
-                      <span>
-                        {account.display_name}
-                        {account.institution_name ? <small>{account.institution_name}</small> : null}
-                      </span>
+                    <div className={selectedAccountId === account.id ? "accountRow selected" : "accountRow"} key={account.id}>
+                      <input
+                        type="checkbox"
+                        checked={selectedAccountIds.includes(account.id)}
+                        onChange={(event) => toggleAccountSelection(account.id, accountIds, (event.nativeEvent as MouseEvent).shiftKey)}
+                        title="Select account. Hold Shift to select a range."
+                      />
+                      <button className="accountMainButton" onClick={() => beginEditAccount(account)}>
+                        <Landmark size={16} />
+                        <span>
+                          {account.display_name}
+                          {account.institution_name ? <small>{account.institution_name}</small> : null}
+                        </span>
+                      </button>
                       <small>{readableAccountType(account.account_type)}</small>
-                      <Pencil size={14} />
-                    </button>
+                      <div className="inlineActions">
+                        <button className="secondaryButton" onClick={() => beginEditAccount(account)} title="Edit account">
+                          <Pencil size={14} />
+                        </button>
+                        <button className="dangerTextButton" onClick={() => requestDelete({ kind: "account", id: account.id, label: account.display_name })}>
+                          Delete
+                        </button>
+                      </div>
+                    </div>
                   ))}
                 </div>
               </>
@@ -1400,6 +1600,12 @@ function ReportSurface({
   netWorthAccounts,
   allocationRows,
   holdingRows,
+  selectedHoldingIds,
+  selectedVisibleHoldingIds,
+  visibleHoldingIds,
+  onToggleHoldingSelection,
+  onRequestBulkHoldingDelete,
+  onClearHoldingSelection,
   onUpdateHoldingDescription,
   onRequestDelete,
 }: {
@@ -1412,6 +1618,12 @@ function ReportSurface({
   netWorthAccounts: NetWorthAccount[];
   allocationRows: AllocationRow[];
   holdingRows: HoldingRow[];
+  selectedHoldingIds: number[];
+  selectedVisibleHoldingIds: number[];
+  visibleHoldingIds: number[];
+  onToggleHoldingSelection: (holdingId: number, visibleIds: number[], shiftKey: boolean) => void;
+  onRequestBulkHoldingDelete: (ids: number[]) => void;
+  onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
   onRequestDelete: (target: DeleteTarget) => void;
 }) {
@@ -1422,7 +1634,7 @@ function ReportSurface({
     return <IncomeReport income={income} expenses={expenses} net={net} />;
   }
   if (activeTab === "Net Worth") {
-    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} onUpdateHoldingDescription={onUpdateHoldingDescription} onRequestDelete={onRequestDelete} />;
+    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onRequestDelete={onRequestDelete} />;
   }
   if (activeTab === "Cash Flow") {
     return <MonthlyCashFlowReport rows={cashFlowRows} income={income} expenses={expenses} net={net} />;
@@ -1504,12 +1716,24 @@ function NetWorthReport({
   accounts,
   allocationRows,
   holdingRows,
+  selectedHoldingIds,
+  selectedVisibleHoldingIds,
+  visibleHoldingIds,
+  onToggleHoldingSelection,
+  onRequestBulkHoldingDelete,
+  onClearHoldingSelection,
   onUpdateHoldingDescription,
   onRequestDelete,
 }: {
   accounts: NetWorthAccount[];
   allocationRows: AllocationRow[];
   holdingRows: HoldingRow[];
+  selectedHoldingIds: number[];
+  selectedVisibleHoldingIds: number[];
+  visibleHoldingIds: number[];
+  onToggleHoldingSelection: (holdingId: number, visibleIds: number[], shiftKey: boolean) => void;
+  onRequestBulkHoldingDelete: (ids: number[]) => void;
+  onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
   onRequestDelete: (target: DeleteTarget) => void;
 }) {
@@ -1541,8 +1765,20 @@ function NetWorthReport({
           <strong>Holding details</strong>
           <span>Latest imported rows used for investment net worth. Descriptions you edit are stored locally by symbol.</span>
         </div>
+        {holdingRows.length > 0 ? (
+          <div className="selectionToolbar">
+            <span>{selectedVisibleHoldingIds.length} selected</span>
+            <button className="dangerTextButton" onClick={() => onRequestBulkHoldingDelete(selectedVisibleHoldingIds)} disabled={selectedVisibleHoldingIds.length === 0}>
+              Delete selected
+            </button>
+            <button className="secondaryButton" onClick={onClearHoldingSelection}>
+              Clear
+            </button>
+          </div>
+        ) : null}
         <div className="holdingsTable">
           <div className="holdingsHeader">
+            <span>Select</span>
             <span>Account</span>
             <span>Symbol</span>
             <span>Description</span>
@@ -1553,7 +1789,13 @@ function NetWorthReport({
             <span>Action</span>
           </div>
           {holdingRows.slice(0, 12).map((row) => (
-            <div className="holdingsRow" key={row.id}>
+            <div className={selectedHoldingIds.includes(row.id) ? "holdingsRow selected" : "holdingsRow"} key={row.id}>
+              <input
+                type="checkbox"
+                checked={selectedHoldingIds.includes(row.id)}
+                onChange={(event) => onToggleHoldingSelection(row.id, visibleHoldingIds, (event.nativeEvent as MouseEvent).shiftKey)}
+                title="Select holding. Hold Shift to select a range."
+              />
               <span>{row.account}</span>
               <strong>{row.symbol || "Holding"}</strong>
               <div className="holdingDescriptionEdit">

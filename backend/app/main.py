@@ -3,14 +3,15 @@ from __future__ import annotations
 import csv
 import io
 import json
+from datetime import date, datetime
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from .audit import record_audit_event
@@ -18,9 +19,9 @@ from .bootstrap import initialize_database
 from .config import settings
 from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
-from .models import Account, AppUser, Category, CategoryRule, HoldingSnapshot, ImportPreset, Institution, SecurityMetadata, SecurityPrice, SessionToken, Transaction, TransactionSplit, TransferLink
+from .models import Account, AppUser, Category, CategoryRule, HoldingSnapshot, ImportBatch, ImportPreset, Institution, SecurityMetadata, SecurityPrice, SessionToken, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, RuleApplyRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, RuleApplyRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.backups import create_backup, restore_backup
 from .services.importers import commit_import, detect_preset_from_content, preview_import, suggest_account_for_import
@@ -206,6 +207,75 @@ def category_key_from_label(label: str) -> str:
     return key[:60] or "category"
 
 
+
+def _require_delete_confirmation(confirm_text: str) -> None:
+    if confirm_text != "DELETE":
+        raise HTTPException(status_code=400, detail='Type DELETE to confirm deletion')
+
+
+def _delete_transaction_row(db: Session, transaction: Transaction) -> None:
+    db.execute(update(Transaction).where(Transaction.linked_transaction_id == transaction.id).values(linked_transaction_id=None))
+    db.execute(update(Transaction).where(Transaction.duplicate_of_transaction_id == transaction.id).values(duplicate_of_transaction_id=None))
+    db.execute(delete(TransactionSplit).where(TransactionSplit.transaction_id == transaction.id))
+    db.execute(delete(TransferLink).where((TransferLink.from_transaction_id == transaction.id) | (TransferLink.to_transaction_id == transaction.id)))
+    record_audit_event(
+        db,
+        "transaction_delete",
+        "local-user",
+        "transaction",
+        str(transaction.id),
+        {"description": transaction.raw_description, "amount_cents": transaction.amount_cents, "date": transaction.transaction_date.isoformat()},
+    )
+    db.delete(transaction)
+
+
+def _delete_account_tree(db: Session, account: Account) -> None:
+    transactions = db.scalars(select(Transaction).where(Transaction.account_id == account.id)).all()
+    for transaction in transactions:
+        _delete_transaction_row(db, transaction)
+    db.execute(delete(StagingRow).where(StagingRow.account_id == account.id))
+    db.execute(delete(HoldingSnapshot).where(HoldingSnapshot.account_id == account.id))
+    db.execute(delete(ImportBatch).where(ImportBatch.account_id == account.id))
+    db.execute(delete(ImportPreset).where(ImportPreset.account_id == account.id))
+    record_audit_event(
+        db,
+        "account_delete",
+        "local-user",
+        "account",
+        str(account.id),
+        {"display_name": account.display_name, "account_type": account.account_type},
+    )
+    db.delete(account)
+
+
+@app.delete("/api/accounts/bulk-delete")
+def bulk_delete_accounts(payload: BulkDeleteRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    _require_delete_confirmation(payload.confirm_text)
+    if not payload.ids:
+        raise HTTPException(status_code=400, detail="Choose at least one account to delete")
+    accounts = db.scalars(select(Account).where(Account.id.in_(payload.ids))).all()
+    found_ids = {account.id for account in accounts}
+    missing_ids = [account_id for account_id in payload.ids if account_id not in found_ids]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"Account not found: {missing_ids[0]}")
+    for account in accounts:
+        _delete_account_tree(db, account)
+    db.commit()
+    return {"ok": True, "deleted": len(accounts)}
+
+
+@app.delete("/api/accounts/{account_id}")
+def delete_account(account_id: int, payload: DeleteConfirmRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    _require_delete_confirmation(payload.confirm_text)
+    account = db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    _delete_account_tree(db, account)
+    db.commit()
+    return {"ok": True}
+
 @app.post("/api/categories")
 def create_category(payload: CategoryCreate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
@@ -375,22 +445,11 @@ def void_transaction(transaction_id: int, request: Request, session: SessionToke
 @app.delete("/api/transactions/{transaction_id}")
 def delete_transaction(transaction_id: int, payload: DeleteConfirmRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
-    if payload.confirm_text != "DELETE":
-        raise HTTPException(status_code=400, detail='Type DELETE to confirm deletion')
+    _require_delete_confirmation(payload.confirm_text)
     transaction = db.get(Transaction, transaction_id)
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    db.execute(delete(TransactionSplit).where(TransactionSplit.transaction_id == transaction_id))
-    db.execute(delete(TransferLink).where((TransferLink.from_transaction_id == transaction_id) | (TransferLink.to_transaction_id == transaction_id)))
-    record_audit_event(
-        db,
-        "transaction_delete",
-        "local-user",
-        "transaction",
-        str(transaction.id),
-        {"description": transaction.raw_description, "amount_cents": transaction.amount_cents, "date": transaction.transaction_date.isoformat()},
-    )
-    db.delete(transaction)
+    _delete_transaction_row(db, transaction)
     db.commit()
     return {"ok": True}
 
@@ -647,14 +706,8 @@ def update_holding_metadata(payload: HoldingMetadataUpdate, request: Request, se
     return {"ok": True}
 
 
-@app.delete("/api/investments/holdings/{holding_id}")
-def delete_holding(holding_id: int, payload: DeleteConfirmRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
-    require_csrf(request, session)
-    if payload.confirm_text != "DELETE":
-        raise HTTPException(status_code=400, detail='Type DELETE to confirm deletion')
-    holding = db.get(HoldingSnapshot, holding_id)
-    if not holding:
-        raise HTTPException(status_code=404, detail="Holding row not found")
+
+def _delete_holding_row(db: Session, holding: HoldingSnapshot) -> None:
     record_audit_event(
         db,
         "holding_delete",
@@ -664,6 +717,32 @@ def delete_holding(holding_id: int, payload: DeleteConfirmRequest, request: Requ
         {"symbol": holding.symbol, "market_value_cents": holding.market_value_cents, "snapshot_date": holding.snapshot_date.isoformat()},
     )
     db.delete(holding)
+
+
+@app.delete("/api/investments/holdings/bulk-delete")
+def bulk_delete_holdings(payload: BulkDeleteRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    _require_delete_confirmation(payload.confirm_text)
+    if not payload.ids:
+        raise HTTPException(status_code=400, detail="Choose at least one holding to delete")
+    holdings = db.scalars(select(HoldingSnapshot).where(HoldingSnapshot.id.in_(payload.ids))).all()
+    found_ids = {holding.id for holding in holdings}
+    missing_ids = [holding_id for holding_id in payload.ids if holding_id not in found_ids]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"Holding row not found: {missing_ids[0]}")
+    for holding in holdings:
+        _delete_holding_row(db, holding)
+    db.commit()
+    return {"ok": True, "deleted": len(holdings)}
+
+@app.delete("/api/investments/holdings/{holding_id}")
+def delete_holding(holding_id: int, payload: DeleteConfirmRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    _require_delete_confirmation(payload.confirm_text)
+    holding = db.get(HoldingSnapshot, holding_id)
+    if not holding:
+        raise HTTPException(status_code=404, detail="Holding row not found")
+    _delete_holding_row(db, holding)
     db.commit()
     return {"ok": True}
 
@@ -677,6 +756,99 @@ def get_investment_allocation(session: SessionToken = Depends(current_session), 
 def get_investment_value_timeseries(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     return get_net_worth_timeseries(session, db)
 
+
+
+APP_EXPORT_TABLES = [
+    Institution,
+    Account,
+    Category,
+    ImportPreset,
+    ImportBatch,
+    StagingRow,
+    CategoryRule,
+    Transaction,
+    TransactionSplit,
+    TransferLink,
+    HoldingSnapshot,
+    SecurityMetadata,
+    SecurityPrice,
+]
+
+
+def _serialize_model(row) -> dict:
+    payload = {}
+    for column in row.__table__.columns:
+        value = getattr(row, column.name)
+        if isinstance(value, (date, datetime)):
+            payload[column.name] = value.isoformat()
+        else:
+            payload[column.name] = value
+    return payload
+
+
+def _deserialize_model(model, payload: dict):
+    values = {}
+    for column in model.__table__.columns:
+        if column.name not in payload:
+            continue
+        value = payload[column.name]
+        if value is not None:
+            try:
+                python_type = column.type.python_type
+            except NotImplementedError:
+                python_type = None
+            if python_type is date:
+                value = date.fromisoformat(value)
+            elif python_type is datetime:
+                value = datetime.fromisoformat(value)
+        values[column.name] = value
+    return model(**values)
+
+
+@app.get("/api/exports/app-data.json")
+def export_app_data(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    payload = {
+        "format": "private-finance-app-data",
+        "version": 1,
+        "generated_at": datetime.utcnow().isoformat(),
+        "tables": {},
+    }
+    for model in APP_EXPORT_TABLES:
+        rows = db.scalars(select(model).order_by(model.id.asc())).all()
+        payload["tables"][model.__tablename__] = [_serialize_model(row) for row in rows]
+    return JSONResponse(
+        payload,
+        headers={"Content-Disposition": "attachment; filename=private-finance-app-data.json"},
+    )
+
+
+@app.post("/api/imports/app-data")
+async def import_app_data(
+    request: Request,
+    file: UploadFile = File(...),
+    confirm_text: str = Form(...),
+    session: SessionToken = Depends(current_session),
+    db: Session = Depends(get_db),
+):
+    require_csrf(request, session)
+    if confirm_text != "IMPORT":
+        raise HTTPException(status_code=400, detail='Type IMPORT to confirm replacing app data')
+    try:
+        payload = json.loads((await file.read()).decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Choose a valid app-data JSON export") from exc
+    if payload.get("format") != "private-finance-app-data" or not isinstance(payload.get("tables"), dict):
+        raise HTTPException(status_code=400, detail="This file is not a private finance app-data export")
+
+    tables = payload["tables"]
+    for model in reversed(APP_EXPORT_TABLES):
+        db.execute(delete(model))
+    for model in APP_EXPORT_TABLES:
+        for row in tables.get(model.__tablename__, []):
+            db.add(_deserialize_model(model, row))
+    record_audit_event(db, "app_data_import", "local-user", "app_data", file.filename or "upload", {"version": payload.get("version")})
+    db.commit()
+    return {"ok": True}
 
 @app.get("/api/exports/transactions.csv")
 def export_transactions(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):

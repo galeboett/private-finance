@@ -91,6 +91,11 @@ class DeleteConfirmRequest(BaseModel):
     confirm_text: str
 
 
+class BulkDeleteRequest(BaseModel):
+    ids: list[int]
+    confirm_text: str
+
+
 class TransactionFilter(BaseModel):
     account_id: int | None = None
     review_status: str | None = None
