@@ -435,17 +435,7 @@ def apply_rule(rule_id: int, payload: RuleApplyRequest, request: Request, sessio
         if not rule_matches_transaction(rule, transaction):
             continue
         matched += 1
-        changed = False
-        if transaction.category_id != rule.category_id:
-            transaction.category_id = rule.category_id
-            changed = True
-        if transaction.transaction_type != rule.suggested_transaction_type:
-            transaction.transaction_type = rule.suggested_transaction_type
-            changed = True
-        if transaction.review_status in {"needs_review", "possible_duplicate"}:
-            transaction.review_status = "suggested"
-            changed = True
-        if changed:
+        if apply_rule_to_transaction(rule, transaction):
             updated += 1
 
     record_audit_event(db, "rule_apply", "local-user", "category_rule", str(rule.id), {"scope": payload.scope, "matched": matched, "updated": updated})
@@ -469,6 +459,20 @@ def payload_from_rule(rule: CategoryRule) -> dict:
         "suggested_transaction_type": rule.suggested_transaction_type,
     }
 
+
+
+def apply_rule_to_transaction(rule: CategoryRule, transaction: Transaction) -> bool:
+    changed = False
+    if transaction.category_id != rule.category_id:
+        transaction.category_id = rule.category_id
+        changed = True
+    if transaction.transaction_type != rule.suggested_transaction_type:
+        transaction.transaction_type = rule.suggested_transaction_type
+        changed = True
+    if transaction.review_status != "confirmed":
+        transaction.review_status = "confirmed"
+        changed = True
+    return changed
 
 def rule_matches_transaction(rule: CategoryRule, transaction: Transaction) -> bool:
     if rule.field_name != "raw_description":

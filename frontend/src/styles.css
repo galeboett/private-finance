@@ -864,6 +864,52 @@ textarea {
 .reviewCardTop small {
   color: var(--muted);
 }
+.reviewMetaRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.statusBadge {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 3px 8px;
+  border: 1px solid #d7dde0;
+  border-radius: 999px;
+  background: #eef2f3;
+  color: #3e4b51;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.statusBadge.needs-review {
+  border-color: #f0c469;
+  background: #fff4d5;
+  color: #8a5d00;
+}
+
+.statusBadge.suggested {
+  border-color: #9bcbd8;
+  background: #e4f6fa;
+  color: #166f80;
+}
+
+.statusBadge.possible-duplicate {
+  border-color: #dfb0c7;
+  background: #fce9f2;
+  color: #944568;
+}
+
+.statusBadge.confirmed {
+  border-color: #9acdb0;
+  background: var(--green-soft);
+  color: #24734c;
+}
 
 .reviewControls {
   display: grid;
@@ -933,9 +979,17 @@ textarea {
 
 .ruleHint {
   margin: -2px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.ruleHint strong {
+  color: var(--ink);
 }
 
 .amount {

@@ -138,6 +138,16 @@ const formatMoney = (cents: number) =>
 
 const readableAccountType = (value: string) => value.replace("_", " ");
 
+const reviewStatusLabel = (value: string) =>
+  ({
+    needs_review: "Needs review",
+    suggested: "Suggested",
+    possible_duplicate: "Possible duplicate",
+    confirmed: "Confirmed",
+  })[value] ?? readableAccountType(value);
+
+const reviewStatusClass = (value: string) => `statusBadge ${value.replace(/_/g, "-")}`;
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "include",
@@ -473,7 +483,7 @@ export function App() {
       });
       setLastSavedRule({ id: rule.id, matchText });
       await loadData();
-      showToast({ tone: "success", message: `Rule saved for "${matchText}". Choose where else to apply it below.` });
+      showToast({ tone: "success", message: `Rule saved for "${matchText}". Apply it below to categorize and confirm matches.` });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be saved." });
     }
@@ -495,7 +505,7 @@ export function App() {
       });
       await loadData();
       const scopeLabel = scope === "unreviewed" ? "unreviewed transactions" : "previous transactions";
-      showToast({ tone: "success", message: `Rule applied to ${result.updated} of ${result.matched} matching ${scopeLabel}.` });
+      showToast({ tone: "success", message: `Rule confirmed ${result.updated} of ${result.matched} matching ${scopeLabel}.` });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be applied." });
     }
@@ -873,7 +883,7 @@ export function App() {
               <div className="ruleApplyPanel">
                 <div>
                   <strong>Rule saved for "{lastSavedRule.matchText}"</strong>
-                  <span>Use it now, or leave it for future imports only.</span>
+                  <span>Apply it now to categorize and confirm matching transactions.</span>
                 </div>
                 <div className="buttonRow">
                   <button className="secondaryButton" onClick={() => void applySavedRule("unreviewed")}>
@@ -897,7 +907,7 @@ export function App() {
                     />
                     <div>
                       <strong>{transaction.raw_description}</strong>
-                      <small>{transaction.transaction_date} / {transaction.review_status}</small>
+                      <span className="reviewMetaRow"><small>{transaction.transaction_date}</small><span className={reviewStatusClass(transaction.review_status)}>{reviewStatusLabel(transaction.review_status)}</span></span>
                     </div>
                     <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
                   </div>
@@ -930,7 +940,10 @@ export function App() {
                     placeholder="Add your own context, like what you actually bought."
                     rows={2}
                   />
-                  <p className="ruleHint">Save rule learns from this merchant text for future imports. It suggests the same type/category, then still leaves the transaction in review.</p>
+                  <div className="ruleHint">
+                    <strong>Rule to save:</strong> future descriptions containing "{suggestedRuleText(transaction.raw_description)}" will use {readableAccountType(transaction.transaction_type)}
+                    {transaction.category_id ? ` / ${categories.find((category) => category.id === transaction.category_id)?.label ?? "selected category"}` : " / no category"}. Applying it now also confirms matching rows.
+                  </div>
                   <div className="reviewActions">
                     <button className="secondaryButton" onClick={() => void saveRuleFromTransaction(transaction)}>
                       <Sparkles size={16} />
@@ -1058,7 +1071,7 @@ export function App() {
                   </strong>
                   <span>{readableAccountType(transaction.transaction_type)}</span>
                   <span>{category?.label ?? "Uncategorized"}</span>
-                  <span>{transaction.review_status}</span>
+                  <span className={reviewStatusClass(transaction.review_status)}>{reviewStatusLabel(transaction.review_status)}</span>
                   <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
                   <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>
                     Delete
