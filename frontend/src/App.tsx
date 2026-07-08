@@ -70,6 +70,10 @@ type ToastState = {
   message: string;
 };
 
+type DeleteTarget =
+  | { kind: "transaction"; id: number; label: string }
+  | { kind: "holding"; id: number; label: string };
+
 type SavedRuleAction = {
   id: number;
   matchText: string;
@@ -190,6 +194,8 @@ export function App() {
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
   const [editingCategoryLabel, setEditingCategoryLabel] = useState("");
   const [lastSavedRule, setLastSavedRule] = useState<SavedRuleAction | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [accountForm, setAccountForm] = useState({
     institution_name: "",
     display_name: "",
@@ -510,6 +516,35 @@ export function App() {
     }
   }
 
+  function requestDelete(target: DeleteTarget) {
+    setDeleteTarget(target);
+    setDeleteConfirmText("");
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) {
+      return;
+    }
+    if (deleteConfirmText !== "DELETE") {
+      showToast({ tone: "error", message: "Type DELETE to confirm removing this row." });
+      return;
+    }
+    const path = deleteTarget.kind === "transaction" ? `/api/transactions/${deleteTarget.id}` : `/api/investments/holdings/${deleteTarget.id}`;
+    try {
+      await api(path, {
+        method: "DELETE",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ confirm_text: deleteConfirmText }),
+      });
+      setDeleteTarget(null);
+      setDeleteConfirmText("");
+      await loadData();
+      showToast({ tone: "success", message: "Row deleted." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Row could not be deleted." });
+    }
+  }
+
   if (!configured) {
     return (
       <div className="authShell">
@@ -605,6 +640,31 @@ export function App() {
           </div>
         ) : null}
 
+        {deleteTarget ? (
+          <section className="deleteConfirmPanel">
+            <div>
+              <strong>Delete this {deleteTarget.kind} row?</strong>
+              <span>{deleteTarget.label}</span>
+              <small>This removes the row from reports. Audit history remains append-only.</small>
+            </div>
+            <input value={deleteConfirmText} onChange={(event) => setDeleteConfirmText(event.target.value)} placeholder="Type DELETE to confirm" />
+            <div className="buttonRow">
+              <button className="dangerButton" onClick={() => void confirmDelete()} disabled={deleteConfirmText !== "DELETE"}>
+                Delete row
+              </button>
+              <button
+                className="secondaryButton"
+                onClick={() => {
+                  setDeleteTarget(null);
+                  setDeleteConfirmText("");
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </section>
+        ) : null}
+
         <section className="metricsGrid" aria-label="Financial summary">
           <MetricTile label="Total income" value={formatMoney(totalIncomeCents)} tone="green" />
           <MetricTile label="Total expenses" value={formatMoney(totalExpenseCents)} tone="red" />
@@ -636,6 +696,7 @@ export function App() {
               allocationRows={allocationRows}
               holdingRows={holdingRows}
               onUpdateHoldingDescription={updateHoldingDescription}
+              onRequestDelete={requestDelete}
             />
           </section>
 
@@ -896,6 +957,7 @@ export function App() {
               <span>Category</span>
               <span>Status</span>
               <span>Amount</span>
+              <span>Action</span>
             </div>
             {recentTransactions.map((transaction) => {
               const category = categories.find((item) => item.id === transaction.category_id);
@@ -910,6 +972,9 @@ export function App() {
                   <span>{category?.label ?? "Uncategorized"}</span>
                   <span>{transaction.review_status}</span>
                   <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
+                  <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>
+                    Delete
+                  </button>
                 </div>
               );
             })}
@@ -940,6 +1005,7 @@ function ReportSurface({
   allocationRows,
   holdingRows,
   onUpdateHoldingDescription,
+  onRequestDelete,
 }: {
   activeTab: string;
   income: number;
@@ -951,6 +1017,7 @@ function ReportSurface({
   allocationRows: AllocationRow[];
   holdingRows: HoldingRow[];
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
+  onRequestDelete: (target: DeleteTarget) => void;
 }) {
   if (activeTab === "Spending") {
     return <SpendingReport rows={categoryTotals} />;
@@ -959,7 +1026,7 @@ function ReportSurface({
     return <IncomeReport income={income} expenses={expenses} net={net} />;
   }
   if (activeTab === "Net Worth") {
-    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} onUpdateHoldingDescription={onUpdateHoldingDescription} />;
+    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} onUpdateHoldingDescription={onUpdateHoldingDescription} onRequestDelete={onRequestDelete} />;
   }
   if (activeTab === "Cash Flow") {
     return <MonthlyCashFlowReport rows={cashFlowRows} income={income} expenses={expenses} net={net} />;
@@ -1042,11 +1109,13 @@ function NetWorthReport({
   allocationRows,
   holdingRows,
   onUpdateHoldingDescription,
+  onRequestDelete,
 }: {
   accounts: NetWorthAccount[];
   allocationRows: AllocationRow[];
   holdingRows: HoldingRow[];
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
+  onRequestDelete: (target: DeleteTarget) => void;
 }) {
   const total = accounts.reduce((sum, row) => sum + row.market_value_cents, 0);
   const max = Math.max(...accounts.map((row) => row.market_value_cents), 1);
@@ -1085,6 +1154,7 @@ function NetWorthReport({
             <span>Price</span>
             <span>Price date</span>
             <span>Value</span>
+            <span>Action</span>
           </div>
           {holdingRows.slice(0, 12).map((row) => (
             <div className="holdingsRow" key={row.id}>
@@ -1102,6 +1172,9 @@ function NetWorthReport({
               <span>{row.display_price_cents == null ? "-" : formatMoney(row.display_price_cents)}</span>
               <span>{row.price_date}</span>
               <span>{formatMoney(row.display_market_value_cents)}</span>
+              <button className="dangerTextButton" onClick={() => onRequestDelete({ kind: "holding", id: row.id, label: `${row.symbol || row.description || "Holding"} in ${row.account}` })}>
+                Delete
+              </button>
             </div>
           ))}
           {holdingRows.length === 0 ? <p className="emptyText">No holdings rows to inspect yet.</p> : null}

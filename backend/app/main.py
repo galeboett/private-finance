@@ -19,7 +19,7 @@ from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
 from .models import Account, AppUser, Category, CategoryRule, HoldingSnapshot, ImportPreset, Institution, SecurityMetadata, SecurityPrice, SessionToken, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, CategoryCreate, CategoryUpdate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, RuleApplyRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
+from .schemas import AccountCreate, AccountUpdate, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, RuleApplyRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.backups import create_backup, restore_backup
 from .services.importers import commit_import, detect_preset_from_content, preview_import
@@ -344,6 +344,29 @@ def void_transaction(transaction_id: int, request: Request, session: SessionToke
     return {"ok": True}
 
 
+@app.delete("/api/transactions/{transaction_id}")
+def delete_transaction(transaction_id: int, payload: DeleteConfirmRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    if payload.confirm_text != "DELETE":
+        raise HTTPException(status_code=400, detail='Type DELETE to confirm deletion')
+    transaction = db.get(Transaction, transaction_id)
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    db.execute(delete(TransactionSplit).where(TransactionSplit.transaction_id == transaction_id))
+    db.execute(delete(TransferLink).where((TransferLink.from_transaction_id == transaction_id) | (TransferLink.to_transaction_id == transaction_id)))
+    record_audit_event(
+        db,
+        "transaction_delete",
+        "local-user",
+        "transaction",
+        str(transaction.id),
+        {"description": transaction.raw_description, "amount_cents": transaction.amount_cents, "date": transaction.transaction_date.isoformat()},
+    )
+    db.delete(transaction)
+    db.commit()
+    return {"ok": True}
+
+
 @app.post("/api/transactions/{transaction_id}/splits")
 def set_splits(transaction_id: int, payload: SplitSetRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
@@ -554,6 +577,27 @@ def update_holding_metadata(payload: HoldingMetadataUpdate, request: Request, se
         db.flush()
     metadata.user_description = payload.user_description.strip() if payload.user_description else None
     record_audit_event(db, "holding_metadata_update", "local-user", "security_metadata", symbol, {"symbol": symbol})
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/investments/holdings/{holding_id}")
+def delete_holding(holding_id: int, payload: DeleteConfirmRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    if payload.confirm_text != "DELETE":
+        raise HTTPException(status_code=400, detail='Type DELETE to confirm deletion')
+    holding = db.get(HoldingSnapshot, holding_id)
+    if not holding:
+        raise HTTPException(status_code=404, detail="Holding row not found")
+    record_audit_event(
+        db,
+        "holding_delete",
+        "local-user",
+        "holding_snapshot",
+        str(holding.id),
+        {"symbol": holding.symbol, "market_value_cents": holding.market_value_cents, "snapshot_date": holding.snapshot_date.isoformat()},
+    )
+    db.delete(holding)
     db.commit()
     return {"ok": True}
 

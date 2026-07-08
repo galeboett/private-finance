@@ -87,6 +87,10 @@ class HoldingMetadataUpdate(BaseModel):
     user_description: str | None = None
 
 
+class DeleteConfirmRequest(BaseModel):
+    confirm_text: str
+
+
 class TransactionFilter(BaseModel):
     account_id: int | None = None
     review_status: str | None = None
