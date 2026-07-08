@@ -861,6 +861,75 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.transferIntro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #d5e8dc;
+  border-radius: 8px;
+  background: #f4faf6;
+}
+
+.transferIntro div,
+.transferCardTop div,
+.transferPair div {
+  display: grid;
+  gap: 4px;
+}
+
+.transferIntro span,
+.transferCardTop span,
+.transferPair small,
+.transferPair span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.transferList {
+  display: grid;
+  gap: 10px;
+}
+
+.transferCard {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfb;
+}
+
+.transferCardTop {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.transferPair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.transferPair div {
+  min-width: 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: #f7f4ed;
+}
+
+.transferPair span {
+  overflow-wrap: anywhere;
+}
+
+.transferPair b {
+  font-size: 13px;
+}
+
 .reviewCardTop small {
   color: var(--muted);
 }
@@ -1107,6 +1176,16 @@ textarea {
   }
 
   .reviewControls {
+    grid-template-columns: 1fr;
+  }
+
+  .transferIntro,
+  .transferCardTop {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .transferPair {
     grid-template-columns: 1fr;
   }
 }

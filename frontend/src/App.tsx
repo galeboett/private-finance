@@ -59,6 +59,17 @@ type TransactionRow = {
   user_note: string | null;
 };
 
+type TransferTransaction = Pick<TransactionRow, "id" | "account_id" | "raw_description" | "amount_cents" | "transaction_type" | "review_status" | "transaction_date">;
+
+type TransferCandidate = {
+  id: number;
+  from_transaction: TransferTransaction;
+  to_transaction: TransferTransaction;
+  match_confidence: number;
+  confirmed: boolean;
+  suggested_type: string;
+};
+
 type ImportPreview = {
   preset_type: string;
   rows: Array<Record<string, string | number | null>>;
@@ -196,6 +207,7 @@ export function App() {
   const [netWorthAccounts, setNetWorthAccounts] = useState<NetWorthAccount[]>([]);
   const [allocationRows, setAllocationRows] = useState<AllocationRow[]>([]);
   const [holdingRows, setHoldingRows] = useState<HoldingRow[]>([]);
+  const [transferCandidates, setTransferCandidates] = useState<TransferCandidate[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | "">("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
@@ -236,7 +248,7 @@ export function App() {
   }
 
   async function loadData() {
-    const [dashboardData, accountsData, reviewData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData] = await Promise.all([
+    const [dashboardData, accountsData, reviewData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData, transferData] = await Promise.all([
       api<DashboardSummary>("/api/dashboard/summary"),
       api<AccountSummary[]>("/api/accounts"),
       api<ReviewItem[]>("/api/review"),
@@ -247,6 +259,7 @@ export function App() {
       api<NetWorthAccount[]>("/api/net-worth/accounts"),
       api<AllocationRow[]>("/api/investments/allocation"),
       api<HoldingRow[]>("/api/investments/holdings"),
+      api<TransferCandidate[]>("/api/transfers/unconfirmed"),
     ]);
     setDashboard(dashboardData);
     setAccounts(accountsData);
@@ -258,6 +271,7 @@ export function App() {
     setNetWorthAccounts(netWorthData);
     setAllocationRows(allocationData);
     setHoldingRows(holdingsData);
+    setTransferCandidates(transferData);
   }
 
   function showToast(nextToast: ToastState) {
@@ -450,6 +464,51 @@ export function App() {
       setReview((current) => (patch.review_status === "confirmed" ? current.filter((item) => item.id !== transactionId) : current));
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Transaction could not be updated." });
+    }
+  }
+
+  async function detectTransfers() {
+    setToast(null);
+    try {
+      const result = await api<{ created: number }>("/api/transfers/detect", {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+      });
+      await loadData();
+      showToast({
+        tone: "success",
+        message: result.created > 0 ? `Found ${result.created} possible transfer/payment matches.` : "No new transfer/payment matches found.",
+      });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Transfer scan failed." });
+    }
+  }
+
+  async function confirmTransferCandidate(candidateId: number) {
+    setToast(null);
+    try {
+      await api(`/api/transfers/${candidateId}/confirm`, {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+      });
+      await loadData();
+      showToast({ tone: "success", message: "Transfer/payment confirmed and excluded from spending totals." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Transfer candidate could not be confirmed." });
+    }
+  }
+
+  async function rejectTransferCandidate(candidateId: number) {
+    setToast(null);
+    try {
+      await api(`/api/transfers/${candidateId}/reject`, {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+      });
+      await loadData();
+      showToast({ tone: "success", message: "Transfer/payment suggestion rejected." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Transfer candidate could not be rejected." });
     }
   }
 
@@ -863,6 +922,61 @@ export function App() {
               ) : (
                 <p className="emptyText">Select an account and CSV to see the normalized rows before they touch the ledger.</p>
               )}
+            </div>
+          </section>
+
+          <section className="toolPanel">
+            <PanelTitle icon={WalletCards} title="Transfer Review" subtitle="Find bank transfers and credit card payments so reports do not count them as spending." />
+            <div className="transferIntro">
+              <div>
+                <strong>{transferCandidates.length} open matches</strong>
+                <span>Matches use equal-and-opposite amounts across accounts within five days.</span>
+              </div>
+              <button className="primaryButton" onClick={() => void detectTransfers()}>
+                <RefreshCw size={16} />
+                Find transfers/payments
+              </button>
+            </div>
+            <div className="transferList">
+              {transferCandidates.map((candidate) => {
+                const fromAccount = accounts.find((account) => account.id === candidate.from_transaction.account_id);
+                const toAccount = accounts.find((account) => account.id === candidate.to_transaction.account_id);
+                return (
+                  <article className="transferCard" key={candidate.id}>
+                    <div className="transferCardTop">
+                      <div>
+                        <strong>{readableAccountType(candidate.suggested_type)}</strong>
+                        <span>{candidate.match_confidence}% confidence</span>
+                      </div>
+                      <span className="statusBadge suggested">Suggested</span>
+                    </div>
+                    <div className="transferPair">
+                      <div>
+                        <small>Money out</small>
+                        <strong>{fromAccount?.display_name ?? `Account ${candidate.from_transaction.account_id}`}</strong>
+                        <span>{candidate.from_transaction.transaction_date} / {candidate.from_transaction.raw_description}</span>
+                        <b>{formatMoney(candidate.from_transaction.amount_cents)}</b>
+                      </div>
+                      <div>
+                        <small>Money in</small>
+                        <strong>{toAccount?.display_name ?? `Account ${candidate.to_transaction.account_id}`}</strong>
+                        <span>{candidate.to_transaction.transaction_date} / {candidate.to_transaction.raw_description}</span>
+                        <b>{formatMoney(candidate.to_transaction.amount_cents)}</b>
+                      </div>
+                    </div>
+                    <div className="reviewActions">
+                      <button className="dangerTextButton" onClick={() => void rejectTransferCandidate(candidate.id)}>
+                        Reject
+                      </button>
+                      <button className="primaryButton" onClick={() => void confirmTransferCandidate(candidate.id)}>
+                        <CheckCircle2 size={16} />
+                        Confirm match
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+              {transferCandidates.length === 0 ? <p className="emptyText">No transfer suggestions yet. Import the matching bank/card files, then run the finder.</p> : null}
             </div>
           </section>
 

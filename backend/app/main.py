@@ -24,6 +24,7 @@ from .security import clear_login_failures, create_session, enforce_login_rate_l
 from .services.backups import create_backup, restore_backup
 from .services.importers import commit_import, detect_preset_from_content, preview_import
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
+from .services.transfers import confirm_transfer_link, create_transfer_suggestions, list_unconfirmed_transfers, reject_transfer_link
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(LocalhostSecurityMiddleware)
@@ -489,6 +490,40 @@ def create_transfer_link(payload: TransferLinkCreate, request: Request, session:
     record_audit_event(db, "transfer_link_create", "local-user", "transfer_link", str(link.id), payload.model_dump())
     db.commit()
     return {"id": link.id}
+
+
+@app.get("/api/transfers/unconfirmed")
+def get_unconfirmed_transfers(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return list_unconfirmed_transfers(db)
+
+
+@app.post("/api/transfers/detect")
+def detect_transfers(request: Request, window_days: int = 5, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    if window_days < 1 or window_days > 30:
+        raise HTTPException(status_code=400, detail="Transfer matching window must be between 1 and 30 days")
+    return create_transfer_suggestions(db, window_days=window_days)
+
+
+@app.post("/api/transfers/{link_id}/confirm")
+def confirm_transfer(link_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    link = db.get(TransferLink, link_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Transfer candidate not found")
+    try:
+        return confirm_transfer_link(db, link)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/transfers/{link_id}/reject")
+def reject_transfer(link_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    link = db.get(TransferLink, link_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Transfer candidate not found")
+    return reject_transfer_link(db, link)
 
 
 @app.get("/api/dashboard/summary")
