@@ -1,3 +1,23 @@
+import {
+  AlertCircle,
+  ArrowDownToLine,
+  BadgeDollarSign,
+  BarChart3,
+  CheckCircle2,
+  FileUp,
+  Landmark,
+  LayoutDashboard,
+  ListChecks,
+  PiggyBank,
+  Plus,
+  ReceiptText,
+  RefreshCw,
+  Search,
+  Settings,
+  ShieldCheck,
+  TrendingUp,
+  WalletCards,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
 type BootstrapCategory = { id: number; key: string; label: string };
@@ -24,6 +44,7 @@ type ReviewItem = {
 
 type TransactionRow = {
   id: number;
+  account_id: number;
   raw_description: string;
   amount_cents: number;
   transaction_type: string;
@@ -37,8 +58,27 @@ type ImportPreview = {
   warnings: string[];
 };
 
+type ToastState = {
+  tone: "success" | "error" | "info";
+  message: string;
+};
+
+const navItems = [
+  { label: "Dashboard", icon: LayoutDashboard },
+  { label: "Accounts", icon: WalletCards },
+  { label: "Transactions", icon: ReceiptText },
+  { label: "Cash Flow", icon: BarChart3 },
+  { label: "Reports", icon: TrendingUp },
+  { label: "Review", icon: ListChecks },
+  { label: "Settings", icon: Settings },
+];
+
+const reportTabs = ["Reports", "Cash Flow", "Spending", "Income", "Net Worth"];
+
 const formatMoney = (cents: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
+
+const readableAccountType = (value: string) => value.replace("_", " ");
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -66,7 +106,7 @@ async function readableApiError(response: Response): Promise<string> {
       return detail;
     }
   } catch {
-    // Fall through to a generic message so sensitive payloads do not land in logs.
+    return "The request could not be completed.";
   }
   return "The request could not be completed.";
 }
@@ -76,6 +116,7 @@ export function App() {
   const [csrf, setCsrf] = useState("");
   const [password, setPassword] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [toast, setToast] = useState<ToastState | null>(null);
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
   const [categories, setCategories] = useState<BootstrapCategory[]>([]);
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
@@ -84,6 +125,7 @@ export function App() {
   const [selectedAccountId, setSelectedAccountId] = useState<number | "">("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [activeTab, setActiveTab] = useState("Cash Flow");
   const [accountForm, setAccountForm] = useState({
     institution_name: "",
     display_name: "",
@@ -105,7 +147,7 @@ export function App() {
         setCsrf(me.csrf_token);
         await loadData();
       } catch {
-        // unauthenticated state
+        setCsrf("");
       }
     }
   }
@@ -123,6 +165,10 @@ export function App() {
     setTransactions(transactionData);
   }
 
+  function showToast(nextToast: ToastState) {
+    setToast(nextToast);
+  }
+
   async function handleSetup() {
     setErrorMessage("");
     if (password.length < 12) {
@@ -133,6 +179,7 @@ export function App() {
       await api("/api/setup", { method: "POST", body: JSON.stringify({ password }) });
       setConfigured(true);
       setPassword("");
+      showToast({ tone: "success", message: "Workspace initialized. Sign in with your new password." });
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Setup failed.");
     }
@@ -151,208 +198,390 @@ export function App() {
   }
 
   async function createAccount() {
-    await api("/api/accounts", {
-      method: "POST",
-      headers: { "x-csrf-token": csrf },
-      body: JSON.stringify(accountForm),
-    });
-    setAccountForm({ institution_name: "", display_name: "", account_type: "checking", last_four: "" });
-    await loadData();
+    setToast(null);
+    if (!accountForm.display_name.trim()) {
+      showToast({ tone: "error", message: "Add an account name before saving." });
+      return;
+    }
+    try {
+      const result = await api<{ id: number }>("/api/accounts", {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify(accountForm),
+      });
+      setAccountForm({ institution_name: "", display_name: "", account_type: "checking", last_four: "" });
+      setSelectedAccountId(result.id);
+      await loadData();
+      showToast({ tone: "success", message: "Account added. It is selected for your next import." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Account could not be added." });
+    }
   }
 
   async function previewSelectedImport() {
-    if (!selectedAccountId || !selectedFile) return;
+    setToast(null);
+    setImportPreview(null);
+    if (!selectedAccountId) {
+      showToast({ tone: "error", message: "Choose or add the account this CSV belongs to first." });
+      return;
+    }
+    if (!selectedFile) {
+      showToast({ tone: "error", message: "Choose a CSV file before previewing." });
+      return;
+    }
     const form = new FormData();
     form.append("file", selectedFile);
-    const response = await fetch(`/api/imports/preview?account_id=${selectedAccountId}`, {
-      method: "POST",
-      credentials: "include",
-      body: form,
-    });
-    if (!response.ok) {
-      throw new Error(await response.text());
+    try {
+      const response = await fetch(`/api/imports/preview?account_id=${selectedAccountId}`, {
+        method: "POST",
+        credentials: "include",
+        body: form,
+      });
+      if (!response.ok) {
+        throw new Error(await readableApiError(response));
+      }
+      const preview = (await response.json()) as ImportPreview;
+      setImportPreview(preview);
+      showToast({ tone: "success", message: `Preview ready: ${preview.rows.length} sample rows detected.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Preview failed." });
     }
-    setImportPreview(await response.json());
   }
 
   async function commitSelectedImport() {
-    if (!selectedAccountId || !selectedFile) return;
+    setToast(null);
+    if (!selectedAccountId || !selectedFile || !importPreview) {
+      showToast({ tone: "error", message: "Preview the file before committing it." });
+      return;
+    }
     const form = new FormData();
     form.append("file", selectedFile);
-    const response = await fetch(`/api/imports/commit?account_id=${selectedAccountId}`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "x-csrf-token": csrf },
-      body: form,
-    });
-    if (!response.ok) {
-      throw new Error(await response.text());
+    try {
+      const response = await fetch(`/api/imports/commit?account_id=${selectedAccountId}`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "x-csrf-token": csrf },
+        body: form,
+      });
+      if (!response.ok) {
+        throw new Error(await readableApiError(response));
+      }
+      const result = (await response.json()) as { inserted: number; skipped: number };
+      setImportPreview(null);
+      setSelectedFile(null);
+      await loadData();
+      showToast({ tone: "success", message: `Imported ${result.inserted} rows. Skipped ${result.skipped} duplicates.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Import failed." });
     }
-    await response.json();
-    setImportPreview(null);
-    setSelectedFile(null);
-    await loadData();
   }
 
   if (!configured) {
     return (
-      <div className="shell">
-        <div className="heroCard">
+      <div className="authShell">
+        <section className="authPanel">
+          <ShieldCheck size={28} />
           <h1>private-finance</h1>
-          <p>Set a local password to initialize the encrypted-first finance workspace.</p>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Create password, 12+ characters" />
+          <p>Create the local password for this workspace.</p>
+          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Create password, 12+ characters" />
           {errorMessage ? <p className="formError">{errorMessage}</p> : null}
-          <button onClick={() => void handleSetup()}>Initialize</button>
-        </div>
+          <button className="primaryButton" onClick={() => void handleSetup()}>
+            <CheckCircle2 size={16} />
+            Initialize
+          </button>
+        </section>
       </div>
     );
   }
 
   if (!csrf) {
     return (
-      <div className="shell">
-        <div className="heroCard">
+      <div className="authShell">
+        <section className="authPanel">
+          <ShieldCheck size={28} />
           <h1>Welcome back</h1>
           <p>Sign in locally to review imports, cash flow, and net worth.</p>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" />
+          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password" />
           {errorMessage ? <p className="formError">{errorMessage}</p> : null}
-          <button onClick={() => void handleLogin()}>Sign in</button>
-        </div>
+          <button className="primaryButton" onClick={() => void handleLogin()}>
+            <ShieldCheck size={16} />
+            Sign in
+          </button>
+        </section>
       </div>
     );
   }
 
+  const totalIncomeCents = transactions.filter((transaction) => transaction.transaction_type === "income").reduce((sum, transaction) => sum + transaction.amount_cents, 0);
+  const totalExpenseCents = Math.abs(
+    transactions.filter((transaction) => transaction.transaction_type === "expense").reduce((sum, transaction) => sum + transaction.amount_cents, 0),
+  );
+  const netIncomeCents = totalIncomeCents - totalExpenseCents;
+  const savingsRate = totalIncomeCents > 0 ? Math.max(0, Math.round((netIncomeCents / totalIncomeCents) * 1000) / 10) : 0;
+  const selectedAccount = accounts.find((account) => account.id === selectedAccountId);
+  const previewRows = importPreview?.rows.slice(0, 6) ?? [];
+
   return (
-    <div className="shell">
-      <header className="header">
-        <div>
-          <h1>private-finance</h1>
-          <p>Local-first spending, review, and net-worth workspace.</p>
+    <div className="appFrame">
+      <aside className="sidebar">
+        <div className="brandMark">
+          <BadgeDollarSign size={22} />
         </div>
-      </header>
+        <nav>
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button className={item.label === "Reports" ? "navItem active" : "navItem"} key={item.label} title={item.label}>
+                <Icon size={16} />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </aside>
 
-      <section className="grid">
-        <div className="card">
-          <h2>Dashboard</h2>
-          {dashboard ? (
-            <>
-              <div className="metric">
-                <span>Month-to-date spend</span>
-                <strong>{formatMoney(dashboard.month_to_date_expense_cents)}</strong>
-              </div>
-              <div className="metric">
-                <span>Cash flow</span>
-                <strong>{formatMoney(dashboard.cash_flow_cents)}</strong>
-              </div>
-              <div className="metric">
-                <span>Net worth snapshot</span>
-                <strong>{formatMoney(dashboard.net_worth_snapshot_cents)}</strong>
-              </div>
-            </>
-          ) : (
-            <p>Loading summary...</p>
-          )}
-        </div>
-
-        <div className="card">
-          <h2>Review Inbox</h2>
-          <ul className="list">
-            {review.map((item) => (
-              <li key={item.id}>
-                <span>{item.description}</span>
-                <strong>{formatMoney(item.amount_cents)}</strong>
-              </li>
-            ))}
-            {review.length === 0 ? <li>No items waiting for review.</li> : null}
-          </ul>
-        </div>
-      </section>
-
-      <section className="grid">
-        <div className="card">
-          <h2>Accounts</h2>
-          <div className="formStack">
-            <input value={accountForm.display_name} onChange={(e) => setAccountForm({ ...accountForm, display_name: e.target.value })} placeholder="Account name" />
-            <input value={accountForm.institution_name} onChange={(e) => setAccountForm({ ...accountForm, institution_name: e.target.value })} placeholder="Institution" />
-            <select value={accountForm.account_type} onChange={(e) => setAccountForm({ ...accountForm, account_type: e.target.value })}>
-              <option value="checking">Checking</option>
-              <option value="savings">Savings</option>
-              <option value="credit_card">Credit card</option>
-              <option value="brokerage">Brokerage</option>
-            </select>
-            <input value={accountForm.last_four} onChange={(e) => setAccountForm({ ...accountForm, last_four: e.target.value })} placeholder="Last four" />
-            <button onClick={() => void createAccount()}>Add account</button>
-          </div>
-          <ul className="list">
-            {accounts.map((account) => (
-              <li key={account.id}>
-                <span>{account.display_name}</span>
-                <small>{account.account_type}</small>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="card">
-          <h2>Fixed Categories</h2>
-          <div className="chips">
-            {categories.map((category) => (
-              <span className="chip" key={category.id}>
-                {category.label}
-              </span>
+      <main className="workspace">
+        <header className="topBar">
+          <div className="reportTabs" role="tablist" aria-label="Report views">
+            {reportTabs.map((tab) => (
+              <button className={tab === activeTab ? "reportTab active" : "reportTab"} key={tab} onClick={() => setActiveTab(tab)}>
+                {tab}
+              </button>
             ))}
           </div>
-        </div>
-      </section>
+          <div className="toolbar">
+            <button className="ghostButton" title="Search">
+              <Search size={16} />
+            </button>
+            <button className="filterButton">This month</button>
+            <button className="filterButton">Filters</button>
+          </div>
+        </header>
 
-      <section className="grid">
-        <div className="card">
-          <h2>Imports</h2>
-          <div className="formStack">
-            <select value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value ? Number(e.target.value) : "")}>
-              <option value="">Choose account</option>
-              {accounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {account.display_name}
-                </option>
-              ))}
-            </select>
-            <input type="file" accept=".csv" onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} />
-            <div className="buttonRow">
-              <button onClick={() => void previewSelectedImport()}>Preview</button>
-              <button onClick={() => void commitSelectedImport()} disabled={!importPreview}>
-                Commit
+        {toast ? (
+          <div className={`toast ${toast.tone}`}>
+            {toast.tone === "success" ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+            <span>{toast.message}</span>
+          </div>
+        ) : null}
+
+        <section className="metricsGrid" aria-label="Financial summary">
+          <MetricTile label="Total income" value={formatMoney(totalIncomeCents)} tone="green" />
+          <MetricTile label="Total expenses" value={formatMoney(totalExpenseCents)} tone="red" />
+          <MetricTile label="Total net income" value={formatMoney(netIncomeCents)} tone="neutral" />
+          <MetricTile label="Savings rate" value={`${savingsRate}%`} tone="neutral" />
+        </section>
+
+        <section className="contentGrid">
+          <section className="reportSurface">
+            <div className="sectionHeader">
+              <div>
+                <span className="eyebrow">Cash Flow</span>
+                <h2>Monthly import workspace</h2>
+              </div>
+              <div className="inlineActions">
+                <button className="ghostButton" title="Refresh data" onClick={() => void loadData()}>
+                  <RefreshCw size={16} />
+                </button>
+              </div>
+            </div>
+            <CashFlowGraphic income={totalIncomeCents} expenses={totalExpenseCents} net={netIncomeCents} />
+          </section>
+
+          <aside className="rightRail">
+            <section className="phonePanel">
+              <div className="phoneTop">
+                <span>Accounts</span>
+                <strong>{formatMoney((dashboard?.net_worth_snapshot_cents ?? 0) + Math.max(netIncomeCents, 0))}</strong>
+              </div>
+              <div className="sparkline" />
+              <div className="accountStack">
+                {accounts.slice(0, 3).map((account) => (
+                  <div className="miniAccount" key={account.id}>
+                    <Landmark size={16} />
+                    <span>{account.display_name}</span>
+                    <small>{readableAccountType(account.account_type)}</small>
+                  </div>
+                ))}
+                {accounts.length === 0 ? <p className="emptyText">Add accounts to build your net-worth picture.</p> : null}
+              </div>
+            </section>
+          </aside>
+        </section>
+
+        <section className="workGrid">
+          <section className="toolPanel">
+            <PanelTitle icon={WalletCards} title="Accounts" subtitle="Create the containers your imports belong to." />
+            <div className="compactForm">
+              <input value={accountForm.display_name} onChange={(event) => setAccountForm({ ...accountForm, display_name: event.target.value })} placeholder="Account name" />
+              <input value={accountForm.institution_name} onChange={(event) => setAccountForm({ ...accountForm, institution_name: event.target.value })} placeholder="Institution" />
+              <select value={accountForm.account_type} onChange={(event) => setAccountForm({ ...accountForm, account_type: event.target.value })}>
+                <option value="checking">Checking</option>
+                <option value="savings">Savings</option>
+                <option value="credit_card">Credit card</option>
+                <option value="brokerage">Brokerage</option>
+              </select>
+              <input value={accountForm.last_four} onChange={(event) => setAccountForm({ ...accountForm, last_four: event.target.value })} placeholder="Last four" />
+              <button className="primaryButton" onClick={() => void createAccount()}>
+                <Plus size={16} />
+                Add account
               </button>
             </div>
-          </div>
-          {importPreview ? (
-            <div>
-              <p>
-                Detected preset: <strong>{importPreview.preset_type}</strong>
-              </p>
-              <pre className="preview">{JSON.stringify(importPreview.rows.slice(0, 5), null, 2)}</pre>
+            <div className="denseList">
+              {accounts.map((account) => (
+                <button className={selectedAccountId === account.id ? "accountRow selected" : "accountRow"} key={account.id} onClick={() => setSelectedAccountId(account.id)}>
+                  <Landmark size={16} />
+                  <span>{account.display_name}</span>
+                  <small>{readableAccountType(account.account_type)}</small>
+                </button>
+              ))}
             </div>
-          ) : (
-            <p>Upload a CSV to preview normalization before commit.</p>
-          )}
-        </div>
+          </section>
 
-        <div className="card">
-          <h2>Transactions</h2>
-          <ul className="list">
-            {transactions.slice(0, 8).map((item) => (
-              <li key={item.id}>
-                <span>
-                  {item.raw_description}
-                  <small className="subtle">{item.transaction_date}</small>
+          <section className="toolPanel">
+            <PanelTitle icon={FileUp} title="Imports" subtitle="Preview first, then commit clean rows into the ledger." />
+            <div className="compactForm">
+              <select value={selectedAccountId} onChange={(event) => setSelectedAccountId(event.target.value ? Number(event.target.value) : "")}>
+                <option value="">Choose account</option>
+                {accounts.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.display_name}
+                  </option>
+                ))}
+              </select>
+              <input type="file" accept=".csv" onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)} />
+              <div className="buttonRow">
+                <button className="secondaryButton" onClick={() => void previewSelectedImport()}>
+                  <Search size={16} />
+                  Preview
+                </button>
+                <button className="primaryButton" onClick={() => void commitSelectedImport()} disabled={!importPreview}>
+                  <ArrowDownToLine size={16} />
+                  Commit
+                </button>
+              </div>
+            </div>
+            <div className="previewPanel">
+              {importPreview ? (
+                <>
+                  <div className="previewMeta">
+                    <strong>{importPreview.preset_type}</strong>
+                    <span>{selectedAccount?.display_name}</span>
+                  </div>
+                  <div className="previewRows">
+                    {previewRows.map((row, index) => (
+                      <div className="previewRow" key={`${row.row_index ?? index}`}>
+                        <span>{String(row.raw_description ?? row.description ?? row.symbol ?? "Row")}</span>
+                        <strong>{String(row.amount ?? row.market_value ?? "")}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p className="emptyText">Select an account and CSV to see the normalized rows before they touch the ledger.</p>
+              )}
+            </div>
+          </section>
+
+          <section className="toolPanel">
+            <PanelTitle icon={ListChecks} title="Review Inbox" subtitle={`${review.length} items need a human decision.`} />
+            <div className="denseList">
+              {review.slice(0, 6).map((item) => (
+                <div className="reviewRow" key={item.id}>
+                  <span>{item.description}</span>
+                  <strong>{formatMoney(item.amount_cents)}</strong>
+                  <small>{item.review_status}</small>
+                </div>
+              ))}
+              {review.length === 0 ? <p className="emptyText">No items waiting for review.</p> : null}
+            </div>
+          </section>
+
+          <section className="toolPanel">
+            <PanelTitle icon={PiggyBank} title="Categories" subtitle="Fixed spending buckets for expense reporting." />
+            <div className="categoryGrid">
+              {categories.map((category) => (
+                <span className="categoryPill" key={category.id}>
+                  {category.label}
                 </span>
-                <strong>{formatMoney(item.amount_cents)}</strong>
-              </li>
-            ))}
-            {transactions.length === 0 ? <li>No transactions yet.</li> : null}
-          </ul>
+              ))}
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function MetricTile({ label, value, tone }: { label: string; value: string; tone: "green" | "red" | "neutral" }) {
+  return (
+    <div className={`metricTile ${tone}`}>
+      <strong>{value}</strong>
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function PanelTitle({ icon: Icon, title, subtitle }: { icon: typeof WalletCards; title: string; subtitle: string }) {
+  return (
+    <div className="panelTitle">
+      <Icon size={18} />
+      <div>
+        <h3>{title}</h3>
+        <p>{subtitle}</p>
+      </div>
+    </div>
+  );
+}
+
+function CashFlowGraphic({ income, expenses, net }: { income: number; expenses: number; net: number }) {
+  const max = Math.max(income, expenses, Math.abs(net), 1);
+  const incomeWidth = Math.max(18, Math.round((income / max) * 100));
+  const expenseWidth = Math.max(18, Math.round((expenses / max) * 100));
+  const netWidth = Math.max(18, Math.round((Math.abs(net) / max) * 100));
+
+  return (
+    <div className="flowCanvas" aria-label="Cash flow summary">
+      <div className="flowColumn">
+        <span>Paychecks</span>
+        <strong>{formatMoney(income)}</strong>
+        <div className="flowBar income" style={{ height: `${incomeWidth}%` }} />
+      </div>
+      <div className="flowStream">
+        <div className="streamBand blue" />
+        <div className="streamBand green" />
+        <div className="streamBand coral" />
+      </div>
+      <div className="flowColumn">
+        <span>Income</span>
+        <strong>{formatMoney(income)}</strong>
+        <div className="flowBar net" style={{ height: `${incomeWidth}%` }} />
+      </div>
+      <div className="flowStream split">
+        <div className="streamBand yellow" />
+        <div className="streamBand rose" />
+        <div className="streamBand slate" />
+      </div>
+      <div className="flowOutcomes">
+        <div className="outcomeRow">
+          <div>
+            <strong>Savings</strong>
+            <span>{formatMoney(Math.max(net, 0))}</span>
+          </div>
+          <div className="outcomeTrack">
+            <div style={{ width: `${netWidth}%` }} />
+          </div>
         </div>
-      </section>
+        <div className="outcomeRow">
+          <div>
+            <strong>Expenses</strong>
+            <span>{formatMoney(expenses)}</span>
+          </div>
+          <div className="outcomeTrack expense">
+            <div style={{ width: `${expenseWidth}%` }} />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

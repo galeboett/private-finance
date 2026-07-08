@@ -31,6 +31,10 @@ This initial implementation includes:
 - review inbox and dashboard summaries
 - backup and CSV export foundation
 
+## Workflow
+
+See [docs/workflow.md](docs/workflow.md) for the intended user workflow and the split between automated import work and human review.
+
 ## Running Locally
 
 ### One-command start
