@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, Up
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.cors import CORSMiddleware
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,13 @@ from .services.reporting import cash_flow_summary, category_totals, dashboard_su
 from .services.transfers import confirm_transfer_link, create_transfer_suggestions, list_unconfirmed_transfers, reject_transfer_link
 
 app = FastAPI(title=settings.app_name)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["content-type", settings.csrf_header_name],
+)
 app.add_middleware(LocalhostSecurityMiddleware)
 
 

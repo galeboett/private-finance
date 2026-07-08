@@ -160,7 +160,7 @@ const reviewStatusLabel = (value: string) =>
 const reviewStatusClass = (value: string) => `statusBadge ${value.replace(/_/g, "-")}`;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     credentials: "include",
     ...init,
     headers: {
@@ -169,15 +169,22 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) {
-    throw new Error(await readableApiError(response));
+    throw new Error(await readableApiError(response, path));
   }
-  return parseApiJson<T>(response);
+  return parseApiJson<T>(response, path);
 }
 
-async function readableApiError(response: Response): Promise<string> {
+function apiUrl(path: string): string {
+  if (window.location.port === "5173" && path.startsWith("/api/")) {
+    return `http://${window.location.hostname}:8000${path}`;
+  }
+  return path;
+}
+
+async function readableApiError(response: Response, path: string): Promise<string> {
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
-    return `The API returned ${response.status} ${response.statusText || "with a non-JSON response"}. Make sure the backend is running at http://127.0.0.1:8000.`;
+    return `${path} returned ${response.status} ${response.statusText || "with a non-JSON response"}. Make sure the backend is running at http://127.0.0.1:8000.`;
   }
   try {
     const data = await response.json();
@@ -194,10 +201,10 @@ async function readableApiError(response: Response): Promise<string> {
   return "The request could not be completed.";
 }
 
-async function parseApiJson<T>(response: Response): Promise<T> {
+async function parseApiJson<T>(response: Response, path: string): Promise<T> {
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
-    throw new Error("The app received the frontend HTML instead of API data. Open http://127.0.0.1:8000, or start the backend before using the Vite dev URL.");
+    throw new Error(`${path} returned frontend HTML instead of API data. The backend may need to be restarted at http://127.0.0.1:8000.`);
   }
   return response.json() as Promise<T>;
 }
@@ -351,7 +358,15 @@ export function App() {
         setSelectedAccountId(result.id);
       }
       clearAccountForm();
-      await loadData();
+      try {
+        await loadData();
+      } catch (refreshError) {
+        showToast({
+          tone: "info",
+          message: `Account saved, but the dashboard refresh failed: ${refreshError instanceof Error ? refreshError.message : "refresh unavailable"}`,
+        });
+        return;
+      }
       showToast({
         tone: "success",
         message: isEditing ? "Account updated." : "Account added. It is selected for your next import.",
@@ -418,7 +433,7 @@ export function App() {
     const form = new FormData();
     form.append("file", selectedFile);
     try {
-      const response = await fetch(`/api/imports/preview?account_id=${selectedAccountId}`, {
+      const response = await fetch(apiUrl(`/api/imports/preview?account_id=${selectedAccountId}`), {
         method: "POST",
         credentials: "include",
         body: form,
@@ -443,7 +458,7 @@ export function App() {
     const form = new FormData();
     form.append("file", selectedFile);
     try {
-      const response = await fetch(`/api/imports/commit?account_id=${selectedAccountId}`, {
+      const response = await fetch(apiUrl(`/api/imports/commit?account_id=${selectedAccountId}`), {
         method: "POST",
         credentials: "include",
         headers: { "x-csrf-token": csrf },
