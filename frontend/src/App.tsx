@@ -171,10 +171,14 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     throw new Error(await readableApiError(response));
   }
-  return response.json();
+  return parseApiJson<T>(response);
 }
 
 async function readableApiError(response: Response): Promise<string> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return `The API returned ${response.status} ${response.statusText || "with a non-JSON response"}. Make sure the backend is running at http://127.0.0.1:8000.`;
+  }
   try {
     const data = await response.json();
     const detail = data?.detail;
@@ -188,6 +192,14 @@ async function readableApiError(response: Response): Promise<string> {
     return "The request could not be completed.";
   }
   return "The request could not be completed.";
+}
+
+async function parseApiJson<T>(response: Response): Promise<T> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new Error("The app received the frontend HTML instead of API data. Open http://127.0.0.1:8000, or start the backend before using the Vite dev URL.");
+  }
+  return response.json() as Promise<T>;
 }
 
 export function App() {

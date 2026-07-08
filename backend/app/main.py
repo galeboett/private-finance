@@ -692,6 +692,11 @@ def restore_database(request: Request, source: str, session: SessionToken = Depe
     return {"ok": True}
 
 
+@app.api_route("/api/{full_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+def api_not_found(full_path: str):
+    raise HTTPException(status_code=404, detail=f"API endpoint not found: /api/{full_path}")
+
+
 @app.get("/{full_path:path}")
 def serve_frontend(full_path: str):
     index = frontend_dist / "index.html"
