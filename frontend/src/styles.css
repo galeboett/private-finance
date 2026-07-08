@@ -628,6 +628,26 @@ textarea {
   gap: 8px;
 }
 
+.ruleApplyPanel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #d5e8dc;
+  border-radius: 6px;
+  background: var(--green-soft);
+}
+
+.ruleApplyPanel div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.ruleApplyPanel span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .reviewActions {
   display: flex;
   justify-content: flex-end;

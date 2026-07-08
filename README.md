@@ -35,6 +35,8 @@ This initial implementation includes:
 
 See [docs/workflow.md](docs/workflow.md) for the intended user workflow and the split between automated import work and human review.
 
+For working with a co-worker, see [docs/collaboration.md](docs/collaboration.md).
+
 ## Running Locally
 
 ### One-command start

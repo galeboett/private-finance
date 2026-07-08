@@ -19,7 +19,7 @@ from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
 from .models import Account, AppUser, Category, CategoryRule, HoldingSnapshot, ImportPreset, Institution, SessionToken, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, CategoryCreate, CategoryUpdate, ImportPresetCreate, LoginRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
+from .schemas import AccountCreate, AccountUpdate, CategoryCreate, CategoryUpdate, ImportPresetCreate, LoginRequest, RuleApplyRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.backups import create_backup, restore_backup
 from .services.importers import commit_import, detect_preset_from_content, preview_import
@@ -387,6 +387,43 @@ def create_rule(payload: RuleCreate, request: Request, session: SessionToken = D
     return {"id": rule.id}
 
 
+@app.post("/api/rules/{rule_id}/apply")
+def apply_rule(rule_id: int, payload: RuleApplyRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    if payload.scope not in {"unreviewed", "all"}:
+        raise HTTPException(status_code=400, detail="Rule scope must be unreviewed or all")
+    rule = db.get(CategoryRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+
+    query = select(Transaction).where(Transaction.status == "active")
+    if payload.scope == "unreviewed":
+        query = query.where(Transaction.review_status.in_(["needs_review", "suggested", "possible_duplicate"]))
+
+    matched = 0
+    updated = 0
+    for transaction in db.scalars(query).all():
+        if not rule_matches_transaction(rule, transaction):
+            continue
+        matched += 1
+        changed = False
+        if transaction.category_id != rule.category_id:
+            transaction.category_id = rule.category_id
+            changed = True
+        if transaction.transaction_type != rule.suggested_transaction_type:
+            transaction.transaction_type = rule.suggested_transaction_type
+            changed = True
+        if transaction.review_status in {"needs_review", "possible_duplicate"}:
+            transaction.review_status = "suggested"
+            changed = True
+        if changed:
+            updated += 1
+
+    record_audit_event(db, "rule_apply", "local-user", "category_rule", str(rule.id), {"scope": payload.scope, "matched": matched, "updated": updated})
+    db.commit()
+    return {"matched": matched, "updated": updated}
+
+
 @app.get("/api/rules")
 def list_rules(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     rules = db.scalars(select(CategoryRule).order_by(CategoryRule.priority.asc(), CategoryRule.id.asc())).all()
@@ -402,6 +439,12 @@ def payload_from_rule(rule: CategoryRule) -> dict:
         "match_text": rule.match_text,
         "suggested_transaction_type": rule.suggested_transaction_type,
     }
+
+
+def rule_matches_transaction(rule: CategoryRule, transaction: Transaction) -> bool:
+    if rule.field_name != "raw_description":
+        return False
+    return rule.match_text.upper() in transaction.raw_description.upper()
 
 
 @app.post("/api/transfer-links")

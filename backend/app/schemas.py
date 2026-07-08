@@ -61,6 +61,10 @@ class RuleCreate(BaseModel):
     priority: int = 100
 
 
+class RuleApplyRequest(BaseModel):
+    scope: str = "unreviewed"
+
+
 class SplitCreate(BaseModel):
     category_id: int
     amount_cents: int

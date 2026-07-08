@@ -70,6 +70,11 @@ type ToastState = {
   message: string;
 };
 
+type SavedRuleAction = {
+  id: number;
+  matchText: string;
+};
+
 const navItems = [
   { label: "Dashboard", icon: LayoutDashboard },
   { label: "Accounts", icon: WalletCards },
@@ -147,6 +152,7 @@ export function App() {
   const [newCategoryLabel, setNewCategoryLabel] = useState("");
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
   const [editingCategoryLabel, setEditingCategoryLabel] = useState("");
+  const [lastSavedRule, setLastSavedRule] = useState<SavedRuleAction | null>(null);
   const [accountForm, setAccountForm] = useState({
     institution_name: "",
     display_name: "",
@@ -396,7 +402,7 @@ export function App() {
     }
     const matchText = suggestedRuleText(transaction.raw_description);
     try {
-      await api("/api/rules", {
+      const rule = await api<{ id: number }>("/api/rules", {
         method: "POST",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({
@@ -407,9 +413,28 @@ export function App() {
           priority: 100,
         }),
       });
-      showToast({ tone: "success", message: `Rule saved for "${matchText}". Future imports can suggest this category.` });
+      setLastSavedRule({ id: rule.id, matchText });
+      showToast({ tone: "success", message: `Rule saved for "${matchText}". Choose where else to apply it below.` });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be saved." });
+    }
+  }
+
+  async function applySavedRule(scope: "unreviewed" | "all") {
+    if (!lastSavedRule) {
+      return;
+    }
+    try {
+      const result = await api<{ matched: number; updated: number }>(`/api/rules/${lastSavedRule.id}/apply`, {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ scope }),
+      });
+      await loadData();
+      const scopeLabel = scope === "unreviewed" ? "unreviewed transactions" : "previous transactions";
+      showToast({ tone: "success", message: `Rule applied to ${result.updated} of ${result.matched} matching ${scopeLabel}.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be applied." });
     }
   }
 
@@ -635,13 +660,29 @@ export function App() {
 
           <section className="toolPanel">
             <PanelTitle icon={ListChecks} title="Review Inbox" subtitle={`${reviewTransactions.length} items need a human decision.`} />
+            {lastSavedRule ? (
+              <div className="ruleApplyPanel">
+                <div>
+                  <strong>Rule saved for "{lastSavedRule.matchText}"</strong>
+                  <span>Use it now, or leave it for future imports only.</span>
+                </div>
+                <div className="buttonRow">
+                  <button className="secondaryButton" onClick={() => void applySavedRule("unreviewed")}>
+                    Apply to unreviewed
+                  </button>
+                  <button className="secondaryButton" onClick={() => void applySavedRule("all")}>
+                    Apply to previous
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="reviewEditor">
               {reviewTransactions.slice(0, 5).map((transaction) => (
                 <article className="reviewCard" key={transaction.id}>
                   <div className="reviewCardTop">
                     <div>
                       <strong>{transaction.raw_description}</strong>
-                      <small>{transaction.transaction_date} · {transaction.review_status}</small>
+                      <small>{transaction.transaction_date} / {transaction.review_status}</small>
                     </div>
                     <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
                   </div>

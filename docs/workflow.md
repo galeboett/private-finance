@@ -65,6 +65,8 @@ Save rule turns one reviewed transaction into a future suggestion.
 - Future imports that contain the same text are prefilled with that category and type.
 - Matching transactions still stay in review until you confirm them.
 - Rules do not rewrite older transactions retroactively.
+- After saving a rule, you can optionally apply it to unreviewed transactions or all previous matching transactions.
+- Bulk rule application never auto-confirms transactions.
 - If multiple rules match, lower priority numbers run first. The default priority is 100.
 
 ## Why Account Creation Is Manual First
