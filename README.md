@@ -2,6 +2,16 @@
 
 Local-first personal finance system with a secure FastAPI backend, encrypted SQLite-ready storage, and a React frontend for import, review, reporting, and net-worth tracking.
 
+## What This Is
+
+This project is designed to replace a manual Excel workflow with:
+
+- deterministic CSV/XLSX imports
+- deduplication and cleanup
+- human-reviewed categorization
+- cash-flow and net-worth reporting
+- optional later private mobile access
+
 ## Repository Layout
 
 - `backend/` FastAPI application, data model, services, tests
@@ -48,4 +58,14 @@ npm run dev
 - mutating endpoints require CSRF
 - exports escape formula-like cells
 - audit events are append-only at the database layer
+
+## Product Direction
+
+The app is intended to grow toward:
+
+- unified bank and credit card transactions
+- fixed spending categories
+- investment snapshot tracking
+- net-worth summaries
+- secure self-hosted mobile access later
 
