@@ -29,6 +29,8 @@ def test_preview_brokerage_rows_keeps_account_identity():
     assert len(preview.rows) == 1
     assert preview.rows[0]["account_number"] == "Z12345678"
     assert preview.rows[0]["account_name"] == "Taxable Brokerage"
+    assert preview.rows[0]["quantity"] == "1"
+    assert preview.rows[0]["price"] == "250.00"
 
 
 def test_preview_brokerage_rows_allows_blank_description():

@@ -88,6 +88,18 @@ type CategoryTotal = { category: string; amount_cents: number };
 type MonthlyCashFlow = { month: string; income_cents: number; expense_cents: number; net_cents: number };
 type NetWorthAccount = { account_id: number; account: string; account_type: string; latest_date: string; market_value_cents: number };
 type AllocationRow = { asset_class: string; market_value_cents: number };
+type HoldingRow = {
+  id: number;
+  account_id: number;
+  account: string;
+  snapshot_date: string;
+  symbol: string | null;
+  description: string | null;
+  quantity: number | null;
+  price_cents: number | null;
+  market_value_cents: number;
+  asset_class: string | null;
+};
 
 const navItems = [
   { label: "Dashboard", icon: LayoutDashboard },
@@ -163,6 +175,7 @@ export function App() {
   const [cashFlowRows, setCashFlowRows] = useState<MonthlyCashFlow[]>([]);
   const [netWorthAccounts, setNetWorthAccounts] = useState<NetWorthAccount[]>([]);
   const [allocationRows, setAllocationRows] = useState<AllocationRow[]>([]);
+  const [holdingRows, setHoldingRows] = useState<HoldingRow[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | "">("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
@@ -199,7 +212,7 @@ export function App() {
   }
 
   async function loadData() {
-    const [dashboardData, accountsData, reviewData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData] = await Promise.all([
+    const [dashboardData, accountsData, reviewData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData] = await Promise.all([
       api<DashboardSummary>("/api/dashboard/summary"),
       api<AccountSummary[]>("/api/accounts"),
       api<ReviewItem[]>("/api/review"),
@@ -209,6 +222,7 @@ export function App() {
       api<MonthlyCashFlow[]>("/api/cash-flow"),
       api<NetWorthAccount[]>("/api/net-worth/accounts"),
       api<AllocationRow[]>("/api/investments/allocation"),
+      api<HoldingRow[]>("/api/investments/holdings"),
     ]);
     setDashboard(dashboardData);
     setAccounts(accountsData);
@@ -219,6 +233,7 @@ export function App() {
     setCashFlowRows(cashFlowData);
     setNetWorthAccounts(netWorthData);
     setAllocationRows(allocationData);
+    setHoldingRows(holdingsData);
   }
 
   function showToast(nextToast: ToastState) {
@@ -596,6 +611,7 @@ export function App() {
               cashFlowRows={cashFlowRows}
               netWorthAccounts={netWorthAccounts}
               allocationRows={allocationRows}
+              holdingRows={holdingRows}
             />
           </section>
 
@@ -898,6 +914,7 @@ function ReportSurface({
   cashFlowRows,
   netWorthAccounts,
   allocationRows,
+  holdingRows,
 }: {
   activeTab: string;
   income: number;
@@ -907,6 +924,7 @@ function ReportSurface({
   cashFlowRows: MonthlyCashFlow[];
   netWorthAccounts: NetWorthAccount[];
   allocationRows: AllocationRow[];
+  holdingRows: HoldingRow[];
 }) {
   if (activeTab === "Spending") {
     return <SpendingReport rows={categoryTotals} />;
@@ -915,7 +933,7 @@ function ReportSurface({
     return <IncomeReport income={income} expenses={expenses} net={net} />;
   }
   if (activeTab === "Net Worth") {
-    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} />;
+    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} />;
   }
   if (activeTab === "Cash Flow") {
     return <MonthlyCashFlowReport rows={cashFlowRows} income={income} expenses={expenses} net={net} />;
@@ -993,7 +1011,7 @@ function IncomeReport({ income, expenses, net }: { income: number; expenses: num
   );
 }
 
-function NetWorthReport({ accounts, allocationRows }: { accounts: NetWorthAccount[]; allocationRows: AllocationRow[] }) {
+function NetWorthReport({ accounts, allocationRows, holdingRows }: { accounts: NetWorthAccount[]; allocationRows: AllocationRow[]; holdingRows: HoldingRow[] }) {
   const total = accounts.reduce((sum, row) => sum + row.market_value_cents, 0);
   const max = Math.max(...accounts.map((row) => row.market_value_cents), 1);
   return (
@@ -1016,6 +1034,31 @@ function NetWorthReport({ accounts, allocationRows }: { accounts: NetWorthAccoun
           </div>
         ))}
         {accounts.length === 0 ? <p className="emptyText">No investment snapshots yet. Commit a brokerage positions CSV to populate net worth.</p> : null}
+      </div>
+      <div className="holdingsPanel">
+        <div>
+          <strong>Holdings inspection</strong>
+          <span>Latest imported rows used for investment net worth.</span>
+        </div>
+        <div className="holdingsTable">
+          <div className="holdingsHeader">
+            <span>Account</span>
+            <span>Symbol</span>
+            <span>Quantity</span>
+            <span>Price</span>
+            <span>Value</span>
+          </div>
+          {holdingRows.slice(0, 12).map((row) => (
+            <div className="holdingsRow" key={row.id}>
+              <span>{row.account}</span>
+              <strong>{row.symbol || row.description || "Holding"}</strong>
+              <span>{row.quantity ?? "-"}</span>
+              <span>{row.price_cents == null ? "-" : formatMoney(row.price_cents)}</span>
+              <span>{formatMoney(row.market_value_cents)}</span>
+            </div>
+          ))}
+          {holdingRows.length === 0 ? <p className="emptyText">No holdings rows to inspect yet.</p> : null}
+        </div>
       </div>
     </div>
   );

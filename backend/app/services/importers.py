@@ -96,6 +96,8 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
                     "account_number": row.get("Account Number"),
                     "symbol": row.get("Symbol"),
                     "description": description,
+                    "quantity": row.get("Quantity"),
+                    "price": row.get("Last Price"),
                     "market_value": row.get("Current Value"),
                     "asset_class": row.get("Type"),
                     "account_name": row.get("Account Name"),
@@ -191,6 +193,8 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
                         snapshot_date=_extract_snapshot_date(filename),
                         symbol=row.get("symbol"),
                         description=row.get("description"),
+                        quantity_basis_points=_parse_decimal_to_basis_points(row.get("quantity")),
+                        price_cents=parse_decimal_to_cents(row.get("price")),
                         market_value_cents=market_value_cents,
                         asset_class=row.get("asset_class"),
                     )
@@ -282,6 +286,13 @@ def _resolve_brokerage_account(db: Session, selected_account: Account, row: dict
 
 def _normalize_account_name(value: str) -> str:
     return "".join(char.lower() for char in value if char.isalnum())
+
+
+def _parse_decimal_to_basis_points(value: str | int | float | None) -> int | None:
+    cents = parse_decimal_to_cents(value)
+    if cents is None:
+        return None
+    return cents * 100
 
 
 def _is_possible_duplicate(db: Session, account_id: int, candidate: Transaction) -> bool:

@@ -496,6 +496,31 @@ def get_net_worth_accounts(session: SessionToken = Depends(current_session), db:
     return latest_net_worth_by_account(db)
 
 
+@app.get("/api/investments/holdings")
+def get_investment_holdings(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    accounts = {account.id: account for account in db.scalars(select(Account)).all()}
+    rows = db.scalars(select(HoldingSnapshot).order_by(HoldingSnapshot.snapshot_date.asc(), HoldingSnapshot.id.asc())).all()
+    latest_dates: dict[int, object] = {}
+    for row in rows:
+        latest_dates[row.account_id] = max(latest_dates.get(row.account_id, row.snapshot_date), row.snapshot_date)
+    latest_rows = [row for row in rows if latest_dates.get(row.account_id) == row.snapshot_date]
+    return [
+        {
+            "id": row.id,
+            "account_id": row.account_id,
+            "account": accounts[row.account_id].display_name if row.account_id in accounts else "Unknown account",
+            "snapshot_date": row.snapshot_date.isoformat(),
+            "symbol": row.symbol,
+            "description": row.description,
+            "quantity": row.quantity_basis_points / 10000 if row.quantity_basis_points is not None else None,
+            "price_cents": row.price_cents,
+            "market_value_cents": row.market_value_cents,
+            "asset_class": row.asset_class,
+        }
+        for row in latest_rows
+    ]
+
+
 @app.get("/api/investments/allocation")
 def get_investment_allocation(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     return latest_investment_allocation(db)
