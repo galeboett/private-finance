@@ -84,6 +84,11 @@ type RuleSummary = {
   suggested_transaction_type: string;
 };
 
+type CategoryTotal = { category: string; amount_cents: number };
+type MonthlyCashFlow = { month: string; income_cents: number; expense_cents: number; net_cents: number };
+type NetWorthAccount = { account_id: number; account: string; account_type: string; latest_date: string; market_value_cents: number };
+type AllocationRow = { asset_class: string; market_value_cents: number };
+
 const navItems = [
   { label: "Dashboard", icon: LayoutDashboard },
   { label: "Accounts", icon: WalletCards },
@@ -154,6 +159,10 @@ export function App() {
   const [review, setReview] = useState<ReviewItem[]>([]);
   const [transactions, setTransactions] = useState<TransactionRow[]>([]);
   const [rules, setRules] = useState<RuleSummary[]>([]);
+  const [categoryTotals, setCategoryTotals] = useState<CategoryTotal[]>([]);
+  const [cashFlowRows, setCashFlowRows] = useState<MonthlyCashFlow[]>([]);
+  const [netWorthAccounts, setNetWorthAccounts] = useState<NetWorthAccount[]>([]);
+  const [allocationRows, setAllocationRows] = useState<AllocationRow[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | "">("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
@@ -190,18 +199,26 @@ export function App() {
   }
 
   async function loadData() {
-    const [dashboardData, accountsData, reviewData, transactionData, rulesData] = await Promise.all([
+    const [dashboardData, accountsData, reviewData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData] = await Promise.all([
       api<DashboardSummary>("/api/dashboard/summary"),
       api<AccountSummary[]>("/api/accounts"),
       api<ReviewItem[]>("/api/review"),
       api<TransactionRow[]>("/api/transactions"),
       api<RuleSummary[]>("/api/rules"),
+      api<CategoryTotal[]>("/api/category-totals"),
+      api<MonthlyCashFlow[]>("/api/cash-flow"),
+      api<NetWorthAccount[]>("/api/net-worth/accounts"),
+      api<AllocationRow[]>("/api/investments/allocation"),
     ]);
     setDashboard(dashboardData);
     setAccounts(accountsData);
     setReview(reviewData);
     setTransactions(transactionData);
     setRules(rulesData);
+    setCategoryTotals(categoryData);
+    setCashFlowRows(cashFlowData);
+    setNetWorthAccounts(netWorthData);
+    setAllocationRows(allocationData);
   }
 
   function showToast(nextToast: ToastState) {
@@ -501,6 +518,10 @@ export function App() {
   const previewRows = importPreview?.rows.slice(0, 6) ?? [];
   const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status));
   const recentTransactions = transactions.slice(0, 8);
+  const reportIncomeCents = cashFlowRows.reduce((sum, row) => sum + row.income_cents, 0);
+  const reportExpenseCents = cashFlowRows.reduce((sum, row) => sum + row.expense_cents, 0);
+  const reportNetCents = cashFlowRows.reduce((sum, row) => sum + row.net_cents, 0);
+  const netWorthCents = netWorthAccounts.reduce((sum, row) => sum + row.market_value_cents, 0);
 
   return (
     <div className="appFrame">
@@ -557,8 +578,8 @@ export function App() {
           <section className="reportSurface">
             <div className="sectionHeader">
               <div>
-                <span className="eyebrow">Cash Flow</span>
-                <h2>Monthly import workspace</h2>
+                <span className="eyebrow">{activeTab}</span>
+                <h2>{reportTitle(activeTab)}</h2>
               </div>
               <div className="inlineActions">
                 <button className="ghostButton" title="Refresh data" onClick={() => void loadData()}>
@@ -566,14 +587,23 @@ export function App() {
                 </button>
               </div>
             </div>
-            <CashFlowGraphic income={totalIncomeCents} expenses={totalExpenseCents} net={netIncomeCents} />
+            <ReportSurface
+              activeTab={activeTab}
+              income={reportIncomeCents}
+              expenses={reportExpenseCents}
+              net={reportNetCents}
+              categoryTotals={categoryTotals}
+              cashFlowRows={cashFlowRows}
+              netWorthAccounts={netWorthAccounts}
+              allocationRows={allocationRows}
+            />
           </section>
 
           <aside className="rightRail">
             <section className="phonePanel">
               <div className="phoneTop">
                 <span>Accounts</span>
-                <strong>{formatMoney((dashboard?.net_worth_snapshot_cents ?? 0) + Math.max(netIncomeCents, 0))}</strong>
+                <strong>{formatMoney(netWorthCents || dashboard?.net_worth_snapshot_cents || 0)}</strong>
               </div>
               <div className="sparkline" />
               <div className="accountStack">
@@ -847,6 +877,167 @@ export function App() {
           </div>
         </section>
       </main>
+    </div>
+  );
+}
+
+function reportTitle(activeTab: string) {
+  if (activeTab === "Spending") return "Where your money is going";
+  if (activeTab === "Income") return "Income vs expenses";
+  if (activeTab === "Net Worth") return "Investment-backed net worth";
+  if (activeTab === "Cash Flow") return "Cash flow by month";
+  return "Financial report center";
+}
+
+function ReportSurface({
+  activeTab,
+  income,
+  expenses,
+  net,
+  categoryTotals,
+  cashFlowRows,
+  netWorthAccounts,
+  allocationRows,
+}: {
+  activeTab: string;
+  income: number;
+  expenses: number;
+  net: number;
+  categoryTotals: CategoryTotal[];
+  cashFlowRows: MonthlyCashFlow[];
+  netWorthAccounts: NetWorthAccount[];
+  allocationRows: AllocationRow[];
+}) {
+  if (activeTab === "Spending") {
+    return <SpendingReport rows={categoryTotals} />;
+  }
+  if (activeTab === "Income") {
+    return <IncomeReport income={income} expenses={expenses} net={net} />;
+  }
+  if (activeTab === "Net Worth") {
+    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} />;
+  }
+  if (activeTab === "Cash Flow") {
+    return <MonthlyCashFlowReport rows={cashFlowRows} income={income} expenses={expenses} net={net} />;
+  }
+  return (
+    <div className="reportStack">
+      <CashFlowGraphic income={income} expenses={expenses} net={net} />
+      <div className="reportMiniGrid">
+        <ReportStat label="Tracked income" value={formatMoney(income)} />
+        <ReportStat label="Tracked expenses" value={formatMoney(expenses)} />
+        <ReportStat label="Tracked net" value={formatMoney(net)} />
+      </div>
+    </div>
+  );
+}
+
+function SpendingReport({ rows }: { rows: CategoryTotal[] }) {
+  const max = Math.max(...rows.map((row) => row.amount_cents), 1);
+  return (
+    <div className="reportStack">
+      <div className="barList">
+        {rows.map((row) => (
+          <div className="barRow" key={row.category}>
+            <div>
+              <strong>{row.category}</strong>
+              <span>{formatMoney(row.amount_cents)}</span>
+            </div>
+            <div className="barTrack">
+              <div style={{ width: `${Math.max(4, Math.round((row.amount_cents / max) * 100))}%` }} />
+            </div>
+          </div>
+        ))}
+        {rows.length === 0 ? <p className="emptyText">No categorized expenses yet. Categorize and confirm transactions to populate this report.</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function MonthlyCashFlowReport({ rows, income, expenses, net }: { rows: MonthlyCashFlow[]; income: number; expenses: number; net: number }) {
+  return (
+    <div className="reportStack">
+      <CashFlowGraphic income={income} expenses={expenses} net={net} />
+      <div className="reportTable">
+        <div className="reportTableHeader">
+          <span>Month</span>
+          <span>Income</span>
+          <span>Expenses</span>
+          <span>Net</span>
+        </div>
+        {rows.slice(-6).map((row) => (
+          <div className="reportTableRow" key={row.month}>
+            <strong>{row.month}</strong>
+            <span>{formatMoney(row.income_cents)}</span>
+            <span>{formatMoney(row.expense_cents)}</span>
+            <span className={row.net_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(row.net_cents)}</span>
+          </div>
+        ))}
+        {rows.length === 0 ? <p className="emptyText">No income or expense transactions yet.</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function IncomeReport({ income, expenses, net }: { income: number; expenses: number; net: number }) {
+  const max = Math.max(income, expenses, Math.abs(net), 1);
+  return (
+    <div className="reportStack">
+      <div className="compareGrid">
+        <CompareCard label="Income" value={income} max={max} tone="green" />
+        <CompareCard label="Expenses" value={expenses} max={max} tone="red" />
+        <CompareCard label="Net" value={net} max={max} tone={net < 0 ? "red" : "green"} />
+      </div>
+      <p className="emptyText">Income uses transactions marked as income. Expenses use transactions marked as expense, with refunds reducing total expenses.</p>
+    </div>
+  );
+}
+
+function NetWorthReport({ accounts, allocationRows }: { accounts: NetWorthAccount[]; allocationRows: AllocationRow[] }) {
+  const total = accounts.reduce((sum, row) => sum + row.market_value_cents, 0);
+  const max = Math.max(...accounts.map((row) => row.market_value_cents), 1);
+  return (
+    <div className="reportStack">
+      <div className="reportMiniGrid">
+        <ReportStat label="Latest investment value" value={formatMoney(total)} />
+        <ReportStat label="Accounts with snapshots" value={String(accounts.length)} />
+        <ReportStat label="Allocation groups" value={String(allocationRows.length)} />
+      </div>
+      <div className="barList">
+        {accounts.map((row) => (
+          <div className="barRow" key={row.account_id}>
+            <div>
+              <strong>{row.account}</strong>
+              <span>{formatMoney(row.market_value_cents)} / {row.latest_date}</span>
+            </div>
+            <div className="barTrack blue">
+              <div style={{ width: `${Math.max(4, Math.round((row.market_value_cents / max) * 100))}%` }} />
+            </div>
+          </div>
+        ))}
+        {accounts.length === 0 ? <p className="emptyText">No investment snapshots yet. Commit a brokerage positions CSV to populate net worth.</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function CompareCard({ label, value, max, tone }: { label: string; value: number; max: number; tone: "green" | "red" }) {
+  return (
+    <div className={`compareCard ${tone}`}>
+      <span>{label}</span>
+      <strong>{formatMoney(value)}</strong>
+      <div>
+        <i style={{ width: `${Math.max(4, Math.round((Math.abs(value) / max) * 100))}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function ReportStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="reportStat">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }

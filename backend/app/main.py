@@ -23,7 +23,7 @@ from .schemas import AccountCreate, AccountUpdate, CategoryCreate, CategoryUpdat
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.backups import create_backup, restore_backup
 from .services.importers import commit_import, detect_preset_from_content, preview_import
-from .services.reporting import cash_flow_summary, category_totals, dashboard_summary
+from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(LocalhostSecurityMiddleware)
@@ -491,16 +491,14 @@ def get_net_worth_timeseries(session: SessionToken = Depends(current_session), d
     return [{"date": key, "market_value_cents": value} for key, value in grouped.items()]
 
 
+@app.get("/api/net-worth/accounts")
+def get_net_worth_accounts(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return latest_net_worth_by_account(db)
+
+
 @app.get("/api/investments/allocation")
 def get_investment_allocation(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
-    rows = db.execute(
-        select(HoldingSnapshot.asset_class, HoldingSnapshot.market_value_cents).where(HoldingSnapshot.asset_class.is_not(None))
-    ).all()
-    grouped: dict[str, int] = {}
-    for asset_class, market_value_cents in rows:
-        key = asset_class or "Unclassified"
-        grouped[key] = grouped.get(key, 0) + market_value_cents
-    return [{"asset_class": key, "market_value_cents": value} for key, value in grouped.items()]
+    return latest_investment_allocation(db)
 
 
 @app.get("/api/investments/value-timeseries")

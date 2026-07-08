@@ -423,6 +423,124 @@ button:disabled {
   background: var(--red);
 }
 
+.reportStack {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.reportMiniGrid,
+.compareGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.reportStat,
+.compareCard {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfb;
+}
+
+.reportStat span,
+.compareCard span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.compareCard strong {
+  font-size: 20px;
+}
+
+.compareCard.green strong {
+  color: var(--green);
+}
+
+.compareCard.red strong {
+  color: var(--red);
+}
+
+.compareCard div,
+.barTrack {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.compareCard i,
+.barTrack div {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+}
+
+.compareCard.red i,
+.barTrack div {
+  background: var(--red);
+}
+
+.barTrack.blue div {
+  background: var(--blue);
+}
+
+.barList {
+  display: grid;
+  gap: 10px;
+}
+
+.barRow {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfb;
+}
+
+.barRow > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.barRow span {
+  color: var(--muted);
+}
+
+.reportTable {
+  display: grid;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.reportTableHeader,
+.reportTableRow {
+  min-width: 520px;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.reportTableHeader {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .rightRail {
   min-width: 0;
 }
