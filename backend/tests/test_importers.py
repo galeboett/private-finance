@@ -18,3 +18,14 @@ def test_preview_checking_rows():
     assert len(preview.rows) == 1
     assert preview.rows[0]["raw_description"] == "Grocery Store"
 
+
+def test_preview_brokerage_rows_keeps_account_identity():
+    content = (
+        b"Account Number,Account Name,Symbol,Description,Quantity,Last Price,Last Price Change,Current Value\n"
+        b"Z12345678,Taxable Brokerage,VTI,Vanguard Total Stock,1,250.00,0.00,250.00\n"
+    )
+    preview = preview_import(content, "brokerage_positions")
+
+    assert len(preview.rows) == 1
+    assert preview.rows[0]["account_number"] == "Z12345678"
+    assert preview.rows[0]["account_name"] == "Taxable Brokerage"

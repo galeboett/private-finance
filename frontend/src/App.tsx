@@ -75,6 +75,15 @@ type SavedRuleAction = {
   matchText: string;
 };
 
+type RuleSummary = {
+  id: number;
+  category_id: number;
+  priority: number;
+  field_name: string;
+  match_text: string;
+  suggested_transaction_type: string;
+};
+
 const navItems = [
   { label: "Dashboard", icon: LayoutDashboard },
   { label: "Accounts", icon: WalletCards },
@@ -144,6 +153,7 @@ export function App() {
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [review, setReview] = useState<ReviewItem[]>([]);
   const [transactions, setTransactions] = useState<TransactionRow[]>([]);
+  const [rules, setRules] = useState<RuleSummary[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | "">("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
@@ -180,16 +190,18 @@ export function App() {
   }
 
   async function loadData() {
-    const [dashboardData, accountsData, reviewData, transactionData] = await Promise.all([
+    const [dashboardData, accountsData, reviewData, transactionData, rulesData] = await Promise.all([
       api<DashboardSummary>("/api/dashboard/summary"),
       api<AccountSummary[]>("/api/accounts"),
       api<ReviewItem[]>("/api/review"),
       api<TransactionRow[]>("/api/transactions"),
+      api<RuleSummary[]>("/api/rules"),
     ]);
     setDashboard(dashboardData);
     setAccounts(accountsData);
     setReview(reviewData);
     setTransactions(transactionData);
+    setRules(rulesData);
   }
 
   function showToast(nextToast: ToastState) {
@@ -414,6 +426,7 @@ export function App() {
         }),
       });
       setLastSavedRule({ id: rule.id, matchText });
+      await loadData();
       showToast({ tone: "success", message: `Rule saved for "${matchText}". Choose where else to apply it below.` });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be saved." });
@@ -424,8 +437,12 @@ export function App() {
     if (!lastSavedRule) {
       return;
     }
+    await applyRule(lastSavedRule.id, scope);
+  }
+
+  async function applyRule(ruleId: number, scope: "unreviewed" | "all") {
     try {
-      const result = await api<{ matched: number; updated: number }>(`/api/rules/${lastSavedRule.id}/apply`, {
+      const result = await api<{ matched: number; updated: number }>(`/api/rules/${ruleId}/apply`, {
         method: "POST",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({ scope }),
@@ -730,6 +747,28 @@ export function App() {
               ))}
               {reviewTransactions.length === 0 ? <p className="emptyText">No items waiting for review. New imports will appear here before reports rely on them.</p> : null}
             </div>
+            {rules.length > 0 ? (
+              <div className="savedRulesPanel">
+                <strong>Saved rules</strong>
+                {rules.slice(0, 5).map((rule) => {
+                  const category = categories.find((item) => item.id === rule.category_id);
+                  return (
+                    <div className="savedRuleRow" key={rule.id}>
+                      <div>
+                        <span>{rule.match_text}</span>
+                        <small>{category?.label ?? "Unknown category"} / {readableAccountType(rule.suggested_transaction_type)}</small>
+                      </div>
+                      <button className="secondaryButton" onClick={() => void applyRule(rule.id, "unreviewed")}>
+                        Apply to unreviewed
+                      </button>
+                      <button className="secondaryButton" onClick={() => void applyRule(rule.id, "all")}>
+                        Apply to previous
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
           </section>
 
           <section className="toolPanel">

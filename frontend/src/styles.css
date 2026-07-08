@@ -648,6 +648,40 @@ textarea {
   font-size: 12px;
 }
 
+.savedRulesPanel {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.savedRuleRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfb;
+}
+
+.savedRuleRow div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.savedRuleRow span {
+  overflow-wrap: anywhere;
+  font-weight: 800;
+}
+
+.savedRuleRow small {
+  color: var(--muted);
+}
+
 .reviewActions {
   display: flex;
   justify-content: flex-end;

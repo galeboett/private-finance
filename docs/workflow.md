@@ -66,8 +66,22 @@ Save rule turns one reviewed transaction into a future suggestion.
 - Matching transactions still stay in review until you confirm them.
 - Rules do not rewrite older transactions retroactively.
 - After saving a rule, you can optionally apply it to unreviewed transactions or all previous matching transactions.
+- Existing saved rules are also listed in the Review Inbox with the same apply options.
 - Bulk rule application never auto-confirms transactions.
 - If multiple rules match, lower priority numbers run first. The default priority is 100.
+
+## Brokerage Files With Multiple Accounts
+
+Some brokerage exports contain positions for multiple accounts, such as taxable brokerage, IRA, Roth IRA, HSA, or 401k windows.
+
+Recommended setup:
+
+- Create one app account for each real-world investment account.
+- Use the same institution name for accounts that come from the same brokerage.
+- Add last-four digits when available.
+- Upload the multi-account brokerage CSV through one account at that institution.
+
+During import, brokerage rows are routed to sibling accounts at the same institution when the CSV account number matches an account last-four or the CSV account name matches an account display name. If the app cannot confidently match a row, it assigns it to the selected upload account and includes an import warning.
 
 ## Why Account Creation Is Manual First
 

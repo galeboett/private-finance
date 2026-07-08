@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
-from ..models import CategoryRule, HoldingSnapshot, ImportBatch, ImportPreset, StagingRow, Transaction
+from ..models import Account, CategoryRule, HoldingSnapshot, ImportBatch, ImportPreset, StagingRow, Transaction
 from ..money import parse_decimal_to_cents
 
 
@@ -90,6 +90,7 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
                     "row_index": idx,
                     "row_kind": row_kind,
                     "snapshot_date": None,
+                    "account_number": row.get("Account Number"),
                     "symbol": row.get("Symbol"),
                     "description": row.get("Description"),
                     "market_value": row.get("Current Value"),
@@ -163,10 +164,15 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
     rules = db.scalars(select(CategoryRule).order_by(CategoryRule.priority.asc())).all()
 
     for row in preview.rows:
+        target_account = account
+        if detected == "brokerage_positions":
+            target_account, routing_warning = _resolve_brokerage_account(db, account, row)
+            if routing_warning and routing_warning not in warnings:
+                warnings.append(routing_warning)
         db.add(
             StagingRow(
                 import_batch_id=batch.id,
-                account_id=account.id,
+                account_id=target_account.id,
                 row_index=row["row_index"],
                 row_kind=row["row_kind"],
                 raw_json=json.dumps(row, default=str),
@@ -178,7 +184,7 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
             if market_value_cents is not None:
                 db.add(
                     HoldingSnapshot(
-                        account_id=account.id,
+                        account_id=target_account.id,
                         snapshot_date=_extract_snapshot_date(filename),
                         symbol=row.get("symbol"),
                         description=row.get("description"),
@@ -245,6 +251,34 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
     batch.warnings_json = json.dumps(warnings)
     record_audit_event(db, "import_commit", actor, "import_batch", str(batch.id), {"filename": filename, "inserted": inserted, "skipped": skipped})
     return {"batch_id": batch.id, "inserted": inserted, "skipped": skipped, "warnings": warnings}
+
+
+def _resolve_brokerage_account(db: Session, selected_account: Account, row: dict) -> tuple[Account, str | None]:
+    account_name = (row.get("account_name") or "").strip()
+    account_number = "".join(char for char in (row.get("account_number") or "") if char.isdigit())
+    query = select(Account).where(Account.status == "active")
+    if selected_account.institution_id:
+        query = query.where(Account.institution_id == selected_account.institution_id)
+    else:
+        query = query.where(Account.id == selected_account.id)
+    candidates = db.scalars(query).all()
+
+    for candidate in candidates:
+        if candidate.last_four and account_number.endswith(candidate.last_four):
+            return candidate, None
+
+    normalized_row_name = _normalize_account_name(account_name)
+    for candidate in candidates:
+        normalized_display = _normalize_account_name(candidate.display_name)
+        if normalized_display and normalized_row_name and (normalized_display in normalized_row_name or normalized_row_name in normalized_display):
+            return candidate, None
+
+    label = account_name or row.get("account_number") or "unknown account"
+    return selected_account, f'Could not match brokerage account "{label}"; assigned those holdings to the selected account "{selected_account.display_name}".'
+
+
+def _normalize_account_name(value: str) -> str:
+    return "".join(char.lower() for char in value if char.isalnum())
 
 
 def _is_possible_duplicate(db: Session, account_id: int, candidate: Transaction) -> bool:
