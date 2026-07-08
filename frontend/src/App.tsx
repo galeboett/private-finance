@@ -8,6 +8,7 @@ import {
   Landmark,
   LayoutDashboard,
   ListChecks,
+  Pencil,
   PiggyBank,
   Plus,
   ReceiptText,
@@ -34,6 +35,9 @@ type AccountSummary = {
   display_name: string;
   account_type: string;
   status: string;
+  institution_name: string | null;
+  currency: string;
+  last_four: string | null;
 };
 
 type ReviewItem = {
@@ -52,6 +56,7 @@ type TransactionRow = {
   review_status: string;
   transaction_date: string;
   category_id: number | null;
+  user_note: string | null;
 };
 
 type ImportPreview = {
@@ -138,6 +143,10 @@ export function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [activeTab, setActiveTab] = useState("Cash Flow");
+  const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
+  const [newCategoryLabel, setNewCategoryLabel] = useState("");
+  const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
+  const [editingCategoryLabel, setEditingCategoryLabel] = useState("");
   const [accountForm, setAccountForm] = useState({
     institution_name: "",
     display_name: "",
@@ -181,6 +190,22 @@ export function App() {
     setToast(nextToast);
   }
 
+  function clearAccountForm() {
+    setEditingAccountId(null);
+    setAccountForm({ institution_name: "", display_name: "", account_type: "checking", last_four: "" });
+  }
+
+  function beginEditAccount(account: AccountSummary) {
+    setEditingAccountId(account.id);
+    setSelectedAccountId(account.id);
+    setAccountForm({
+      institution_name: account.institution_name ?? "",
+      display_name: account.display_name,
+      account_type: account.account_type,
+      last_four: account.last_four ?? "",
+    });
+  }
+
   async function handleSetup() {
     setErrorMessage("");
     if (password.length < 12) {
@@ -209,24 +234,73 @@ export function App() {
     }
   }
 
-  async function createAccount() {
+  async function saveAccount() {
     setToast(null);
     if (!accountForm.display_name.trim()) {
       showToast({ tone: "error", message: "Add an account name before saving." });
       return;
     }
     try {
-      const result = await api<{ id: number }>("/api/accounts", {
-        method: "POST",
+      const isEditing = editingAccountId !== null;
+      const result = await api<{ id?: number }>(isEditing ? `/api/accounts/${editingAccountId}` : "/api/accounts", {
+        method: isEditing ? "PATCH" : "POST",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify(accountForm),
       });
-      setAccountForm({ institution_name: "", display_name: "", account_type: "checking", last_four: "" });
-      setSelectedAccountId(result.id);
+      if (result.id) {
+        setSelectedAccountId(result.id);
+      }
+      clearAccountForm();
       await loadData();
-      showToast({ tone: "success", message: "Account added. It is selected for your next import." });
+      showToast({
+        tone: "success",
+        message: isEditing ? "Account updated." : "Account added. It is selected for your next import.",
+      });
     } catch (error) {
-      showToast({ tone: "error", message: error instanceof Error ? error.message : "Account could not be added." });
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Account could not be saved." });
+    }
+  }
+
+  async function createCategory() {
+    const label = newCategoryLabel.trim();
+    if (!label) {
+      showToast({ tone: "error", message: "Add a category name before saving." });
+      return;
+    }
+    try {
+      const category = await api<BootstrapCategory>("/api/categories", {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ label }),
+      });
+      setCategories((current) => [...current, category].sort((left, right) => left.label.localeCompare(right.label)));
+      setNewCategoryLabel("");
+      showToast({ tone: "success", message: "Category added. You can use it during review now." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Category could not be added." });
+    }
+  }
+
+  async function updateCategory() {
+    const label = editingCategoryLabel.trim();
+    if (!editingCategoryId || !label) {
+      showToast({ tone: "error", message: "Choose a category and enter a name before saving." });
+      return;
+    }
+    try {
+      await api(`/api/categories/${editingCategoryId}`, {
+        method: "PATCH",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ label }),
+      });
+      setCategories((current) =>
+        current.map((category) => (category.id === editingCategoryId ? { ...category, label } : category)).sort((left, right) => left.label.localeCompare(right.label)),
+      );
+      setEditingCategoryId(null);
+      setEditingCategoryLabel("");
+      showToast({ tone: "success", message: "Category renamed." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Category could not be updated." });
     }
   }
 
@@ -288,7 +362,7 @@ export function App() {
     }
   }
 
-  async function updateTransaction(transactionId: number, patch: Partial<Pick<TransactionRow, "category_id" | "transaction_type" | "review_status">>) {
+  async function updateTransaction(transactionId: number, patch: Partial<Pick<TransactionRow, "category_id" | "transaction_type" | "review_status" | "user_note">>) {
     setToast(null);
     try {
       await api(`/api/transactions/${transactionId}`, {
@@ -476,7 +550,7 @@ export function App() {
 
         <section className="workGrid">
           <section className="toolPanel">
-            <PanelTitle icon={WalletCards} title="Accounts" subtitle="Create the containers your imports belong to." />
+            <PanelTitle icon={WalletCards} title="Accounts" subtitle="Create or edit the containers your imports belong to." />
             <div className="compactForm">
               <input value={accountForm.display_name} onChange={(event) => setAccountForm({ ...accountForm, display_name: event.target.value })} placeholder="Account name" />
               <input value={accountForm.institution_name} onChange={(event) => setAccountForm({ ...accountForm, institution_name: event.target.value })} placeholder="Institution" />
@@ -487,17 +561,28 @@ export function App() {
                 <option value="brokerage">Brokerage</option>
               </select>
               <input value={accountForm.last_four} onChange={(event) => setAccountForm({ ...accountForm, last_four: event.target.value })} placeholder="Last four" />
-              <button className="primaryButton" onClick={() => void createAccount()}>
-                <Plus size={16} />
-                Add account
-              </button>
+              <div className="buttonRow">
+                <button className="primaryButton" onClick={() => void saveAccount()}>
+                  {editingAccountId ? <Pencil size={16} /> : <Plus size={16} />}
+                  {editingAccountId ? "Save account" : "Add account"}
+                </button>
+                {editingAccountId ? (
+                  <button className="secondaryButton" onClick={clearAccountForm}>
+                    Cancel
+                  </button>
+                ) : null}
+              </div>
             </div>
             <div className="denseList">
               {accounts.map((account) => (
-                <button className={selectedAccountId === account.id ? "accountRow selected" : "accountRow"} key={account.id} onClick={() => setSelectedAccountId(account.id)}>
+                <button className={selectedAccountId === account.id ? "accountRow selected" : "accountRow"} key={account.id} onClick={() => beginEditAccount(account)}>
                   <Landmark size={16} />
-                  <span>{account.display_name}</span>
+                  <span>
+                    {account.display_name}
+                    {account.institution_name ? <small>{account.institution_name}</small> : null}
+                  </span>
                   <small>{readableAccountType(account.account_type)}</small>
+                  <Pencil size={14} />
                 </button>
               ))}
             </div>
@@ -583,6 +668,13 @@ export function App() {
                       ))}
                     </select>
                   </div>
+                  <textarea
+                    value={transaction.user_note ?? ""}
+                    onChange={(event) => void updateTransaction(transaction.id, { user_note: event.target.value })}
+                    placeholder="Add your own context, like what you actually bought."
+                    rows={2}
+                  />
+                  <p className="ruleHint">Save rule learns from this merchant text for future imports. It suggests the same type/category, then still leaves the transaction in review.</p>
                   <div className="reviewActions">
                     <button className="secondaryButton" onClick={() => void saveRuleFromTransaction(transaction)}>
                       <Sparkles size={16} />
@@ -600,12 +692,45 @@ export function App() {
           </section>
 
           <section className="toolPanel">
-            <PanelTitle icon={PiggyBank} title="Categories" subtitle="Fixed spending buckets for expense reporting." />
+            <PanelTitle icon={PiggyBank} title="Categories" subtitle="Spending buckets for expense reporting. Add or rename them as your life changes." />
+            <div className="compactForm">
+              <div className="buttonRow">
+                <input value={newCategoryLabel} onChange={(event) => setNewCategoryLabel(event.target.value)} placeholder="New category name" />
+                <button className="primaryButton" onClick={() => void createCategory()}>
+                  <Plus size={16} />
+                  Add
+                </button>
+              </div>
+              {editingCategoryId ? (
+                <div className="inlineEdit">
+                  <input value={editingCategoryLabel} onChange={(event) => setEditingCategoryLabel(event.target.value)} placeholder="Rename category" />
+                  <button className="secondaryButton" onClick={() => void updateCategory()}>
+                    Save rename
+                  </button>
+                  <button
+                    className="ghostButton"
+                    onClick={() => {
+                      setEditingCategoryId(null);
+                      setEditingCategoryLabel("");
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : null}
+            </div>
             <div className="categoryGrid">
               {categories.map((category) => (
-                <span className="categoryPill" key={category.id}>
+                <button
+                  className={editingCategoryId === category.id ? "categoryPill editing" : "categoryPill"}
+                  key={category.id}
+                  onClick={() => {
+                    setEditingCategoryId(category.id);
+                    setEditingCategoryLabel(category.label);
+                  }}
+                >
                   {category.label}
-                </span>
+                </button>
               ))}
             </div>
           </section>
@@ -627,7 +752,10 @@ export function App() {
               return (
                 <div className="ledgerRow" key={transaction.id}>
                   <span>{transaction.transaction_date}</span>
-                  <strong>{transaction.raw_description}</strong>
+                  <strong className="ledgerDescription">
+                    {transaction.raw_description}
+                    {transaction.user_note ? <small>{transaction.user_note}</small> : null}
+                  </strong>
                   <span>{readableAccountType(transaction.transaction_type)}</span>
                   <span>{category?.label ?? "Uncategorized"}</span>
                   <span>{transaction.review_status}</span>

@@ -21,6 +21,23 @@ class AccountCreate(BaseModel):
     last_four: str | None = None
 
 
+class AccountUpdate(BaseModel):
+    institution_name: str | None = None
+    display_name: str | None = None
+    account_type: str | None = None
+    currency: str | None = None
+    last_four: str | None = None
+    status: str | None = None
+
+
+class CategoryCreate(BaseModel):
+    label: str
+
+
+class CategoryUpdate(BaseModel):
+    label: str
+
+
 class ImportPresetCreate(BaseModel):
     account_id: int
     name: str
@@ -33,6 +50,7 @@ class TransactionReviewUpdate(BaseModel):
     category_id: int | None = None
     transaction_type: str | None = None
     review_status: str | None = None
+    user_note: str | None = None
 
 
 class RuleCreate(BaseModel):
@@ -67,4 +85,3 @@ class TransactionFilter(BaseModel):
     transaction_type: str | None = None
     start_date: date | None = None
     end_date: date | None = None
-

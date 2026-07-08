@@ -30,7 +30,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -470,6 +471,16 @@ button:disabled {
   background: #fbfcfb;
 }
 
+.accountRow {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.accountRow span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
 .miniAccount small,
 .accountRow small {
   color: var(--muted);
@@ -503,7 +514,8 @@ button:disabled {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: 36px;
   padding: 8px 10px;
@@ -511,6 +523,12 @@ select {
   border-radius: 6px;
   background: #fff;
   color: var(--ink);
+}
+
+textarea {
+  min-height: 68px;
+  resize: vertical;
+  line-height: 1.4;
 }
 
 .formError {
@@ -550,12 +568,23 @@ select {
 }
 
 .categoryPill {
+  border: 0;
   padding: 7px 9px;
   border-radius: 999px;
   background: var(--green-soft);
   color: #24734c;
   font-size: 12px;
   font-weight: 700;
+}
+
+.categoryPill.editing {
+  box-shadow: inset 0 0 0 2px #2c7a57;
+}
+
+.inlineEdit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
 }
 
 .reviewEditor {
@@ -605,6 +634,13 @@ select {
   gap: 8px;
 }
 
+.ruleHint {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .amount {
   white-space: nowrap;
   font-weight: 800;
@@ -652,6 +688,16 @@ select {
 
 .ledgerRow strong {
   overflow-wrap: anywhere;
+}
+
+.ledgerDescription {
+  display: grid;
+  gap: 3px;
+}
+
+.ledgerDescription small {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .emptyText {

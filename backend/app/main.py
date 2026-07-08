@@ -19,7 +19,7 @@ from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
 from .models import Account, AppUser, Category, CategoryRule, HoldingSnapshot, ImportPreset, Institution, SessionToken, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, ImportPresetCreate, LoginRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
+from .schemas import AccountCreate, AccountUpdate, CategoryCreate, CategoryUpdate, ImportPresetCreate, LoginRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.backups import create_backup, restore_backup
 from .services.importers import commit_import, detect_preset_from_content, preview_import
@@ -119,13 +119,7 @@ def me(session: SessionToken = Depends(current_session)):
 @app.post("/api/accounts")
 def create_account(payload: AccountCreate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
-    institution = None
-    if payload.institution_name:
-        institution = db.scalar(select(Institution).where(Institution.name == payload.institution_name))
-        if not institution:
-            institution = Institution(name=payload.institution_name)
-            db.add(institution)
-            db.flush()
+    institution = upsert_institution(db, payload.institution_name)
     account = Account(
         institution_id=institution.id if institution else None,
         display_name=payload.display_name,
@@ -140,19 +134,49 @@ def create_account(payload: AccountCreate, request: Request, session: SessionTok
     return {"id": account.id}
 
 
+def upsert_institution(db: Session, name: str | None) -> Institution | None:
+    if not name:
+        return None
+    institution = db.scalar(select(Institution).where(Institution.name == name))
+    if not institution:
+        institution = Institution(name=name)
+        db.add(institution)
+        db.flush()
+    return institution
+
+
 @app.get("/api/accounts")
 def list_accounts(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     accounts = db.scalars(select(Account).order_by(Account.display_name.asc())).all()
     return [
         {
             "id": account.id,
+            "institution_name": account.institution.name if account.institution else None,
             "display_name": account.display_name,
             "account_type": account.account_type,
             "currency": account.currency,
             "status": account.status,
+            "last_four": account.last_four,
         }
         for account in accounts
     ]
+
+
+@app.patch("/api/accounts/{account_id}")
+def update_account(account_id: int, payload: AccountUpdate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    account = db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    updates = payload.model_dump(exclude_unset=True)
+    if "institution_name" in updates:
+        institution = upsert_institution(db, updates.pop("institution_name"))
+        account.institution_id = institution.id if institution else None
+    for key, value in updates.items():
+        setattr(account, key, value)
+    record_audit_event(db, "account_update", "local-user", "account", str(account.id), payload.model_dump(exclude_unset=True))
+    db.commit()
+    return {"ok": True}
 
 
 @app.post("/api/accounts/{account_id}/archive")
@@ -163,6 +187,47 @@ def archive_account(account_id: int, request: Request, session: SessionToken = D
         raise HTTPException(status_code=404, detail="Account not found")
     account.status = "archived"
     record_audit_event(db, "account_archive", "local-user", "account", str(account.id), {"status": "archived"})
+    db.commit()
+    return {"ok": True}
+
+
+def category_key_from_label(label: str) -> str:
+    key = "".join(char.lower() if char.isalnum() else "_" for char in label.strip())
+    key = "_".join(part for part in key.split("_") if part)
+    return key[:60] or "category"
+
+
+@app.post("/api/categories")
+def create_category(payload: CategoryCreate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="Category label is required")
+    base_key = category_key_from_label(label)
+    key = base_key
+    suffix = 2
+    while db.scalar(select(Category).where(Category.key == key)):
+        key = f"{base_key[:55]}_{suffix}"
+        suffix += 1
+    category = Category(key=key, label=label)
+    db.add(category)
+    db.flush()
+    record_audit_event(db, "category_create", "local-user", "category", str(category.id), {"label": label, "key": key})
+    db.commit()
+    return {"id": category.id, "key": category.key, "label": category.label}
+
+
+@app.patch("/api/categories/{category_id}")
+def update_category(category_id: int, payload: CategoryUpdate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    category = db.get(Category, category_id)
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="Category label is required")
+    category.label = label
+    record_audit_event(db, "category_update", "local-user", "category", str(category.id), {"label": label})
     db.commit()
     return {"ok": True}
 
@@ -238,6 +303,7 @@ def list_transactions(account_id: int | None = None, review_status: str | None =
             "amount_cents": row.amount_cents,
             "amount": cents_to_decimal_string(row.amount_cents),
             "raw_description": row.raw_description,
+            "user_note": row.user_note,
             "transaction_type": row.transaction_type,
             "review_status": row.review_status,
             "category_id": row.category_id,
@@ -252,9 +318,10 @@ def update_transaction(transaction_id: int, payload: TransactionReviewUpdate, re
     transaction = db.get(Transaction, transaction_id)
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    for key, value in payload.model_dump(exclude_none=True).items():
+    updates = payload.model_dump(exclude_unset=True)
+    for key, value in updates.items():
         setattr(transaction, key, value)
-    record_audit_event(db, "transaction_update", "local-user", "transaction", str(transaction.id), payload.model_dump(exclude_none=True))
+    record_audit_event(db, "transaction_update", "local-user", "transaction", str(transaction.id), updates)
     db.commit()
     return {"ok": True}
 
