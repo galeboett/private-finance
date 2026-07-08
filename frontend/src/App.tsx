@@ -76,6 +76,21 @@ type ImportPreview = {
   warnings: string[];
 };
 
+type ImportAnalysis = {
+  preset_type: string;
+  suggested_account_id: number | null;
+  match_confidence: number;
+  reason: string;
+  proposed_account: {
+    institution_name: string | null;
+    display_name: string;
+    account_type: string;
+    currency: string;
+    last_four: string | null;
+  };
+  warnings: string[];
+};
+
 type ToastState = {
   tone: "success" | "error" | "info";
   message: string;
@@ -230,6 +245,8 @@ export function App() {
   const [selectedAccountId, setSelectedAccountId] = useState<number | "">("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importAnalysis, setImportAnalysis] = useState<ImportAnalysis | null>(null);
+  const [importWorkspaceTab, setImportWorkspaceTab] = useState<"smart" | "manual">("smart");
   const [activeTab, setActiveTab] = useState("Cash Flow");
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
   const [newCategoryLabel, setNewCategoryLabel] = useState("");
@@ -305,12 +322,19 @@ export function App() {
   function beginEditAccount(account: AccountSummary) {
     setEditingAccountId(account.id);
     setSelectedAccountId(account.id);
+    setImportWorkspaceTab("manual");
     setAccountForm({
       institution_name: account.institution_name ?? "",
       display_name: account.display_name,
       account_type: account.account_type,
       last_four: account.last_four ?? "",
     });
+  }
+
+  function chooseImportFile(file: File | null) {
+    setSelectedFile(file);
+    setImportPreview(null);
+    setImportAnalysis(null);
   }
 
   async function handleSetup() {
@@ -491,6 +515,68 @@ export function App() {
       setReview((current) => (patch.review_status === "confirmed" ? current.filter((item) => item.id !== transactionId) : current));
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Transaction could not be updated." });
+    }
+  }
+
+  async function analyzeSelectedImport() {
+    setToast(null);
+    if (!selectedFile) {
+      showToast({ tone: "error", message: "Choose a CSV first so the app can inspect it." });
+      return;
+    }
+    const form = new FormData();
+    form.append("file", selectedFile);
+    try {
+      const response = await fetch(apiUrl("/api/imports/analyze"), {
+        method: "POST",
+        credentials: "include",
+        body: form,
+      });
+      if (!response.ok) {
+        throw new Error(await readableApiError(response, "/api/imports/analyze"));
+      }
+      const analysis = await parseApiJson<ImportAnalysis>(response, "/api/imports/analyze");
+      setImportAnalysis(analysis);
+      if (analysis.suggested_account_id) {
+        setSelectedAccountId(analysis.suggested_account_id);
+        showToast({ tone: "success", message: `Matched this CSV to an existing account with ${analysis.match_confidence}% confidence.` });
+      } else {
+        setSelectedAccountId("");
+        setAccountForm({
+          institution_name: analysis.proposed_account.institution_name ?? "",
+          display_name: analysis.proposed_account.display_name,
+          account_type: analysis.proposed_account.account_type,
+          last_four: analysis.proposed_account.last_four ?? "",
+        });
+        showToast({ tone: "info", message: "No obvious account match found. I prefilled a new account for you to review." });
+      }
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "CSV analysis failed." });
+    }
+  }
+
+  async function createAccountFromAnalysis() {
+    setToast(null);
+    if (!importAnalysis) {
+      showToast({ tone: "error", message: "Analyze a CSV before creating a suggested account." });
+      return;
+    }
+    if (!accountForm.display_name.trim()) {
+      showToast({ tone: "error", message: "Review and enter an account name before creating it." });
+      return;
+    }
+    try {
+      const result = await api<{ id: number }>("/api/accounts", {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ ...accountForm, currency: importAnalysis.proposed_account.currency ?? "USD" }),
+      });
+      setSelectedAccountId(result.id);
+      setEditingAccountId(null);
+      await loadData();
+      showToast({ tone: "success", message: "Suggested account created and selected for this import." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Suggested account could not be created." });
     }
   }
 
@@ -729,6 +815,7 @@ export function App() {
   const netIncomeCents = totalIncomeCents - totalExpenseCents;
   const savingsRate = totalIncomeCents > 0 ? Math.max(0, Math.round((netIncomeCents / totalIncomeCents) * 1000) / 10) : 0;
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId);
+  const analyzedAccount = accounts.find((account) => account.id === importAnalysis?.suggested_account_id);
   const previewRows = importPreview?.rows.slice(0, 6) ?? [];
   const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status));
   const visibleReviewTransactions = reviewTransactions.slice(0, 5);
@@ -868,88 +955,152 @@ export function App() {
         </section>
 
         <section className="workGrid">
-          <section className="toolPanel">
-            <PanelTitle icon={WalletCards} title="Accounts" subtitle="Create or edit the containers your imports belong to." />
-            <div className="compactForm">
-              <input value={accountForm.display_name} onChange={(event) => setAccountForm({ ...accountForm, display_name: event.target.value })} placeholder="Account name" />
-              <input value={accountForm.institution_name} onChange={(event) => setAccountForm({ ...accountForm, institution_name: event.target.value })} placeholder="Institution" />
-              <select value={accountForm.account_type} onChange={(event) => setAccountForm({ ...accountForm, account_type: event.target.value })}>
-                <option value="checking">Checking</option>
-                <option value="savings">Savings</option>
-                <option value="credit_card">Credit card</option>
-                <option value="brokerage">Brokerage</option>
-              </select>
-              <input value={accountForm.last_four} onChange={(event) => setAccountForm({ ...accountForm, last_four: event.target.value })} placeholder="Last four" />
-              <div className="buttonRow">
-                <button className="primaryButton" onClick={() => void saveAccount()}>
-                  {editingAccountId ? <Pencil size={16} /> : <Plus size={16} />}
-                  {editingAccountId ? "Save account" : "Add account"}
-                </button>
-                {editingAccountId ? (
-                  <button className="secondaryButton" onClick={clearAccountForm}>
-                    Cancel
-                  </button>
-                ) : null}
-              </div>
+          <section className="toolPanel importWorkspace">
+            <PanelTitle icon={FileUp} title="Import & Accounts" subtitle="Start with a CSV. The app will match an account or prefill one for your review." />
+            <div className="workspaceTabs">
+              <button className={importWorkspaceTab === "smart" ? "workspaceTab active" : "workspaceTab"} onClick={() => setImportWorkspaceTab("smart")}>
+                Smart import
+              </button>
+              <button className={importWorkspaceTab === "manual" ? "workspaceTab active" : "workspaceTab"} onClick={() => setImportWorkspaceTab("manual")}>
+                Manual accounts
+              </button>
             </div>
-            <div className="denseList">
-              {accounts.map((account) => (
-                <button className={selectedAccountId === account.id ? "accountRow selected" : "accountRow"} key={account.id} onClick={() => beginEditAccount(account)}>
-                  <Landmark size={16} />
-                  <span>
-                    {account.display_name}
-                    {account.institution_name ? <small>{account.institution_name}</small> : null}
-                  </span>
-                  <small>{readableAccountType(account.account_type)}</small>
-                  <Pencil size={14} />
-                </button>
-              ))}
-            </div>
-          </section>
 
-          <section className="toolPanel">
-            <PanelTitle icon={FileUp} title="Imports" subtitle="Preview first, then commit clean rows into the ledger." />
-            <div className="compactForm">
-              <select value={selectedAccountId} onChange={(event) => setSelectedAccountId(event.target.value ? Number(event.target.value) : "")}>
-                <option value="">Choose account</option>
-                {accounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.display_name}
-                  </option>
-                ))}
-              </select>
-              <input type="file" accept=".csv" onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)} />
-              <div className="buttonRow">
-                <button className="secondaryButton" onClick={() => void previewSelectedImport()}>
-                  <Search size={16} />
-                  Preview
-                </button>
-                <button className="primaryButton" onClick={() => void commitSelectedImport()} disabled={!importPreview}>
-                  <ArrowDownToLine size={16} />
-                  Commit
-                </button>
-              </div>
-            </div>
-            <div className="previewPanel">
-              {importPreview ? (
-                <>
-                  <div className="previewMeta">
-                    <strong>{importPreview.preset_type}</strong>
-                    <span>{selectedAccount?.display_name}</span>
+            {importWorkspaceTab === "smart" ? (
+              <>
+                <div className="compactForm">
+                  <input type="file" accept=".csv" onChange={(event) => chooseImportFile(event.target.files?.[0] ?? null)} />
+                  <div className="buttonRow">
+                    <button className="secondaryButton" onClick={() => void analyzeSelectedImport()}>
+                      <Sparkles size={16} />
+                      Analyze CSV
+                    </button>
+                    <button className="secondaryButton" onClick={() => void previewSelectedImport()} disabled={!selectedAccountId || !selectedFile}>
+                      <Search size={16} />
+                      Preview
+                    </button>
+                    <button className="primaryButton" onClick={() => void commitSelectedImport()} disabled={!importPreview}>
+                      <ArrowDownToLine size={16} />
+                      Commit
+                    </button>
                   </div>
-                  <div className="previewRows">
-                    {previewRows.map((row, index) => (
-                      <div className="previewRow" key={`${row.row_index ?? index}`}>
-                        <span>{String(row.raw_description ?? row.description ?? row.symbol ?? "Row")}</span>
-                        <strong>{String(row.amount ?? row.market_value ?? "")}</strong>
+                </div>
+
+                {importAnalysis ? (
+                  <div className="analysisPanel">
+                    <div className="analysisHeader">
+                      <div>
+                        <strong>{importAnalysis.preset_type}</strong>
+                        <span>{importAnalysis.reason}</span>
                       </div>
-                    ))}
+                      <span className="statusBadge suggested">{importAnalysis.suggested_account_id ? `${importAnalysis.match_confidence}% match` : "Needs review"}</span>
+                    </div>
+                    {analyzedAccount ? (
+                      <div className="matchedAccountCard">
+                        <Landmark size={16} />
+                        <div>
+                          <strong>{analyzedAccount.display_name}</strong>
+                          <span>{analyzedAccount.institution_name ?? "No institution"} / {readableAccountType(analyzedAccount.account_type)} / {analyzedAccount.last_four ?? "no suffix"}</span>
+                        </div>
+                        <button className="secondaryButton" onClick={() => setSelectedAccountId(analyzedAccount.id)}>
+                          Use this
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="suggestedAccountForm">
+                        <span className="eyebrow">Suggested new account</span>
+                        <input value={accountForm.display_name} onChange={(event) => setAccountForm({ ...accountForm, display_name: event.target.value })} placeholder="Account name" />
+                        <input value={accountForm.institution_name} onChange={(event) => setAccountForm({ ...accountForm, institution_name: event.target.value })} placeholder="Institution" />
+                        <select value={accountForm.account_type} onChange={(event) => setAccountForm({ ...accountForm, account_type: event.target.value })}>
+                          <option value="checking">Checking</option>
+                          <option value="savings">Savings</option>
+                          <option value="credit_card">Credit card</option>
+                          <option value="brokerage">Brokerage</option>
+                        </select>
+                        <input value={accountForm.last_four} onChange={(event) => setAccountForm({ ...accountForm, last_four: event.target.value })} placeholder="Last four" />
+                        <button className="primaryButton" onClick={() => void createAccountFromAnalysis()}>
+                          <Plus size={16} />
+                          Create and use account
+                        </button>
+                      </div>
+                    )}
                   </div>
-                </>
-              ) : (
-                <p className="emptyText">Select an account and CSV to see the normalized rows before they touch the ledger.</p>
-              )}
-            </div>
+                ) : (
+                  <p className="emptyText">Choose a CSV and click Analyze. If confidence is high, the app selects the existing account; otherwise it drafts a new account you can edit.</p>
+                )}
+
+                <div className="manualOverride">
+                  <label>Override account if the match is wrong</label>
+                  <select value={selectedAccountId} onChange={(event) => setSelectedAccountId(event.target.value ? Number(event.target.value) : "")}>
+                    <option value="">Choose existing account</option>
+                    {accounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.display_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="previewPanel">
+                  {importPreview ? (
+                    <>
+                      <div className="previewMeta">
+                        <strong>{importPreview.preset_type}</strong>
+                        <span>{selectedAccount?.display_name}</span>
+                      </div>
+                      <div className="previewRows">
+                        {previewRows.map((row, index) => (
+                          <div className="previewRow" key={`${row.row_index ?? index}`}>
+                            <span>{String(row.raw_description ?? row.description ?? row.symbol ?? "Row")}</span>
+                            <strong>{String(row.amount ?? row.market_value ?? "")}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="emptyText">Preview shows the cleaned rows before they touch the ledger.</p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="compactForm">
+                  <input value={accountForm.display_name} onChange={(event) => setAccountForm({ ...accountForm, display_name: event.target.value })} placeholder="Account name" />
+                  <input value={accountForm.institution_name} onChange={(event) => setAccountForm({ ...accountForm, institution_name: event.target.value })} placeholder="Institution" />
+                  <select value={accountForm.account_type} onChange={(event) => setAccountForm({ ...accountForm, account_type: event.target.value })}>
+                    <option value="checking">Checking</option>
+                    <option value="savings">Savings</option>
+                    <option value="credit_card">Credit card</option>
+                    <option value="brokerage">Brokerage</option>
+                  </select>
+                  <input value={accountForm.last_four} onChange={(event) => setAccountForm({ ...accountForm, last_four: event.target.value })} placeholder="Last four" />
+                  <div className="buttonRow">
+                    <button className="primaryButton" onClick={() => void saveAccount()}>
+                      {editingAccountId ? <Pencil size={16} /> : <Plus size={16} />}
+                      {editingAccountId ? "Save account" : "Add account"}
+                    </button>
+                    {editingAccountId ? (
+                      <button className="secondaryButton" onClick={clearAccountForm}>
+                        Cancel
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="denseList">
+                  {accounts.map((account) => (
+                    <button className={selectedAccountId === account.id ? "accountRow selected" : "accountRow"} key={account.id} onClick={() => beginEditAccount(account)}>
+                      <Landmark size={16} />
+                      <span>
+                        {account.display_name}
+                        {account.institution_name ? <small>{account.institution_name}</small> : null}
+                      </span>
+                      <small>{readableAccountType(account.account_type)}</small>
+                      <Pencil size={14} />
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </section>
 
           <section className="toolPanel">

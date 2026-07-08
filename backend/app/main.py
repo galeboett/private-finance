@@ -23,7 +23,7 @@ from .money import cents_to_decimal_string, escape_csv_formula
 from .schemas import AccountCreate, AccountUpdate, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, RuleApplyRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.backups import create_backup, restore_backup
-from .services.importers import commit_import, detect_preset_from_content, preview_import
+from .services.importers import commit_import, detect_preset_from_content, preview_import, suggest_account_for_import
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
 from .services.transfers import confirm_transfer_link, create_transfer_suggestions, list_unconfirmed_transfers, reject_transfer_link
 
@@ -256,6 +256,25 @@ def create_import_preset(payload: ImportPresetCreate, request: Request, session:
 def list_import_presets(account_id: int, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     presets = db.scalars(select(ImportPreset).where(ImportPreset.account_id == account_id).order_by(ImportPreset.name.asc())).all()
     return [{"id": preset.id, "name": preset.name, "preset_type": preset.preset_type, "header_signature": preset.header_signature} for preset in presets]
+
+
+@app.post("/api/imports/analyze")
+async def imports_analyze(file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    content = await file.read()
+    if len(content) > settings.import_file_size_limit_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large")
+    try:
+        suggestion = suggest_account_for_import(db, file.filename or "import.csv", content)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {
+        "preset_type": suggestion.preset_type,
+        "suggested_account_id": suggestion.suggested_account_id,
+        "match_confidence": suggestion.match_confidence,
+        "reason": suggestion.reason,
+        "proposed_account": suggestion.proposed_account,
+        "warnings": suggestion.warnings,
+    }
 
 
 @app.post("/api/imports/preview")

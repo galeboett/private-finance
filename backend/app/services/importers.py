@@ -32,6 +32,16 @@ class PreviewResult:
     detected_preset: str | None
 
 
+@dataclass
+class AccountImportSuggestion:
+    preset_type: str
+    suggested_account_id: int | None
+    match_confidence: int
+    reason: str
+    proposed_account: dict
+    warnings: list[str]
+
+
 def detect_preset_from_content(text: str) -> str | None:
     for marker, preset in (
         (CARD_REFERENCE_HEADER, "card_reference"),
@@ -43,6 +53,35 @@ def detect_preset_from_content(text: str) -> str | None:
         if marker in text:
             return preset
     return None
+
+
+def suggest_account_for_import(db: Session, filename: str, content: bytes) -> AccountImportSuggestion:
+    text = content.decode("utf-8-sig")
+    preset_type = detect_preset_from_content(text)
+    if not preset_type:
+        raise ValueError("Could not detect import preset")
+    preview = preview_import(content, preset_type)
+    proposed = _proposed_account_from_import(filename, preset_type, preview)
+    accounts = db.scalars(select(Account).where(Account.status == "active")).all()
+    best_account: Account | None = None
+    best_score = 0
+    best_reason = "No obvious existing account match was found."
+    for account in accounts:
+        score, reason = _score_account_match(account, proposed, filename)
+        if score > best_score:
+            best_account = account
+            best_score = score
+            best_reason = reason
+    if best_score < 70:
+        best_account = None
+    return AccountImportSuggestion(
+        preset_type=preset_type,
+        suggested_account_id=best_account.id if best_account else None,
+        match_confidence=best_score if best_account else 0,
+        reason=best_reason,
+        proposed_account=proposed,
+        warnings=preview.warnings,
+    )
 
 
 def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
@@ -295,6 +334,94 @@ def _normalize_transaction_type(description: str, amount_cents: int, account_typ
     if amount_cents > 0 and account_type == "credit_card":
         return "refund"
     return "expense"
+
+
+def _proposed_account_from_import(filename: str, preset_type: str, preview: PreviewResult) -> dict:
+    account_type = {
+        "card_reference": "credit_card",
+        "card_activity": "credit_card",
+        "checking_running_balance": "checking",
+        "brokerage_positions": "brokerage",
+        "venmo_activity": "checking",
+    }.get(preset_type, "checking")
+    institution = _institution_from_filename(filename, preset_type)
+    last_four = _last_four_from_import(filename, preview)
+    account_name = _account_name_from_preview(preview)
+    display_name_parts = [part for part in (institution, account_name, last_four) if part]
+    display_name = " ".join(display_name_parts) if display_name_parts else _friendly_name_from_filename(filename)
+    return {
+        "institution_name": institution,
+        "display_name": display_name[:120],
+        "account_type": account_type,
+        "currency": "USD",
+        "last_four": last_four,
+    }
+
+
+def _score_account_match(account: Account, proposed: dict, filename: str) -> tuple[int, str]:
+    score = 0
+    reasons = []
+    proposed_last_four = proposed.get("last_four")
+    if proposed_last_four and account.last_four and account.last_four == proposed_last_four:
+        score += 70
+        reasons.append("last four matched")
+    if account.account_type == proposed.get("account_type"):
+        score += 20
+        reasons.append("account type matched")
+    institution_name = account.institution.name if account.institution else None
+    proposed_institution = proposed.get("institution_name")
+    if institution_name and proposed_institution and institution_name.lower() == proposed_institution.lower():
+        score += 25
+        reasons.append("institution matched")
+    normalized_display = _normalize_account_name(account.display_name)
+    normalized_filename = _normalize_account_name(filename)
+    normalized_proposed = _normalize_account_name(proposed.get("display_name") or "")
+    if normalized_display and (normalized_display in normalized_filename or normalized_display in normalized_proposed):
+        score += 15
+        reasons.append("name matched")
+    return min(score, 100), ", ".join(reasons) or "weak filename/type similarity"
+
+
+def _institution_from_filename(filename: str, preset_type: str) -> str | None:
+    text = filename.lower()
+    if preset_type == "brokerage_positions" or "fidelity" in text or "portfolio_positions" in text or "individual-positions" in text:
+        return "Fidelity"
+    if "chase" in text:
+        return "Chase"
+    if "boa" in text or "bankofamerica" in text or "bank_of_america" in text:
+        return "Bank of America"
+    if "venmo" in text:
+        return "Venmo"
+    return None
+
+
+def _last_four_from_import(filename: str, preview: PreviewResult) -> str | None:
+    for row in preview.rows:
+        account_number = "".join(char for char in str(row.get("account_number") or "") if char.isdigit())
+        if len(account_number) >= 4:
+            return account_number[-4:]
+    filename_digits = re.findall(r"\d{4,}", filename)
+    for token in filename_digits:
+        if len(token) == 8 and token.startswith(("19", "20")):
+            continue
+        return token[-4:]
+    if filename_digits:
+        return filename_digits[0][-4:]
+    return None
+
+
+def _account_name_from_preview(preview: PreviewResult) -> str | None:
+    for row in preview.rows:
+        value = (row.get("account_name") or "").strip()
+        if value:
+            return value[:80]
+    return None
+
+
+def _friendly_name_from_filename(filename: str) -> str:
+    stem = filename.rsplit(".", 1)[0]
+    cleaned = re.sub(r"[_\-]+", " ", stem).strip()
+    return cleaned.title() or "Imported Account"
 
 
 def _source_hash(account_id: int, date_value: str, amount: str, description: str, source_reference: str | None, ordinal: int) -> str:

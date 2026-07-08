@@ -739,6 +739,34 @@ button:disabled {
   padding: 16px;
 }
 
+.importWorkspace {
+  grid-column: span 2;
+}
+
+.workspaceTabs {
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #f7f4ed;
+}
+
+.workspaceTab {
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.workspaceTab.active {
+  background: var(--ink);
+  color: #fffaf0;
+}
+
 .compactForm {
   display: grid;
   gap: 8px;
@@ -900,6 +928,58 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcfb;
+}
+
+.analysisPanel,
+.suggestedAccountForm,
+.manualOverride {
+  display: grid;
+  gap: 10px;
+}
+
+.analysisPanel {
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid #d5e8dc;
+  border-radius: 8px;
+  background: #f4faf6;
+}
+
+.analysisHeader,
+.matchedAccountCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.analysisHeader div,
+.matchedAccountCard div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.analysisHeader span,
+.matchedAccountCard span,
+.manualOverride label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.matchedAccountCard {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfb;
+}
+
+.suggestedAccountForm {
+  padding-top: 4px;
+}
+
+.manualOverride {
+  margin-bottom: 12px;
 }
 
 .transferCardTop {
@@ -1141,6 +1221,10 @@ textarea {
     grid-template-columns: 1fr 1fr;
   }
 
+  .importWorkspace {
+    grid-column: span 2;
+  }
+
   .flowCanvas {
     grid-template-columns: 1fr;
   }
@@ -1173,6 +1257,16 @@ textarea {
   .contentGrid,
   .workGrid {
     grid-template-columns: 1fr;
+  }
+
+  .importWorkspace {
+    grid-column: span 1;
+  }
+
+  .analysisHeader,
+  .matchedAccountCard {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .reviewControls {

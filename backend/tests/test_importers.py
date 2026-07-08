@@ -1,4 +1,9 @@
-from app.services.importers import detect_preset_from_content, preview_import
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+from app.db import Base
+from app.models import Account
+from app.services.importers import detect_preset_from_content, preview_import, suggest_account_for_import
 
 
 def test_detect_card_reference_preset():
@@ -31,6 +36,40 @@ def test_preview_brokerage_rows_keeps_account_identity():
     assert preview.rows[0]["account_name"] == "Taxable Brokerage"
     assert preview.rows[0]["quantity"] == "1"
     assert preview.rows[0]["price"] == "250.00"
+
+
+def test_suggest_account_for_brokerage_positions_matches_existing_last_four():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        account = Account(display_name="Fidelity BrokerageLink", account_type="brokerage", last_four="5678")
+        session.add(account)
+        session.commit()
+        content = (
+            b"Account Number,Account Name,Symbol,Description,Quantity,Last Price,Last Price Change,Current Value\n"
+            b"Z12345678,Taxable Brokerage,VTI,Vanguard Total Stock,1,250.00,0.00,250.00\n"
+        )
+
+        suggestion = suggest_account_for_import(session, "Portfolio_Positions_Jul-07-2026.csv", content)
+
+        assert suggestion.preset_type == "brokerage_positions"
+        assert suggestion.suggested_account_id == account.id
+        assert suggestion.match_confidence >= 70
+        assert suggestion.proposed_account["last_four"] == "5678"
+
+
+def test_suggest_account_prepopulates_card_details_from_filename():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        content = b"Posted Date,Reference Number,Payee,Address,Amount\n05/01/2026,123,Store,Addr,-12.34\n"
+
+        suggestion = suggest_account_for_import(session, "Chase5618_Activity20260707.CSV", content)
+
+        assert suggestion.suggested_account_id is None
+        assert suggestion.proposed_account["account_type"] == "credit_card"
+        assert suggestion.proposed_account["institution_name"] == "Chase"
+        assert suggestion.proposed_account["last_four"] == "5618"
 
 
 def test_preview_brokerage_rows_allows_blank_description():
