@@ -50,15 +50,32 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!response.ok) {
-    throw new Error(await response.text());
+    throw new Error(await readableApiError(response));
   }
   return response.json();
+}
+
+async function readableApiError(response: Response): Promise<string> {
+  try {
+    const data = await response.json();
+    const detail = data?.detail;
+    if (Array.isArray(detail) && detail.length > 0) {
+      return detail[0]?.msg ?? "The request could not be completed.";
+    }
+    if (typeof detail === "string") {
+      return detail;
+    }
+  } catch {
+    // Fall through to a generic message so sensitive payloads do not land in logs.
+  }
+  return "The request could not be completed.";
 }
 
 export function App() {
   const [configured, setConfigured] = useState(false);
   const [csrf, setCsrf] = useState("");
   const [password, setPassword] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
   const [categories, setCategories] = useState<BootstrapCategory[]>([]);
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
@@ -107,14 +124,30 @@ export function App() {
   }
 
   async function handleSetup() {
-    await api("/api/setup", { method: "POST", body: JSON.stringify({ password }) });
-    setConfigured(true);
+    setErrorMessage("");
+    if (password.length < 12) {
+      setErrorMessage("Use at least 12 characters for your local password.");
+      return;
+    }
+    try {
+      await api("/api/setup", { method: "POST", body: JSON.stringify({ password }) });
+      setConfigured(true);
+      setPassword("");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Setup failed.");
+    }
   }
 
   async function handleLogin() {
-    const result = await api<{ csrf_token: string }>("/api/login", { method: "POST", body: JSON.stringify({ password }) });
-    setCsrf(result.csrf_token);
-    await loadData();
+    setErrorMessage("");
+    try {
+      const result = await api<{ csrf_token: string }>("/api/login", { method: "POST", body: JSON.stringify({ password }) });
+      setCsrf(result.csrf_token);
+      setPassword("");
+      await loadData();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Login failed.");
+    }
   }
 
   async function createAccount() {
@@ -167,7 +200,8 @@ export function App() {
         <div className="heroCard">
           <h1>private-finance</h1>
           <p>Set a local password to initialize the encrypted-first finance workspace.</p>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Create password" />
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Create password, 12+ characters" />
+          {errorMessage ? <p className="formError">{errorMessage}</p> : null}
           <button onClick={() => void handleSetup()}>Initialize</button>
         </div>
       </div>
@@ -181,6 +215,7 @@ export function App() {
           <h1>Welcome back</h1>
           <p>Sign in locally to review imports, cash flow, and net worth.</p>
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" />
+          {errorMessage ? <p className="formError">{errorMessage}</p> : null}
           <button onClick={() => void handleLogin()}>Sign in</button>
         </div>
       </div>

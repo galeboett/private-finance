@@ -104,6 +104,12 @@ select {
   background: var(--panel-strong);
 }
 
+.formError {
+  margin: 10px 0 0;
+  color: #a5332a;
+  font-size: 0.95rem;
+}
+
 button {
   border: 0;
   border-radius: 999px;

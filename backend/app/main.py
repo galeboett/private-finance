@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -26,6 +27,21 @@ from .services.reporting import cash_flow_summary, category_totals, dashboard_su
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(LocalhostSecurityMiddleware)
+
+
+@app.exception_handler(RequestValidationError)
+async def sanitized_validation_error_handler(request: Request, exc: RequestValidationError):
+    errors = []
+    for error in exc.errors():
+        errors.append(
+            {
+                "type": error.get("type"),
+                "loc": error.get("loc"),
+                "msg": error.get("msg"),
+                "ctx": error.get("ctx"),
+            }
+        )
+    return JSONResponse({"detail": errors}, status_code=422)
 
 
 def current_session(request: Request, db: Session = Depends(get_db)) -> SessionToken:
