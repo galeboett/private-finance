@@ -42,3 +42,15 @@ def test_preview_brokerage_rows_allows_blank_description():
 
     assert len(preview.rows) == 1
     assert preview.rows[0]["description"] == ""
+
+
+def test_preview_brokerage_link_aggregate_rows_are_ignored():
+    content = (
+        b"Account Number,Account Name,Symbol,Description,Quantity,Last Price,Last Price Change,Current Value\n"
+        b"Z12345678,401k,,BROKERAGELINK,0,0,0,\"1,000.00\"\n"
+        b"Z12345678,401k,VTI,Vanguard Total Stock,1,250.00,0.00,250.00\n"
+    )
+    preview = preview_import(content, "brokerage_positions")
+
+    assert preview.rows[0]["row_kind"] == "ignore"
+    assert preview.rows[1]["row_kind"] == "position"

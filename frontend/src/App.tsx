@@ -95,9 +95,14 @@ type HoldingRow = {
   snapshot_date: string;
   symbol: string | null;
   description: string | null;
+  csv_description: string | null;
+  user_description: string | null;
   quantity: number | null;
   price_cents: number | null;
+  display_price_cents: number | null;
+  price_date: string;
   market_value_cents: number;
+  display_market_value_cents: number;
   asset_class: string | null;
 };
 
@@ -487,6 +492,24 @@ export function App() {
     }
   }
 
+  async function updateHoldingDescription(symbol: string | null, userDescription: string) {
+    if (!symbol) {
+      showToast({ tone: "error", message: "This holding does not have a symbol to save a reusable description." });
+      return;
+    }
+    try {
+      await api("/api/investments/holding-metadata", {
+        method: "PATCH",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ symbol, user_description: userDescription }),
+      });
+      await loadData();
+      showToast({ tone: "success", message: `Description saved for ${symbol}. Future uploads will use it in Holding details.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Holding description could not be saved." });
+    }
+  }
+
   if (!configured) {
     return (
       <div className="authShell">
@@ -612,6 +635,7 @@ export function App() {
               netWorthAccounts={netWorthAccounts}
               allocationRows={allocationRows}
               holdingRows={holdingRows}
+              onUpdateHoldingDescription={updateHoldingDescription}
             />
           </section>
 
@@ -915,6 +939,7 @@ function ReportSurface({
   netWorthAccounts,
   allocationRows,
   holdingRows,
+  onUpdateHoldingDescription,
 }: {
   activeTab: string;
   income: number;
@@ -925,6 +950,7 @@ function ReportSurface({
   netWorthAccounts: NetWorthAccount[];
   allocationRows: AllocationRow[];
   holdingRows: HoldingRow[];
+  onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
 }) {
   if (activeTab === "Spending") {
     return <SpendingReport rows={categoryTotals} />;
@@ -933,7 +959,7 @@ function ReportSurface({
     return <IncomeReport income={income} expenses={expenses} net={net} />;
   }
   if (activeTab === "Net Worth") {
-    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} />;
+    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} onUpdateHoldingDescription={onUpdateHoldingDescription} />;
   }
   if (activeTab === "Cash Flow") {
     return <MonthlyCashFlowReport rows={cashFlowRows} income={income} expenses={expenses} net={net} />;
@@ -1011,7 +1037,17 @@ function IncomeReport({ income, expenses, net }: { income: number; expenses: num
   );
 }
 
-function NetWorthReport({ accounts, allocationRows, holdingRows }: { accounts: NetWorthAccount[]; allocationRows: AllocationRow[]; holdingRows: HoldingRow[] }) {
+function NetWorthReport({
+  accounts,
+  allocationRows,
+  holdingRows,
+  onUpdateHoldingDescription,
+}: {
+  accounts: NetWorthAccount[];
+  allocationRows: AllocationRow[];
+  holdingRows: HoldingRow[];
+  onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
+}) {
   const total = accounts.reduce((sum, row) => sum + row.market_value_cents, 0);
   const max = Math.max(...accounts.map((row) => row.market_value_cents), 1);
   return (
@@ -1037,24 +1073,35 @@ function NetWorthReport({ accounts, allocationRows, holdingRows }: { accounts: N
       </div>
       <div className="holdingsPanel">
         <div>
-          <strong>Holdings inspection</strong>
-          <span>Latest imported rows used for investment net worth.</span>
+          <strong>Holding details</strong>
+          <span>Latest imported rows used for investment net worth. Descriptions you edit are stored locally by symbol.</span>
         </div>
         <div className="holdingsTable">
           <div className="holdingsHeader">
             <span>Account</span>
             <span>Symbol</span>
+            <span>Description</span>
             <span>Quantity</span>
             <span>Price</span>
+            <span>Price date</span>
             <span>Value</span>
           </div>
           {holdingRows.slice(0, 12).map((row) => (
             <div className="holdingsRow" key={row.id}>
               <span>{row.account}</span>
-              <strong>{row.symbol || row.description || "Holding"}</strong>
+              <strong>{row.symbol || "Holding"}</strong>
+              <div className="holdingDescriptionEdit">
+                <input
+                  defaultValue={row.user_description ?? row.csv_description ?? ""}
+                  onBlur={(event) => void updateIfChanged(row, event.currentTarget.value, onUpdateHoldingDescription)}
+                  placeholder="Add your description"
+                />
+                {row.csv_description ? <small>CSV: {row.csv_description}</small> : null}
+              </div>
               <span>{row.quantity ?? "-"}</span>
-              <span>{row.price_cents == null ? "-" : formatMoney(row.price_cents)}</span>
-              <span>{formatMoney(row.market_value_cents)}</span>
+              <span>{row.display_price_cents == null ? "-" : formatMoney(row.display_price_cents)}</span>
+              <span>{row.price_date}</span>
+              <span>{formatMoney(row.display_market_value_cents)}</span>
             </div>
           ))}
           {holdingRows.length === 0 ? <p className="emptyText">No holdings rows to inspect yet.</p> : null}
@@ -1074,6 +1121,14 @@ function CompareCard({ label, value, max, tone }: { label: string; value: number
       </div>
     </div>
   );
+}
+
+async function updateIfChanged(row: HoldingRow, nextDescription: string, onUpdate: (symbol: string | null, userDescription: string) => Promise<void>) {
+  const previous = row.user_description ?? row.csv_description ?? "";
+  if (nextDescription.trim() === previous.trim()) {
+    return;
+  }
+  await onUpdate(row.symbol, nextDescription.trim());
 }
 
 function ReportStat({ label, value }: { label: string; value: string }) {

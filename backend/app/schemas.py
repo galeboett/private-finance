@@ -82,6 +82,11 @@ class TransferLinkCreate(BaseModel):
     confirmed: bool = False
 
 
+class HoldingMetadataUpdate(BaseModel):
+    symbol: str
+    user_description: str | None = None
+
+
 class TransactionFilter(BaseModel):
     account_id: int | None = None
     review_status: str | None = None

@@ -174,6 +174,24 @@ class HoldingSnapshot(TimestampMixin, Base):
     asset_class: Mapped[str | None] = mapped_column(String(80))
 
 
+class SecurityMetadata(TimestampMixin, Base):
+    __tablename__ = "security_metadata"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
+    user_description: Mapped[str | None] = mapped_column(String(255))
+
+
+class SecurityPrice(TimestampMixin, Base):
+    __tablename__ = "security_prices"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(40), nullable=False)
+    price_date: Mapped[date] = mapped_column(Date, nullable=False)
+    price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(80), default="manual", nullable=False)
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
 

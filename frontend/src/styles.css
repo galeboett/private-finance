@@ -565,9 +565,9 @@ button:disabled {
 
 .holdingsHeader,
 .holdingsRow {
-  min-width: 720px;
+  min-width: 980px;
   display: grid;
-  grid-template-columns: minmax(160px, 1.1fr) minmax(120px, 1fr) 100px 112px 112px;
+  grid-template-columns: minmax(140px, 1fr) 96px minmax(220px, 1.4fr) 96px 112px 112px 112px;
   gap: 10px;
   align-items: center;
   padding: 8px 0;
@@ -583,6 +583,20 @@ button:disabled {
 }
 
 .holdingsRow strong {
+  overflow-wrap: anywhere;
+}
+
+.holdingDescriptionEdit {
+  display: grid;
+  gap: 3px;
+}
+
+.holdingDescriptionEdit input {
+  min-height: 32px;
+}
+
+.holdingDescriptionEdit small {
+  color: var(--muted);
   overflow-wrap: anywhere;
 }
 

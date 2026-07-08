@@ -17,9 +17,9 @@ from .bootstrap import initialize_database
 from .config import settings
 from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
-from .models import Account, AppUser, Category, CategoryRule, HoldingSnapshot, ImportPreset, Institution, SessionToken, Transaction, TransactionSplit, TransferLink
+from .models import Account, AppUser, Category, CategoryRule, HoldingSnapshot, ImportPreset, Institution, SecurityMetadata, SecurityPrice, SessionToken, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, CategoryCreate, CategoryUpdate, ImportPresetCreate, LoginRequest, RuleApplyRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
+from .schemas import AccountCreate, AccountUpdate, CategoryCreate, CategoryUpdate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, RuleApplyRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.backups import create_backup, restore_backup
 from .services.importers import commit_import, detect_preset_from_content, preview_import
@@ -499,26 +499,63 @@ def get_net_worth_accounts(session: SessionToken = Depends(current_session), db:
 @app.get("/api/investments/holdings")
 def get_investment_holdings(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     accounts = {account.id: account for account in db.scalars(select(Account)).all()}
+    metadata = {item.symbol.upper(): item for item in db.scalars(select(SecurityMetadata)).all()}
+    prices = db.scalars(select(SecurityPrice).order_by(SecurityPrice.price_date.asc(), SecurityPrice.id.asc())).all()
+    latest_prices: dict[str, SecurityPrice] = {}
+    for price in prices:
+        latest_prices[price.symbol.upper()] = price
     rows = db.scalars(select(HoldingSnapshot).order_by(HoldingSnapshot.snapshot_date.asc(), HoldingSnapshot.id.asc())).all()
     latest_dates: dict[int, object] = {}
     for row in rows:
         latest_dates[row.account_id] = max(latest_dates.get(row.account_id, row.snapshot_date), row.snapshot_date)
     latest_rows = [row for row in rows if latest_dates.get(row.account_id) == row.snapshot_date]
-    return [
-        {
-            "id": row.id,
-            "account_id": row.account_id,
-            "account": accounts[row.account_id].display_name if row.account_id in accounts else "Unknown account",
-            "snapshot_date": row.snapshot_date.isoformat(),
-            "symbol": row.symbol,
-            "description": row.description,
-            "quantity": row.quantity_basis_points / 10000 if row.quantity_basis_points is not None else None,
-            "price_cents": row.price_cents,
-            "market_value_cents": row.market_value_cents,
-            "asset_class": row.asset_class,
-        }
-        for row in latest_rows
-    ]
+    payload = []
+    for row in latest_rows:
+        symbol_key = (row.symbol or "").upper()
+        meta = metadata.get(symbol_key)
+        latest_price = latest_prices.get(symbol_key)
+        displayed_price_cents = latest_price.price_cents if latest_price else row.price_cents
+        displayed_price_date = latest_price.price_date.isoformat() if latest_price else row.snapshot_date.isoformat()
+        displayed_value_cents = row.market_value_cents
+        if latest_price and row.quantity_basis_points is not None:
+            displayed_value_cents = round((row.quantity_basis_points * latest_price.price_cents) / 10000)
+        payload.append(
+            {
+                "id": row.id,
+                "account_id": row.account_id,
+                "account": accounts[row.account_id].display_name if row.account_id in accounts else "Unknown account",
+                "snapshot_date": row.snapshot_date.isoformat(),
+                "symbol": row.symbol,
+                "description": meta.user_description if meta and meta.user_description else row.description,
+                "csv_description": row.description,
+                "user_description": meta.user_description if meta else None,
+                "quantity": row.quantity_basis_points / 10000 if row.quantity_basis_points is not None else None,
+                "price_cents": row.price_cents,
+                "display_price_cents": displayed_price_cents,
+                "price_date": displayed_price_date,
+                "market_value_cents": row.market_value_cents,
+                "display_market_value_cents": displayed_value_cents,
+                "asset_class": row.asset_class,
+            }
+        )
+    return payload
+
+
+@app.patch("/api/investments/holding-metadata")
+def update_holding_metadata(payload: HoldingMetadataUpdate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    symbol = payload.symbol.strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Symbol is required")
+    metadata = db.scalar(select(SecurityMetadata).where(SecurityMetadata.symbol == symbol))
+    if not metadata:
+        metadata = SecurityMetadata(symbol=symbol)
+        db.add(metadata)
+        db.flush()
+    metadata.user_description = payload.user_description.strip() if payload.user_description else None
+    record_audit_event(db, "holding_metadata_update", "local-user", "security_metadata", symbol, {"symbol": symbol})
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/investments/allocation")

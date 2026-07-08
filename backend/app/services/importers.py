@@ -7,6 +7,7 @@ import json
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -86,8 +87,11 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
             description = row.get("Description") or ""
             if not description and not row.get("Symbol") and not row.get("Current Value"):
                 continue
-            if description.startswith("BROKERAGELINK") or description.startswith("HELD IN"):
-                row_kind = "transaction"
+            upper_description = description.upper()
+            if upper_description.startswith("BROKERAGELINK") or upper_description.startswith("HELD IN"):
+                row_kind = "ignore"
+            else:
+                row_kind = "position"
             rows.append(
                 {
                     "row_index": idx,
@@ -185,6 +189,8 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
             )
         )
         if detected == "brokerage_positions":
+            if row["row_kind"] == "ignore":
+                continue
             market_value_cents = parse_decimal_to_cents(row.get("market_value"))
             if market_value_cents is not None:
                 db.add(
@@ -289,10 +295,13 @@ def _normalize_account_name(value: str) -> str:
 
 
 def _parse_decimal_to_basis_points(value: str | int | float | None) -> int | None:
-    cents = parse_decimal_to_cents(value)
-    if cents is None:
+    if value is None or value == "":
         return None
-    return cents * 100
+    try:
+        normalized = str(value).replace(",", "").strip()
+        return int((Decimal(normalized) * Decimal("10000")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    except InvalidOperation as exc:
+        raise ValueError(f"Invalid quantity value: {value}") from exc
 
 
 def _is_possible_duplicate(db: Session, account_id: int, candidate: Transaction) -> bool:
