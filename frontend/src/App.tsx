@@ -533,6 +533,9 @@ export function App() {
         body: form,
       });
       if (!response.ok) {
+        if (response.status === 405) {
+          throw new Error("This backend is missing the CSV analysis endpoint. Restart the app with .\\run.ps1 so the latest backend code is running.");
+        }
         throw new Error(await readableApiError(response, "/api/imports/analyze"));
       }
       const analysis = await parseApiJson<ImportAnalysis>(response, "/api/imports/analyze");
