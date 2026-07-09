@@ -208,7 +208,42 @@ const formatShortDate = (value: string | null | undefined) => {
   return `${month}/${day}/${year.slice(-2)}`;
 };
 
-const readableAccountType = (value: string) => value.replace("_", " ");
+const readableAccountType = (value: string) =>
+  ({
+    checking: "Checking",
+    savings: "Savings",
+    credit_card: "Credit card",
+    cash: "Cash",
+    other: "Other",
+    loan: "Loan",
+    brokerage: "Brokerage",
+    retirement: "Retirement",
+  })[value] ?? value.replace(/_/g, " ");
+
+const bankAccountTypes = new Set(["checking", "savings", "cash", "other", "loan"]);
+const creditCardAccountTypes = new Set(["credit_card"]);
+const brokerageAccountTypes = new Set(["brokerage", "retirement"]);
+
+function isBrokerageAccountType(accountType: string): boolean {
+  return brokerageAccountTypes.has(accountType);
+}
+
+function accountGroupLabel(accountType: string): string {
+  if (creditCardAccountTypes.has(accountType)) return "Credit Cards";
+  if (brokerageAccountTypes.has(accountType)) return "Brokerages";
+  return "Bank Accounts";
+}
+
+const accountTypeOptions = [
+  { value: "checking", label: "Checking (Bank Accounts)" },
+  { value: "savings", label: "Savings (Bank Accounts)" },
+  { value: "cash", label: "Cash (Bank Accounts)" },
+  { value: "loan", label: "Loan (Bank Accounts)" },
+  { value: "other", label: "Other (Bank Accounts)" },
+  { value: "credit_card", label: "Credit card (Credit Cards)" },
+  { value: "brokerage", label: "Brokerage (Brokerages)" },
+  { value: "retirement", label: "Retirement (Brokerages)" },
+];
 
 const reviewStatusLabel = (value: string) =>
   ({
@@ -1168,12 +1203,24 @@ export function App() {
     return counts;
   }, [missingCategoryTransactions]);
   const accountBalances = useMemo(() => {
-    const balances = new Map<number, number>();
+    const transactionBalances = new Map<number, number>();
     for (const transaction of transactions) {
-      balances.set(transaction.account_id, (balances.get(transaction.account_id) ?? 0) + transaction.amount_cents);
+      transactionBalances.set(transaction.account_id, (transactionBalances.get(transaction.account_id) ?? 0) + transaction.amount_cents);
+    }
+    const snapshotBalances = new Map<number, number>();
+    for (const row of netWorthAccounts) {
+      snapshotBalances.set(row.account_id, row.market_value_cents);
+    }
+    const balances = new Map<number, number>();
+    for (const account of accounts) {
+      if (isBrokerageAccountType(account.account_type)) {
+        balances.set(account.id, snapshotBalances.get(account.id) ?? 0);
+      } else {
+        balances.set(account.id, transactionBalances.get(account.id) ?? 0);
+      }
     }
     return balances;
-  }, [transactions]);
+  }, [accounts, netWorthAccounts, transactions]);
   const categorySuggestions = useMemo(() => {
     if (!categoryEditor) {
       return categories;
@@ -1233,8 +1280,9 @@ export function App() {
   const previewRows = importPreview?.rows.slice(0, 6) ?? [];
   const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status));
   const visibleReviewTransactions = reviewTransactions.slice(0, 5);
-  const cashAccounts = accounts.filter((account) => ["checking", "savings", "credit_card", "cash", "other"].includes(account.account_type));
-  const trackingAccounts = accounts.filter((account) => ["brokerage", "retirement", "loan"].includes(account.account_type));
+  const bankAccounts = accounts.filter((account) => bankAccountTypes.has(account.account_type));
+  const creditCardAccounts = accounts.filter((account) => creditCardAccountTypes.has(account.account_type));
+  const brokerageAccounts = accounts.filter((account) => brokerageAccountTypes.has(account.account_type));
   const focusedMissingCategoryCount = focusedAccountId ? missingCategoryCountByAccount.get(focusedAccountId) ?? 0 : 0;
   const focusedAccountBalanceCents = focusedAccountId ? accountBalances.get(focusedAccountId) ?? 0 : 0;
   const transactionYears = Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))).sort((left, right) => right.localeCompare(left));
@@ -1327,37 +1375,18 @@ export function App() {
             );
           })}
         </nav>
-        <div className="sidebarSection">
-          <div className="sidebarSectionHeader">
-            <span>Cash Accounts</span>
-            <span>{formatMoney(cashAccounts.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0))}</span>
-          </div>
-          <div className="sidebarAccounts">
-            {cashAccounts.map((account) => {
-              const missingCount = missingCategoryCountByAccount.get(account.id) ?? 0;
-              const isActive = activeView === "account" && focusedAccountId === account.id;
-              return (
-                <button key={account.id} className={isActive ? "sidebarAccount active" : "sidebarAccount"} onClick={() => openAccountView(account.id)} title={account.display_name}>
-                  <span className={missingCount > 0 ? "attentionDot" : "attentionDot hidden"} />
-                  <span className="sidebarAccountName">
-                    {account.display_name}
-                    {account.last_four ? ` (${account.last_four})` : ""}
-                  </span>
-                  <span className="sidebarAccountBalance">{formatMoney(accountBalances.get(account.id) ?? 0)}</span>
-                </button>
-              );
-            })}
-            {cashAccounts.length === 0 ? <p className="emptyText" style={{ color: "rgba(245,247,255,0.55)", padding: "0 12px" }}>No cash accounts yet.</p> : null}
-          </div>
-        </div>
-        {trackingAccounts.length > 0 ? (
-          <div className="sidebarSection">
+        {[
+          { label: "Bank Accounts", rows: bankAccounts, emptyText: "No bank accounts yet." },
+          { label: "Credit Cards", rows: creditCardAccounts, emptyText: "No credit cards yet." },
+          { label: "Brokerages", rows: brokerageAccounts, emptyText: "No brokerages yet." },
+        ].map((section) => (
+          <div className="sidebarSection" key={section.label}>
             <div className="sidebarSectionHeader">
-              <span>Tracking</span>
-              <span>{formatMoney(trackingAccounts.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0))}</span>
+              <span>{section.label}</span>
+              <span>{formatMoney(section.rows.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0))}</span>
             </div>
             <div className="sidebarAccounts">
-              {trackingAccounts.map((account) => {
+              {section.rows.map((account) => {
                 const missingCount = missingCategoryCountByAccount.get(account.id) ?? 0;
                 const isActive = activeView === "account" && focusedAccountId === account.id;
                 return (
@@ -1371,9 +1400,10 @@ export function App() {
                   </button>
                 );
               })}
+              {section.rows.length === 0 ? <p className="emptyText" style={{ color: "rgba(245,247,255,0.55)", padding: "0 12px" }}>{section.emptyText}</p> : null}
             </div>
           </div>
-        ) : null}
+        ))}
         <div className="sidebarFooter">
           <button
             className="addAccountButton"
@@ -1486,6 +1516,7 @@ export function App() {
                   {focusedAccount.last_four ? ` (${focusedAccount.last_four})` : ""}
                 </h1>
                 <div className="accountMetaRow">
+                  <span>{accountGroupLabel(focusedAccount.account_type)}</span>
                   <span>{readableAccountType(focusedAccount.account_type)}</span>
                   <span>{focusedAccount.institution_name ?? "Local account"}</span>
                   <span>{focusedAccount.status}</span>
@@ -1642,10 +1673,11 @@ export function App() {
                         <input value={accountForm.display_name} onChange={(event) => setAccountForm({ ...accountForm, display_name: event.target.value })} placeholder="Account name" />
                         <input value={accountForm.institution_name} onChange={(event) => setAccountForm({ ...accountForm, institution_name: event.target.value })} placeholder="Institution" />
                         <select value={accountForm.account_type} onChange={(event) => setAccountForm({ ...accountForm, account_type: event.target.value })}>
-                          <option value="checking">Checking</option>
-                          <option value="savings">Savings</option>
-                          <option value="credit_card">Credit card</option>
-                          <option value="brokerage">Brokerage</option>
+                          {accountTypeOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
                         </select>
                         <input value={accountForm.last_four} onChange={(event) => setAccountForm({ ...accountForm, last_four: event.target.value })} placeholder="Last four" />
                         <button className="primaryButton" onClick={() => void createAccountFromAnalysis()}>
@@ -1698,10 +1730,11 @@ export function App() {
                   <input value={accountForm.display_name} onChange={(event) => setAccountForm({ ...accountForm, display_name: event.target.value })} placeholder="Account name" />
                   <input value={accountForm.institution_name} onChange={(event) => setAccountForm({ ...accountForm, institution_name: event.target.value })} placeholder="Institution" />
                   <select value={accountForm.account_type} onChange={(event) => setAccountForm({ ...accountForm, account_type: event.target.value })}>
-                    <option value="checking">Checking</option>
-                    <option value="savings">Savings</option>
-                    <option value="credit_card">Credit card</option>
-                    <option value="brokerage">Brokerage</option>
+                    {accountTypeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
                   <input value={accountForm.last_four} onChange={(event) => setAccountForm({ ...accountForm, last_four: event.target.value })} placeholder="Last four" />
                   <div className="buttonRow">
@@ -1762,7 +1795,9 @@ export function App() {
                             {account.institution_name ? <small>{account.institution_name}</small> : null}
                           </span>
                         </button>
-                        <small>{readableAccountType(account.account_type)}</small>
+                        <small>
+                          {accountGroupLabel(account.account_type)} · {readableAccountType(account.account_type)}
+                        </small>
                         <div className="inlineActions">
                           <button className="secondaryButton" onClick={() => beginEditAccount(account)} title="Edit account">
                             <Pencil size={14} />
@@ -2381,14 +2416,11 @@ export function App() {
                   <input value={accountForm.display_name} onChange={(event) => setAccountForm((current) => ({ ...current, display_name: event.target.value }))} placeholder="Account name" />
                   <input value={accountForm.institution_name} onChange={(event) => setAccountForm((current) => ({ ...current, institution_name: event.target.value }))} placeholder="Institution" />
                   <select value={accountForm.account_type} onChange={(event) => setAccountForm((current) => ({ ...current, account_type: event.target.value }))}>
-                    <option value="checking">Checking</option>
-                    <option value="savings">Savings</option>
-                    <option value="credit_card">Credit card</option>
-                    <option value="brokerage">Brokerage</option>
-                    <option value="retirement">Retirement</option>
-                    <option value="cash">Cash</option>
-                    <option value="loan">Loan</option>
-                    <option value="other">Other</option>
+                    {accountTypeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
                   <button className="primaryButton" onClick={() => void saveAccount()}>
                     Save account
