@@ -1853,6 +1853,7 @@ function NetWorthReport({
 }) {
   const total = accounts.reduce((sum, row) => sum + row.market_value_cents, 0);
   const max = Math.max(...accounts.map((row) => row.market_value_cents), 1);
+  const sharedPriceDate = holdingRows.find((row) => row.price_date)?.price_date ?? "-";
   return (
     <div className="reportStack">
       <div className="reportMiniGrid">
@@ -1906,8 +1907,10 @@ function NetWorthReport({
             <span>Symbol</span>
             <span>Description</span>
             <span>Quantity</span>
-            <span>Price</span>
-            <span>Price date</span>
+            <span className="stackedHeader">
+              Price
+              <small>{sharedPriceDate}</small>
+            </span>
             <span>Value</span>
             <span>Action</span>
           </div>
@@ -1932,7 +1935,6 @@ function NetWorthReport({
                 </div>
                 <span>{row.quantity ?? "-"}</span>
                 <span>{row.display_price_cents == null ? "-" : formatMoney(row.display_price_cents)}</span>
-                <span>{row.price_date}</span>
                 <span>{formatMoney(row.display_market_value_cents)}</span>
                 <button className="dangerTextButton" onClick={() => onRequestDelete({ kind: "holding", id: row.id, label: `${row.symbol || row.description || "Holding"} in ${row.account}` })}>
                   Delete
