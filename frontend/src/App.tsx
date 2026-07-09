@@ -1,8 +1,6 @@
 import {
   AlertCircle,
   ArrowDownToLine,
-  BadgeDollarSign,
-  BarChart3,
   CheckCircle2,
   FileUp,
   Landmark,
@@ -19,8 +17,9 @@ import {
   Sparkles,
   TrendingUp,
   WalletCards,
+  X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type BootstrapCategory = { id: number; key: string; label: string };
 type DashboardSummary = {
@@ -159,14 +158,14 @@ type HoldingRow = {
   asset_class: string | null;
 };
 
-const navItems = [
-  { label: "Dashboard", icon: LayoutDashboard },
-  { label: "Accounts", icon: WalletCards },
-  { label: "Transactions", icon: ReceiptText },
-  { label: "Cash Flow", icon: BarChart3 },
-  { label: "Reports", icon: TrendingUp },
-  { label: "Review", icon: ListChecks },
-  { label: "Settings", icon: Settings },
+type AppView = "overview" | "all-accounts" | "account" | "review" | "reports" | "settings";
+
+const primaryNavItems: Array<{ id: AppView; label: string; icon: typeof LayoutDashboard }> = [
+  { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "reports", label: "Reports", icon: TrendingUp },
+  { id: "all-accounts", label: "All Accounts", icon: Landmark },
+  { id: "review", label: "Review", icon: ListChecks },
+  { id: "settings", label: "Settings", icon: Settings },
 ];
 
 const reportTabs = ["Reports", "Cash Flow", "Spending", "Income", "Net Worth"];
@@ -303,6 +302,10 @@ export function App() {
   const [importAnalysis, setImportAnalysis] = useState<ImportAnalysis | null>(null);
   const [importWorkspaceTab, setImportWorkspaceTab] = useState<"smart" | "manual">("smart");
   const [activeTab, setActiveTab] = useState("Cash Flow");
+  const [activeView, setActiveView] = useState<AppView>("overview");
+  const [focusedAccountId, setFocusedAccountId] = useState<number | null>(null);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [categoryEditor, setCategoryEditor] = useState<{ transactionId: number; query: string } | null>(null);
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
   const [newCategoryLabel, setNewCategoryLabel] = useState("");
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
@@ -1156,6 +1159,32 @@ export function App() {
     }
   }
 
+  const missingCategoryTransactions = transactions.filter((transaction) => transaction.transaction_type === "expense" && !transaction.category_id);
+  const missingCategoryCountByAccount = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const transaction of missingCategoryTransactions) {
+      counts.set(transaction.account_id, (counts.get(transaction.account_id) ?? 0) + 1);
+    }
+    return counts;
+  }, [missingCategoryTransactions]);
+  const accountBalances = useMemo(() => {
+    const balances = new Map<number, number>();
+    for (const transaction of transactions) {
+      balances.set(transaction.account_id, (balances.get(transaction.account_id) ?? 0) + transaction.amount_cents);
+    }
+    return balances;
+  }, [transactions]);
+  const categorySuggestions = useMemo(() => {
+    if (!categoryEditor) {
+      return categories;
+    }
+    const query = categoryEditor.query.trim().toLowerCase();
+    if (!query) {
+      return categories;
+    }
+    return categories.filter((category) => category.label.toLowerCase().includes(query));
+  }, [categories, categoryEditor]);
+
   if (!configured) {
     return (
       <div className="authShell">
@@ -1199,18 +1228,29 @@ export function App() {
   const netIncomeCents = totalIncomeCents - totalExpenseCents;
   const savingsRate = totalIncomeCents > 0 ? Math.max(0, Math.round((netIncomeCents / totalIncomeCents) * 1000) / 10) : 0;
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId);
+  const focusedAccount = accounts.find((account) => account.id === focusedAccountId) ?? null;
   const analyzedAccount = accounts.find((account) => account.id === importAnalysis?.suggested_account_id);
   const previewRows = importPreview?.rows.slice(0, 6) ?? [];
   const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status));
   const visibleReviewTransactions = reviewTransactions.slice(0, 5);
+  const cashAccounts = accounts.filter((account) => ["checking", "savings", "credit_card", "cash", "other"].includes(account.account_type));
+  const trackingAccounts = accounts.filter((account) => ["brokerage", "retirement", "loan"].includes(account.account_type));
+  const focusedMissingCategoryCount = focusedAccountId ? missingCategoryCountByAccount.get(focusedAccountId) ?? 0 : 0;
+  const focusedAccountBalanceCents = focusedAccountId ? accountBalances.get(focusedAccountId) ?? 0 : 0;
   const transactionYears = Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))).sort((left, right) => right.localeCompare(left));
   const transactionCategoryOptions: FilterOption[] = [...categories.map((category) => ({ value: String(category.id), label: category.label })), { value: uncategorizedFilterValue, label: "Uncategorized" }];
-  const filteredTransactions = transactions
-    .filter((transaction) => selectedTransactionAccountFilters.includes(transaction.account_id))
-    .filter((transaction) => selectedTransactionMonthFilters.includes(transaction.transaction_date.slice(5, 7)))
-    .filter((transaction) => selectedTransactionYearFilters.includes(transaction.transaction_date.slice(0, 4)))
-    .filter((transaction) => selectedTransactionCategoryFilters.includes(transaction.category_id ? String(transaction.category_id) : uncategorizedFilterValue))
-    .sort((left, right) => {
+  const filteredTransactions = (() => {
+    let rows = transactions;
+    if (activeView === "account" && focusedAccountId) {
+      rows = rows.filter((transaction) => transaction.account_id === focusedAccountId);
+    } else {
+      rows = rows
+        .filter((transaction) => selectedTransactionAccountFilters.includes(transaction.account_id))
+        .filter((transaction) => selectedTransactionMonthFilters.includes(transaction.transaction_date.slice(5, 7)))
+        .filter((transaction) => selectedTransactionYearFilters.includes(transaction.transaction_date.slice(0, 4)))
+        .filter((transaction) => selectedTransactionCategoryFilters.includes(transaction.category_id ? String(transaction.category_id) : uncategorizedFilterValue));
+    }
+    return [...rows].sort((left, right) => {
       const direction = transactionSortDirection === "asc" ? 1 : -1;
       if (transactionSortKey === "amount") {
         return (left.amount_cents - right.amount_cents) * direction;
@@ -1218,6 +1258,7 @@ export function App() {
       const dateCompare = left.transaction_date.localeCompare(right.transaction_date);
       return dateCompare === 0 ? (left.id - right.id) * direction : dateCompare * direction;
     });
+  })();
   const visibleReviewIds = visibleReviewTransactions.map((transaction) => transaction.id);
   const repositoryTransactionIds = filteredTransactions.map((transaction) => transaction.id);
   const selectedVisibleReviewIds = visibleIdsFilter(visibleReviewIds, selectedTransactionIds);
@@ -1232,124 +1273,275 @@ export function App() {
   const reportNetCents = cashFlowRows.reduce((sum, row) => sum + row.net_cents, 0);
   const netWorthCents = netWorthAccounts.reduce((sum, row) => sum + row.market_value_cents, 0);
 
+  function openAccountView(accountId: number) {
+    setFocusedAccountId(accountId);
+    setSelectedAccountId(accountId);
+    setActiveView("account");
+    setCategoryEditor(null);
+  }
+
+  function openImportModal(accountId?: number) {
+    if (accountId) {
+      setSelectedAccountId(accountId);
+      setFocusedAccountId(accountId);
+    } else if (focusedAccountId) {
+      setSelectedAccountId(focusedAccountId);
+    }
+    setImportModalOpen(true);
+  }
+
+  function scrollToUncategorized() {
+    const firstMissing = filteredTransactions.find((transaction) => transaction.transaction_type === "expense" && !transaction.category_id);
+    if (!firstMissing) {
+      return;
+    }
+    document.getElementById(`transaction-row-${firstMissing.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
   return (
     <div className="appFrame">
       <aside className="sidebar">
-        <div className="brandMark">
-          <BadgeDollarSign size={22} />
+        <div className="brandBlock">
+          <strong>Private Finance</strong>
+          <span>Local plan</span>
         </div>
         <nav>
-          {navItems.map((item) => {
+          {primaryNavItems.map((item) => {
             const Icon = item.icon;
             return (
-              <button className={item.label === "Reports" ? "navItem active" : "navItem"} key={item.label} title={item.label}>
+              <button
+                className={activeView === item.id ? "navItem active" : "navItem"}
+                key={item.id}
+                title={item.label}
+                onClick={() => {
+                  setActiveView(item.id);
+                  if (item.id !== "account") {
+                    setFocusedAccountId(null);
+                  }
+                  setCategoryEditor(null);
+                }}
+              >
                 <Icon size={16} />
                 <span>{item.label}</span>
               </button>
             );
           })}
         </nav>
+        <div className="sidebarSection">
+          <div className="sidebarSectionHeader">
+            <span>Cash Accounts</span>
+            <span>{formatMoney(cashAccounts.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0))}</span>
+          </div>
+          <div className="sidebarAccounts">
+            {cashAccounts.map((account) => {
+              const missingCount = missingCategoryCountByAccount.get(account.id) ?? 0;
+              const isActive = activeView === "account" && focusedAccountId === account.id;
+              return (
+                <button key={account.id} className={isActive ? "sidebarAccount active" : "sidebarAccount"} onClick={() => openAccountView(account.id)} title={account.display_name}>
+                  <span className={missingCount > 0 ? "attentionDot" : "attentionDot hidden"} />
+                  <span className="sidebarAccountName">
+                    {account.display_name}
+                    {account.last_four ? ` (${account.last_four})` : ""}
+                  </span>
+                  <span className="sidebarAccountBalance">{formatMoney(accountBalances.get(account.id) ?? 0)}</span>
+                </button>
+              );
+            })}
+            {cashAccounts.length === 0 ? <p className="emptyText" style={{ color: "rgba(245,247,255,0.55)", padding: "0 12px" }}>No cash accounts yet.</p> : null}
+          </div>
+        </div>
+        {trackingAccounts.length > 0 ? (
+          <div className="sidebarSection">
+            <div className="sidebarSectionHeader">
+              <span>Tracking</span>
+              <span>{formatMoney(trackingAccounts.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0))}</span>
+            </div>
+            <div className="sidebarAccounts">
+              {trackingAccounts.map((account) => {
+                const missingCount = missingCategoryCountByAccount.get(account.id) ?? 0;
+                const isActive = activeView === "account" && focusedAccountId === account.id;
+                return (
+                  <button key={account.id} className={isActive ? "sidebarAccount active" : "sidebarAccount"} onClick={() => openAccountView(account.id)} title={account.display_name}>
+                    <span className={missingCount > 0 ? "attentionDot" : "attentionDot hidden"} />
+                    <span className="sidebarAccountName">
+                      {account.display_name}
+                      {account.last_four ? ` (${account.last_four})` : ""}
+                    </span>
+                    <span className="sidebarAccountBalance">{formatMoney(accountBalances.get(account.id) ?? 0)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+        <div className="sidebarFooter">
+          <button
+            className="addAccountButton"
+            onClick={() => {
+              setImportWorkspaceTab("manual");
+              setImportModalOpen(true);
+            }}
+          >
+            <Plus size={16} />
+            Add Account
+          </button>
+        </div>
       </aside>
 
       <main className="workspace">
-        <header className="topBar">
-          <div className="reportTabs" role="tablist" aria-label="Report views">
-            {reportTabs.map((tab) => (
-              <button className={tab === activeTab ? "reportTab active" : "reportTab"} key={tab} onClick={() => setActiveTab(tab)}>
-                {tab}
-              </button>
-            ))}
-          </div>
-          <div className="toolbar">
-            <button className="ghostButton" title="Search">
-              <Search size={16} />
-            </button>
-            <button className="filterButton">This month</button>
-            <button className="filterButton">Filters</button>
-          </div>
-        </header>
-
         {toast ? (
-          <div className={`toast ${toast.tone}`}>
+          <div className={`toast ${toast.tone}`} style={{ margin: "16px 20px 0" }}>
             {toast.tone === "success" ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
             <span>{toast.message}</span>
           </div>
         ) : null}
 
-        <section className="metricsGrid" aria-label="Financial summary">
-          <MetricTile label="Total income" value={formatMoney(totalIncomeCents)} tone="green" />
-          <MetricTile label="Total expenses" value={formatMoney(totalExpenseCents)} tone="red" />
-          <MetricTile label="Total net income" value={formatMoney(netIncomeCents)} tone="neutral" />
-          <MetricTile label="Savings rate" value={`${savingsRate}%`} tone="neutral" />
-        </section>
-
-        <section className="contentGrid">
-          <section className="reportSurface">
-            <div className="sectionHeader">
-              <div>
-                <span className="eyebrow">{activeTab}</span>
-                <h2>{reportTitle(activeTab)}</h2>
+        {(activeView === "overview" || activeView === "reports") && (
+          <>
+            <header className="topBar">
+              <div className="reportTabs" role="tablist" aria-label="Report views">
+                {reportTabs.map((tab) => (
+                  <button className={tab === activeTab ? "reportTab active" : "reportTab"} key={tab} onClick={() => setActiveTab(tab)}>
+                    {tab}
+                  </button>
+                ))}
               </div>
-              <div className="inlineActions">
+              <div className="toolbar">
+                <button className="ghostButton" title="Refresh data" onClick={() => void loadData()}>
+                  <RefreshCw size={16} />
+                </button>
+                <button className="secondaryButton" onClick={() => openImportModal()}>
+                  <FileUp size={16} />
+                  File Import
+                </button>
+              </div>
+            </header>
+
+            <section className="metricsGrid overviewMetrics" aria-label="Financial summary">
+              <MetricTile label="Total income" value={formatMoney(totalIncomeCents)} tone="green" />
+              <MetricTile label="Total expenses" value={formatMoney(totalExpenseCents)} tone="red" />
+              <MetricTile label="Total net income" value={formatMoney(netIncomeCents)} tone="neutral" />
+              <MetricTile label="Savings rate" value={`${savingsRate}%`} tone="neutral" />
+            </section>
+
+            <section className="contentGrid overviewContent">
+              <section className="reportSurface">
+                <div className="sectionHeader">
+                  <div>
+                    <span className="eyebrow">{activeTab}</span>
+                    <h2>{reportTitle(activeTab)}</h2>
+                  </div>
+                </div>
+                <ReportSurface
+                  activeTab={activeTab}
+                  income={reportIncomeCents}
+                  expenses={reportExpenseCents}
+                  net={reportNetCents}
+                  categoryTotals={categoryTotals}
+                  cashFlowRows={cashFlowRows}
+                  netWorthAccounts={netWorthAccounts}
+                  allocationRows={allocationRows}
+                  holdingRows={holdingRows}
+                  selectedHoldingIds={selectedHoldingIds}
+                  selectedVisibleHoldingIds={selectedVisibleHoldingIds}
+                  visibleHoldingIds={visibleHoldingIds}
+                  deleteTarget={deleteTarget}
+                  deleteConfirmText={deleteConfirmText}
+                  onToggleHoldingSelection={toggleHoldingSelection}
+                  onRequestBulkHoldingDelete={requestBulkHoldingDelete}
+                  onClearHoldingSelection={() => {
+                    setSelectedHoldingIds((current) => current.filter((id) => !visibleHoldingIds.includes(id)));
+                    setLastSelectedHoldingId(null);
+                  }}
+                  onUpdateHoldingDescription={updateHoldingDescription}
+                  onRequestDelete={requestDelete}
+                  onConfirmDelete={confirmDelete}
+                  onDeleteConfirmTextChange={setDeleteConfirmText}
+                  onCancelDelete={() => {
+                    setDeleteTarget(null);
+                    setDeleteConfirmText("");
+                  }}
+                />
+              </section>
+            </section>
+          </>
+        )}
+
+        {activeView === "account" && focusedAccount ? (
+          <>
+            {focusedMissingCategoryCount > 0 ? (
+              <div className="reviewNoticeBar">
+                <span>
+                  {focusedMissingCategoryCount} new transaction{focusedMissingCategoryCount === 1 ? "" : "s"} to approve or categorize.
+                </span>
+                <button type="button" onClick={scrollToUncategorized}>
+                  View
+                </button>
+              </div>
+            ) : null}
+            <header className="accountLedgerHeader">
+              <div>
+                <h1>
+                  {focusedAccount.display_name}
+                  {focusedAccount.last_four ? ` (${focusedAccount.last_four})` : ""}
+                </h1>
+                <div className="accountMetaRow">
+                  <span>{readableAccountType(focusedAccount.account_type)}</span>
+                  <span>{focusedAccount.institution_name ?? "Local account"}</span>
+                  <span>{focusedAccount.status}</span>
+                </div>
+              </div>
+              <div className="accountBalanceRow">
+                <div>
+                  <strong className={focusedAccountBalanceCents < 0 ? "amount negative" : "amount positive"}>{formatMoney(focusedAccountBalanceCents)}</strong>
+                  <span>Working Balance</span>
+                </div>
+                <div>
+                  <strong>{focusedMissingCategoryCount}</strong>
+                  <span>Need category</span>
+                </div>
+              </div>
+              <div className="accountActionBar">
+                <button className="primaryButton" onClick={() => openImportModal(focusedAccount.id)}>
+                  <FileUp size={16} />
+                  File Import
+                </button>
+                <button className="secondaryButton" onClick={() => setActiveView("review")}>
+                  <ListChecks size={16} />
+                  Open Review
+                </button>
                 <button className="ghostButton" title="Refresh data" onClick={() => void loadData()}>
                   <RefreshCw size={16} />
                 </button>
               </div>
+            </header>
+          </>
+        ) : null}
+
+        {activeView === "all-accounts" ? (
+          <header className="accountLedgerHeader">
+            <div>
+              <h1>All Accounts</h1>
+              <div className="accountMetaRow">
+                <span>{accounts.length} accounts</span>
+                <span>{missingCategoryTransactions.length} need a category</span>
+              </div>
             </div>
-            <ReportSurface
-              activeTab={activeTab}
-              income={reportIncomeCents}
-              expenses={reportExpenseCents}
-              net={reportNetCents}
-              categoryTotals={categoryTotals}
-              cashFlowRows={cashFlowRows}
-              netWorthAccounts={netWorthAccounts}
-              allocationRows={allocationRows}
-              holdingRows={holdingRows}
-              selectedHoldingIds={selectedHoldingIds}
-              selectedVisibleHoldingIds={selectedVisibleHoldingIds}
-              visibleHoldingIds={visibleHoldingIds}
-              deleteTarget={deleteTarget}
-              deleteConfirmText={deleteConfirmText}
-              onToggleHoldingSelection={toggleHoldingSelection}
-              onRequestBulkHoldingDelete={requestBulkHoldingDelete}
-              onClearHoldingSelection={() => {
-                setSelectedHoldingIds((current) => current.filter((id) => !visibleHoldingIds.includes(id)));
-                setLastSelectedHoldingId(null);
-              }}
-              onUpdateHoldingDescription={updateHoldingDescription}
-              onRequestDelete={requestDelete}
-              onConfirmDelete={confirmDelete}
-              onDeleteConfirmTextChange={setDeleteConfirmText}
-              onCancelDelete={() => {
-                setDeleteTarget(null);
-                setDeleteConfirmText("");
-              }}
-            />
-          </section>
+            <div className="accountActionBar">
+              <button className="primaryButton" onClick={() => openImportModal()}>
+                <FileUp size={16} />
+                File Import
+              </button>
+              <button className="ghostButton" title="Refresh data" onClick={() => void loadData()}>
+                <RefreshCw size={16} />
+              </button>
+            </div>
+          </header>
+        ) : null}
 
-          <aside className="rightRail">
-            <section className="phonePanel">
-              <div className="phoneTop">
-                <span>Accounts</span>
-                <strong>{formatMoney(netWorthCents || dashboard?.net_worth_snapshot_cents || 0)}</strong>
-              </div>
-              <div className="sparkline" />
-              <div className="accountStack">
-                {accounts.slice(0, 3).map((account) => (
-                  <div className="miniAccount" key={account.id}>
-                    <Landmark size={16} />
-                    <span>{account.display_name}</span>
-                    <small>{readableAccountType(account.account_type)}</small>
-                  </div>
-                ))}
-                {accounts.length === 0 ? <p className="emptyText">Add accounts to build your net-worth picture.</p> : null}
-              </div>
-            </section>
-          </aside>
-        </section>
-
-        <section className="workGrid">
+        {(activeView === "review" || activeView === "settings") && (
+        <section className="workGrid viewSection">
+          {activeView === "settings" ? (
           <section className="toolPanel importWorkspace">
             <PanelTitle icon={FileUp} title="Import & Accounts" subtitle="Start with a CSV. The app will match an account or prefill one for your review." />
             <div className="workspaceTabs">
@@ -1598,7 +1790,10 @@ export function App() {
               </>
             )}
           </section>
+          ) : null}
 
+          {activeView === "review" ? (
+          <>
           <section className="toolPanel">
             <PanelTitle icon={WalletCards} title="Transfer Review" subtitle="Find bank transfers and credit card payments so reports do not count them as spending." />
             <div className="transferIntro">
@@ -1819,7 +2014,10 @@ export function App() {
               </div>
             ) : null}
           </section>
+          </>
+          ) : null}
 
+          {activeView === "settings" ? (
           <section className="toolPanel">
             <PanelTitle icon={PiggyBank} title="Categories" subtitle="Spending buckets for expense reporting. Add or rename them as your life changes." />
             <div className="compactForm">
@@ -1863,10 +2061,14 @@ export function App() {
               ))}
             </div>
           </section>
+          ) : null}
         </section>
+        )}
 
-        <section className="ledgerPanel">
-          <PanelTitle icon={ReceiptText} title="All Transactions" subtitle="A searchable repository for every imported transaction." />
+        {(activeView === "account" || activeView === "all-accounts") && (
+        <section className="ledgerPanel ledgerWorkspace">
+          <PanelTitle icon={ReceiptText} title={activeView === "account" ? "Account Transactions" : "All Transactions"} subtitle={activeView === "account" ? "Transactions for the selected account." : "A searchable repository for every imported transaction."} />
+          {activeView === "all-accounts" ? (
           <div className="transactionFilters">
             <MultiSelectFilter
               label="Accounts"
@@ -1901,6 +2103,7 @@ export function App() {
               onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
             />
           </div>
+          ) : null}
           {filteredTransactions.length > 0 ? (
             <div className="selectionToolbar">
               <span>{selectedRepositoryTransactionIds.length} selected / {filteredTransactions.length} shown</span>
@@ -1945,9 +2148,13 @@ export function App() {
               </span>
               <span>Action</span>
             </div>
-            {filteredTransactions.map((transaction) => (
-              <div className="inlineDeleteGroup ledgerDeleteGroup" key={transaction.id}>
-                <div className={selectedTransactionIds.includes(transaction.id) ? "ledgerRow selected" : "ledgerRow"}>
+            {filteredTransactions.map((transaction) => {
+              const needsCategory = transaction.transaction_type === "expense" && !transaction.category_id;
+              const categoryLabel = categories.find((category) => category.id === transaction.category_id)?.label;
+              const editorOpen = categoryEditor?.transactionId === transaction.id;
+              return (
+              <div className="inlineDeleteGroup ledgerDeleteGroup" key={transaction.id} id={`transaction-row-${transaction.id}`}>
+                <div className={[selectedTransactionIds.includes(transaction.id) ? "ledgerRow selected" : "ledgerRow", needsCategory ? "needsAttention" : ""].filter(Boolean).join(" ")}>
                   <input
                     type="checkbox"
                     checked={selectedTransactionIds.includes(transaction.id)}
@@ -1978,14 +2185,76 @@ export function App() {
                       </option>
                     ))}
                   </select>
-                  <select className="editableCell" value={transaction.category_id ?? ""} onChange={(event) => void updateTransaction(transaction.id, { category_id: event.target.value ? Number(event.target.value) : null }, true)}>
-                    <option value="">No category</option>
-                    {categories.map((categoryOption) => (
-                      <option key={categoryOption.id} value={categoryOption.id}>
-                        {categoryOption.label}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="categoryPopupAnchor">
+                    <button
+                      type="button"
+                      className={["categoryTrigger", needsCategory ? "needsCategory" : "", editorOpen ? "open" : ""].filter(Boolean).join(" ")}
+                      onDoubleClick={() => setCategoryEditor({ transactionId: transaction.id, query: categoryLabel ?? "" })}
+                      onClick={() => {
+                        if (editorOpen) {
+                          setCategoryEditor(null);
+                        }
+                      }}
+                      title="Double-click to search and assign a category"
+                    >
+                      <span>{needsCategory ? "This needs a category" : categoryLabel ?? "No category"}</span>
+                    </button>
+                    {editorOpen ? (
+                      <div className="categoryPopup" role="dialog" aria-label="Choose category">
+                        <input
+                          autoFocus
+                          value={categoryEditor?.query ?? ""}
+                          placeholder="Search for a category..."
+                          onChange={(event) => setCategoryEditor({ transactionId: transaction.id, query: event.target.value })}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                              setCategoryEditor(null);
+                            }
+                          }}
+                        />
+                        <div className="categoryPopupList">
+                          <button
+                            type="button"
+                            className="categoryPopupOption"
+                            onClick={() => {
+                              void updateTransaction(transaction.id, { category_id: null }, true);
+                              setCategoryEditor(null);
+                            }}
+                          >
+                            <span>No category</span>
+                          </button>
+                          {categorySuggestions.map((categoryOption) => (
+                            <button
+                              type="button"
+                              className="categoryPopupOption"
+                              key={categoryOption.id}
+                              onClick={() => {
+                                void updateTransaction(transaction.id, { category_id: categoryOption.id }, true);
+                                setCategoryEditor(null);
+                              }}
+                            >
+                              <span>{categoryOption.label}</span>
+                            </button>
+                          ))}
+                          {categorySuggestions.length === 0 ? <div className="categoryPopupEmpty">No matching categories.</div> : null}
+                        </div>
+                        <div className="categoryPopupActions">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void updateTransaction(transaction.id, { transaction_type: "transfer" }, true);
+                              setCategoryEditor(null);
+                            }}
+                          >
+                            Payment/Transfer
+                          </button>
+                          <button type="button" onClick={() => setCategoryEditor(null)}>
+                            Close
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                   <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
                   <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>
                     Delete
@@ -2004,12 +2273,15 @@ export function App() {
                   />
                 ) : null}
               </div>
-            ))}
+              );
+            })}
             {filteredTransactions.length === 0 ? <p className="emptyText">No transactions match those filters.</p> : null}
           </div>
         </section>
+        )}
 
-        <section className="settingsPanel">
+        {activeView === "settings" ? (
+        <section className="settingsPanel viewSection">
           <PanelTitle icon={Settings} title="Settings" subtitle="Backup and restore this local app data." />
           <div className="appDataPanel">
             <div>
@@ -2028,6 +2300,104 @@ export function App() {
             </div>
           </div>
         </section>
+        ) : null}
+
+        {importModalOpen ? (
+          <div className="modalBackdrop" onClick={() => setImportModalOpen(false)}>
+            <div className="modalCard" onClick={(event) => event.stopPropagation()}>
+              <div className="modalHeader">
+                <div>
+                  <h2>File Import</h2>
+                  <p>Choose a CSV, match or create an account, then preview and commit.</p>
+                </div>
+                <button className="ghostButton" onClick={() => setImportModalOpen(false)} title="Close">
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="workspaceTabs">
+                <button className={importWorkspaceTab === "smart" ? "workspaceTab active" : "workspaceTab"} onClick={() => setImportWorkspaceTab("smart")}>
+                  Smart import
+                </button>
+                <button className={importWorkspaceTab === "manual" ? "workspaceTab active" : "workspaceTab"} onClick={() => setImportWorkspaceTab("manual")}>
+                  Manual accounts
+                </button>
+              </div>
+              {importWorkspaceTab === "smart" ? (
+                <div className="compactForm">
+                  <label>
+                    Account
+                    <select value={selectedAccountId} onChange={(event) => setSelectedAccountId(event.target.value ? Number(event.target.value) : "")}>
+                      <option value="">Choose account</option>
+                      {accounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.display_name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <input type="file" accept=".csv,text/csv" onChange={(event) => { setSelectedFile(event.target.files?.[0] ?? null); setImportPreview(null); setImportAnalysis(null); }} />
+                  <div className="buttonRow">
+                    <button className="secondaryButton" onClick={() => void analyzeSelectedImport()} disabled={!selectedFile}>
+                      Analyze
+                    </button>
+                    <button className="secondaryButton" onClick={() => void previewSelectedImport()} disabled={!selectedAccountId || !selectedFile}>
+                      Preview
+                    </button>
+                    <button className="primaryButton" onClick={() => void commitSelectedImport()} disabled={!selectedAccountId || !selectedFile || !importPreview}>
+                      Commit import
+                    </button>
+                  </div>
+                  {importAnalysis ? (
+                    <div className="importSummary">
+                      <span>
+                        Detected <strong>{importAnalysis.preset_type}</strong> · {importAnalysis.reason}
+                      </span>
+                      {analyzedAccount ? <span>Matched account: {analyzedAccount.display_name}</span> : null}
+                    </div>
+                  ) : null}
+                  {importPreview ? (
+                    <div className="importSummary">
+                      <span>
+                        Preview ready for <strong>{selectedAccount?.display_name ?? "selected account"}</strong>
+                      </span>
+                      <span>{importPreview.rows.length} sample rows · {importPreview.warnings.length} warnings</span>
+                    </div>
+                  ) : null}
+                  {previewRows.length > 0 ? (
+                    <div className="previewTable">
+                      {previewRows.map((row, index) => (
+                        <div className="previewRow" key={`${String(row.date ?? "")}-${index}`}>
+                          <span>{String(row.date ?? "")}</span>
+                          <strong>{String(row.description ?? row.payee ?? "")}</strong>
+                          <span>{String(row.amount ?? "")}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="compactForm">
+                  <p className="emptyText">Use Settings → Import & Accounts for full account management, or create a quick account here.</p>
+                  <input value={accountForm.display_name} onChange={(event) => setAccountForm((current) => ({ ...current, display_name: event.target.value }))} placeholder="Account name" />
+                  <input value={accountForm.institution_name} onChange={(event) => setAccountForm((current) => ({ ...current, institution_name: event.target.value }))} placeholder="Institution" />
+                  <select value={accountForm.account_type} onChange={(event) => setAccountForm((current) => ({ ...current, account_type: event.target.value }))}>
+                    <option value="checking">Checking</option>
+                    <option value="savings">Savings</option>
+                    <option value="credit_card">Credit card</option>
+                    <option value="brokerage">Brokerage</option>
+                    <option value="retirement">Retirement</option>
+                    <option value="cash">Cash</option>
+                    <option value="loan">Loan</option>
+                    <option value="other">Other</option>
+                  </select>
+                  <button className="primaryButton" onClick={() => void saveAccount()}>
+                    Save account
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
       </main>
     </div>
   );
