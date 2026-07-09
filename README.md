@@ -45,7 +45,33 @@ For working with a co-worker, see [docs/collaboration.md](docs/collaboration.md)
 .\run.ps1
 ```
 
-This builds the frontend, prepares the backend environment, and starts the app at `http://127.0.0.1:8000`.
+This rebuilds the frontend, prepares the backend environment, and starts the app at `http://127.0.0.1:8000`.
+
+### Restart after code changes (keeps your data)
+
+```powershell
+.\scripts\restart.ps1
+```
+
+This rebuilds the frontend, stops anything on port 8000, and starts the backend again. It does **not** delete your SQLite database.
+
+Useful flags:
+
+```powershell
+.\scripts\restart.ps1 -Background      # start backend detached (for git hooks)
+.\scripts\restart.ps1 -SkipBuild       # backend-only restart
+.\scripts\restart.ps1 -SkipDeps        # skip pip install
+```
+
+### Auto-restart after `git pull`
+
+Install the git hook once:
+
+```powershell
+.\scripts\install-git-hooks.ps1
+```
+
+After that, whenever you `git pull` and the update touches `backend/`, `frontend/`, or the restart scripts, the app rebuilds and restarts automatically in the background.
 
 ### Backend
 
