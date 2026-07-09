@@ -586,12 +586,24 @@ def commit_categorized_history(db: Session, filename: str, content: bytes, actor
             batches_by_account_id[account.id] = batch
         batch = batches_by_account_id[account.id]
 
-        transaction_date = _parse_import_date(row.get("posted_date"))
-        amount_text = row.get("amount") or "0"
-        amount_cents = parse_decimal_to_cents(amount_text) or 0
+        posted_date_text = (row.get("posted_date") or "").strip()
+        amount_text = (row.get("amount") or "").strip()
         description = (row.get("payee") or "").strip()
-        if not description:
-            warnings.append(f"Skipped row {row['row_index']}: Payee is blank.")
+        if not posted_date_text or not amount_text or not description:
+            missing = ", ".join(
+                label
+                for label, value in (("Posted Date", posted_date_text), ("Amount", amount_text), ("Payee", description))
+                if not value
+            )
+            warnings.append(f"Skipped row {row['row_index']}: missing {missing}.")
+            skipped += 1
+            skipped_by_account_id[account.id] += 1
+            continue
+        try:
+            transaction_date = _parse_import_date(posted_date_text)
+            amount_cents = parse_decimal_to_cents(amount_text) or 0
+        except ValueError as exc:
+            warnings.append(f"Skipped row {row['row_index']}: {exc}.")
             skipped += 1
             skipped_by_account_id[account.id] += 1
             continue

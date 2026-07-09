@@ -227,3 +227,23 @@ def test_commit_categorized_history_skips_duplicates_on_reupload():
         assert second["inserted"] == 0
         assert second["skipped"] == 1
         assert session.query(Transaction).count() == 1
+
+
+def test_commit_categorized_history_skips_rows_missing_dates():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        content = (
+            b"Account,Posted Date,Payee,Amount,Expense Category\n"
+            b"Chase Sapphire,08/01/2018,ANNUAL MEMBERSHIP FEE,150.00,Fees & Charges\n"
+            b"Chase Sapphire,,Subtotal,,\n"
+            b"Venmo,08/04/2018,Withdrew cash,-36.70,Income\n"
+        )
+
+        result = commit_categorized_history(session, "history.csv", content)
+        session.commit()
+
+        assert result["inserted"] == 2
+        assert result["skipped"] == 1
+        assert "missing Posted Date" in result["warnings"][0]
+        assert session.query(Transaction).count() == 2
