@@ -227,6 +227,10 @@ async function parseApiJson<T>(response: Response, path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function visibleIdsFilter(visibleIds: number[], selectedIds: number[]) {
+  return visibleIds.filter((id) => selectedIds.includes(id));
+}
+
 export function App() {
   const [configured, setConfigured] = useState(false);
   const [csrf, setCsrf] = useState("");
@@ -265,6 +269,8 @@ export function App() {
   const [selectedHoldingIds, setSelectedHoldingIds] = useState<number[]>([]);
   const [lastSelectedHoldingId, setLastSelectedHoldingId] = useState<number | null>(null);
   const [appImportFile, setAppImportFile] = useState<File | null>(null);
+  const [bulkReviewCategoryId, setBulkReviewCategoryId] = useState<number | "">("");
+  const [bulkReviewType, setBulkReviewType] = useState("expense");
   const [accountForm, setAccountForm] = useState({
     institution_name: "",
     display_name: "",
@@ -509,7 +515,7 @@ export function App() {
     }
   }
 
-  async function updateTransaction(transactionId: number, patch: Partial<Pick<TransactionRow, "category_id" | "transaction_type" | "review_status" | "user_note">>) {
+  async function updateTransaction(transactionId: number, patch: Partial<Pick<TransactionRow, "category_id" | "transaction_type" | "review_status" | "user_note">>, refreshAfterSave = false) {
     setToast(null);
     try {
       await api(`/api/transactions/${transactionId}`, {
@@ -521,6 +527,9 @@ export function App() {
         current.map((transaction) => (transaction.id === transactionId ? { ...transaction, ...patch } : transaction)),
       );
       setReview((current) => (patch.review_status === "confirmed" ? current.filter((item) => item.id !== transactionId) : current));
+      if (refreshAfterSave) {
+        await loadData();
+      }
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Transaction could not be updated." });
     }
@@ -723,6 +732,69 @@ export function App() {
     }
   }
 
+  async function bulkConfirmSelectedReviewTransactions() {
+    setToast(null);
+    if (selectedVisibleReviewTransactions.length === 0) {
+      showToast({ tone: "error", message: "Select at least one review item first." });
+      return;
+    }
+    if (!bulkReviewCategoryId) {
+      showToast({ tone: "error", message: "Choose a category before confirming selected review items." });
+      return;
+    }
+    try {
+      for (const transaction of selectedVisibleReviewTransactions) {
+        await api(`/api/transactions/${transaction.id}`, {
+          method: "PATCH",
+          headers: { "x-csrf-token": csrf },
+          body: JSON.stringify({ category_id: bulkReviewCategoryId, transaction_type: bulkReviewType, review_status: "confirmed" }),
+        });
+      }
+      setSelectedTransactionIds((current) => current.filter((id) => !selectedVisibleReviewIds.includes(id)));
+      setLastSelectedTransactionId(null);
+      await loadData();
+      showToast({ tone: "success", message: `Confirmed ${selectedVisibleReviewTransactions.length} selected review items.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Selected review items could not be confirmed." });
+    }
+  }
+
+  async function bulkSaveRulesForSelectedReviewTransactions() {
+    setToast(null);
+    if (selectedVisibleReviewTransactions.length === 0) {
+      showToast({ tone: "error", message: "Select at least one review item first." });
+      return;
+    }
+    try {
+      let created = 0;
+      for (const transaction of selectedVisibleReviewTransactions) {
+        const categoryId = transaction.category_id ?? (bulkReviewCategoryId || null);
+        if (!categoryId) {
+          continue;
+        }
+        await api<{ id: number }>("/api/rules", {
+          method: "POST",
+          headers: { "x-csrf-token": csrf },
+          body: JSON.stringify({
+            category_id: categoryId,
+            field_name: "raw_description",
+            match_text: suggestedRuleText(transaction.raw_description),
+            suggested_transaction_type: transaction.transaction_type || bulkReviewType,
+            priority: 100,
+          }),
+        });
+        created += 1;
+      }
+      if (created === 0) {
+        showToast({ tone: "error", message: "Choose a category or select rows that already have categories before saving bulk rules." });
+        return;
+      }
+      await loadData();
+      showToast({ tone: "success", message: `Saved ${created} rules from selected review items.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Bulk rules could not be saved." });
+    }
+  }
   async function applySavedRule(scope: "unreviewed" | "all") {
     if (!lastSavedRule) {
       return;
@@ -964,7 +1036,8 @@ export function App() {
   const recentTransactions = transactions.slice(0, 8);
   const visibleReviewIds = visibleReviewTransactions.map((transaction) => transaction.id);
   const recentTransactionIds = recentTransactions.map((transaction) => transaction.id);
-  const selectedVisibleReviewIds = visibleReviewIds.filter((id) => selectedTransactionIds.includes(id));
+  const selectedVisibleReviewIds = visibleIdsFilter(visibleReviewIds, selectedTransactionIds);
+  const selectedVisibleReviewTransactions = visibleReviewTransactions.filter((transaction) => selectedVisibleReviewIds.includes(transaction.id));
   const selectedRecentTransactionIds = recentTransactionIds.filter((id) => selectedTransactionIds.includes(id));
   const accountIds = accounts.map((account) => account.id);
   const selectedVisibleAccountIds = accountIds.filter((id) => selectedAccountIds.includes(id));
@@ -1370,11 +1443,32 @@ export function App() {
             </div>
           </section>
 
-          <section className="toolPanel">
+          <section className="toolPanel reviewInboxPanel">
             <PanelTitle icon={ListChecks} title="Review Inbox" subtitle={`${reviewTransactions.length} items need a human decision.`} />
             {visibleReviewTransactions.length > 0 ? (
-              <div className="selectionToolbar">
+              <div className="selectionToolbar reviewBulkToolbar">
                 <span>{selectedVisibleReviewIds.length} selected</span>
+                <select value={bulkReviewType} onChange={(event) => setBulkReviewType(event.target.value)}>
+                  {transactionTypes.map((type) => (
+                    <option key={type.value} value={type.value}>
+                      {type.label}
+                    </option>
+                  ))}
+                </select>
+                <select value={bulkReviewCategoryId} onChange={(event) => setBulkReviewCategoryId(event.target.value ? Number(event.target.value) : "")}>
+                  <option value="">Choose category</option>
+                  {categories.map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.label}
+                    </option>
+                  ))}
+                </select>
+                <button className="primaryButton" onClick={() => void bulkConfirmSelectedReviewTransactions()} disabled={selectedVisibleReviewIds.length === 0 || !bulkReviewCategoryId}>
+                  Confirm selected
+                </button>
+                <button className="secondaryButton" onClick={() => void bulkSaveRulesForSelectedReviewTransactions()} disabled={selectedVisibleReviewIds.length === 0}>
+                  Save rules
+                </button>
                 <button className="dangerTextButton" onClick={() => requestBulkTransactionDelete(selectedVisibleReviewIds)} disabled={selectedVisibleReviewIds.length === 0}>
                   Delete selected
                 </button>
@@ -1612,8 +1706,21 @@ export function App() {
                       {transaction.raw_description}
                       {transaction.user_note ? <small>{transaction.user_note}</small> : null}
                     </strong>
-                    <span>{readableAccountType(transaction.transaction_type)}</span>
-                    <span>{category?.label ?? "Uncategorized"}</span>
+                    <select value={transaction.transaction_type} onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value }, true)}>
+                      {transactionTypes.map((type) => (
+                        <option key={type.value} value={type.value}>
+                          {type.label}
+                        </option>
+                      ))}
+                    </select>
+                    <select value={transaction.category_id ?? ""} onChange={(event) => void updateTransaction(transaction.id, { category_id: event.target.value ? Number(event.target.value) : null }, true)}>
+                      <option value="">No category</option>
+                      {categories.map((categoryOption) => (
+                        <option key={categoryOption.id} value={categoryOption.id}>
+                          {categoryOption.label}
+                        </option>
+                      ))}
+                    </select>
                     <span className={reviewStatusClass(transaction.review_status)}>{reviewStatusLabel(transaction.review_status)}</span>
                     <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
                     <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>

@@ -258,6 +258,11 @@ button:disabled {
   background: #fbfcfb;
 }
 
+.reviewBulkToolbar select {
+  min-width: 150px;
+  flex: 1 1 150px;
+}
+
 .selectionToolbar span {
   color: var(--muted);
   font-size: 12px;
@@ -790,6 +795,10 @@ button:disabled {
 }
 
 .importWorkspace {
+  grid-column: span 1;
+}
+
+.reviewInboxPanel {
   grid-column: span 2;
 }
 
