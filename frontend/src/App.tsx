@@ -471,7 +471,7 @@ export function App() {
         body: form,
       });
       if (!response.ok) {
-        throw new Error(await readableApiError(response));
+        throw new Error(await readableApiError(response, `/api/imports/preview?account_id=${selectedAccountId}`));
       }
       const preview = (await response.json()) as ImportPreview;
       setImportPreview(preview);
@@ -497,7 +497,7 @@ export function App() {
         body: form,
       });
       if (!response.ok) {
-        throw new Error(await readableApiError(response));
+        throw new Error(await readableApiError(response, `/api/imports/commit?account_id=${selectedAccountId}`));
       }
       const result = (await response.json()) as { inserted: number; skipped: number };
       setImportPreview(null);
