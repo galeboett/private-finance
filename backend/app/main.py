@@ -24,7 +24,7 @@ from .money import cents_to_decimal_string, escape_csv_formula
 from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, RuleApplyRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.backups import create_backup, restore_backup
-from .services.importers import commit_import, detect_preset_from_content, preview_import, suggest_account_for_import
+from .services.importers import commit_categorized_history, commit_import, detect_preset_from_content, preview_import, suggest_account_for_import
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
 from .services.transfers import confirm_transfer_link, create_transfer_suggestions, list_unconfirmed_transfers, reject_transfer_link
 
@@ -380,6 +380,20 @@ async def imports_commit(request: Request, account_id: int, preset_id: int | Non
     db.commit()
     return result
 
+
+
+@app.post("/api/imports/categorized-history")
+async def imports_categorized_history(request: Request, file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    content = await file.read()
+    if len(content) > settings.import_file_size_limit_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File is too large")
+    try:
+        result = commit_categorized_history(db, file.filename or "categorized-history", content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return result
 
 @app.get("/api/imports/{batch_id}/report")
 def import_report(batch_id: int, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):

@@ -10,11 +10,12 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
+from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
-from ..models import Account, CategoryRule, HoldingSnapshot, ImportBatch, ImportPreset, StagingRow, Transaction
+from ..models import Account, Category, CategoryRule, HoldingSnapshot, ImportBatch, ImportPreset, StagingRow, Transaction
 from ..money import parse_decimal_to_cents
 
 
@@ -428,6 +429,234 @@ def _source_hash(account_id: int, date_value: str, amount: str, description: str
     payload = "|".join([str(account_id), date_value or "", amount or "", description or "", source_reference or "", str(ordinal)])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+def _history_source_hash(account_id: int, date_value: str, amount: str, description: str, category: str, ordinal: int) -> str:
+    payload = "|".join(["categorized_history", str(account_id), date_value, amount, description, category, str(ordinal)])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _category_key_from_label(label: str) -> str:
+    key = "".join(char.lower() if char.isalnum() else "_" for char in label.strip())
+    key = "_".join(part for part in key.split("_") if part)
+    return key[:60] or "category"
+
+
+def _unique_category_key(db: Session, label: str) -> str:
+    base = _category_key_from_label(label)
+    key = base
+    suffix = 2
+    while db.scalar(select(Category).where(Category.key == key)):
+        key = f"{base[:55]}_{suffix}"
+        suffix += 1
+    return key
+
+
+def _find_or_create_category(db: Session, label: str | None) -> tuple[Category | None, bool]:
+    cleaned = (label or "").strip()
+    if not cleaned:
+        return None, False
+    existing = db.scalar(select(Category).where(Category.label == cleaned))
+    if existing:
+        return existing, False
+    category = Category(key=_unique_category_key(db, cleaned), label=cleaned)
+    db.add(category)
+    db.flush()
+    return category, True
+
+
+def _find_or_create_history_account(db: Session, account_name: str) -> tuple[Account, bool]:
+    cleaned = account_name.strip()
+    if not cleaned:
+        raise ValueError("Categorized history rows must include an Account value")
+    existing = db.scalar(select(Account).where(Account.display_name == cleaned))
+    if existing:
+        if existing.status != "active":
+            existing.status = "active"
+        return existing, False
+    lowered = cleaned.lower()
+    account_type = "credit_card" if any(token in lowered for token in ("card", "sapphire", "amex", "visa", "mastercard")) else "checking"
+    account = Account(display_name=cleaned, account_type=account_type, currency="USD", status="active")
+    db.add(account)
+    db.flush()
+    return account, True
+
+
+def _spreadsheet_cell_to_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value).strip()
+
+
+def _read_history_rows(filename: str, content: bytes) -> list[dict[str, str]]:
+    suffix = filename.lower().rsplit(".", 1)[-1] if "." in filename else "csv"
+    if suffix in {"xlsx", "xlsm"}:
+        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        sheet = workbook.active
+        rows = [[_spreadsheet_cell_to_text(cell) for cell in row] for row in sheet.iter_rows(values_only=True)]
+    else:
+        text = content.decode("utf-8-sig")
+        rows = list(csv.reader(io.StringIO(text)))
+    if not rows:
+        raise ValueError("The categorized history file is empty")
+
+    header_index = None
+    normalized_headers: list[str] = []
+    for index, row in enumerate(rows[:20]):
+        normalized = [str(value).strip().lower() for value in row]
+        if {"account", "posted date", "payee", "amount"}.issubset(set(normalized)):
+            header_index = index
+            normalized_headers = normalized
+            break
+    if header_index is None:
+        raise ValueError('Could not find columns named "Account", "Posted Date", "Payee", and "Amount"')
+
+    def column(name: str) -> int:
+        return normalized_headers.index(name)
+
+    account_index = column("account")
+    date_index = column("posted date")
+    payee_index = column("payee")
+    amount_index = column("amount")
+    category_index = normalized_headers.index("expense category") if "expense category" in normalized_headers else None
+
+    parsed: list[dict[str, str]] = []
+    for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
+        values = [str(value).strip() for value in row]
+        if not any(values):
+            continue
+        get = lambda index: values[index] if index < len(values) else ""
+        parsed.append(
+            {
+                "row_index": str(row_index),
+                "account": get(account_index),
+                "posted_date": get(date_index),
+                "payee": get(payee_index),
+                "amount": get(amount_index),
+                "category": get(category_index) if category_index is not None else "",
+            }
+        )
+    return parsed
+
+
+
+def _history_transaction_type(category_label: str | None, amount_cents: int, account_type: str) -> str:
+    label = (category_label or "").strip().lower()
+    if "income" in label:
+        return "income"
+    if "transfer" in label or "payment" in label:
+        return "transfer"
+    if amount_cents > 0 and account_type == "credit_card":
+        return "expense"
+    if amount_cents < 0 and account_type in {"checking", "savings"} and "refund" not in label:
+        return "expense"
+    return "expense"
+
+
+def commit_categorized_history(db: Session, filename: str, content: bytes, actor: str = "local-user") -> dict:
+    rows = _read_history_rows(filename, content)
+    if not rows:
+        raise ValueError("The categorized history file did not contain transaction rows")
+
+    file_hash = hashlib.sha256(content).hexdigest()
+    batches_by_account_id: dict[int, ImportBatch] = {}
+    imported_by_account_id: Counter[int] = Counter()
+    skipped_by_account_id: Counter[int] = Counter()
+    description_counter: Counter[tuple[int, str, str, str, str]] = Counter()
+    inserted = 0
+    skipped = 0
+    accounts_created: set[int] = set()
+    categories_created: set[int] = set()
+    warnings: list[str] = []
+
+    for row in rows:
+        account, account_created = _find_or_create_history_account(db, row["account"])
+        if account_created:
+            accounts_created.add(account.id)
+        category, category_created = _find_or_create_category(db, row.get("category"))
+        if category and category_created:
+            categories_created.add(category.id)
+
+        if account.id not in batches_by_account_id:
+            batch = ImportBatch(account_id=account.id, preset_id=None, filename=filename, file_hash=file_hash, status="committed")
+            db.add(batch)
+            db.flush()
+            batches_by_account_id[account.id] = batch
+        batch = batches_by_account_id[account.id]
+
+        transaction_date = _parse_import_date(row.get("posted_date"))
+        amount_text = row.get("amount") or "0"
+        amount_cents = parse_decimal_to_cents(amount_text) or 0
+        description = (row.get("payee") or "").strip()
+        if not description:
+            warnings.append(f"Skipped row {row['row_index']}: Payee is blank.")
+            skipped += 1
+            skipped_by_account_id[account.id] += 1
+            continue
+
+        key = (account.id, transaction_date.isoformat(), amount_text, description, row.get("category") or "")
+        description_counter[key] += 1
+        ordinal = description_counter[key]
+        source_hash = _history_source_hash(account.id, transaction_date.isoformat(), amount_text, description, row.get("category") or "", ordinal)
+        existing = db.scalar(select(Transaction).where(Transaction.account_id == account.id, Transaction.source_hash == source_hash))
+        if existing:
+            skipped += 1
+            skipped_by_account_id[account.id] += 1
+            continue
+
+        db.add(
+            StagingRow(
+                import_batch_id=batch.id,
+                account_id=account.id,
+                row_index=int(row["row_index"]),
+                row_kind="transaction",
+                raw_json=json.dumps(row, default=str),
+                normalized_json=json.dumps(row, default=str),
+            )
+        )
+        db.add(
+            Transaction(
+                account_id=account.id,
+                import_batch_id=batch.id,
+                transaction_date=transaction_date,
+                posted_date=transaction_date,
+                amount_cents=amount_cents,
+                raw_description=description,
+                normalized_payee=description[:255],
+                transaction_type=_history_transaction_type(row.get("category"), amount_cents, account.account_type),
+                category_id=category.id if category else None,
+                review_status="confirmed",
+                source_hash=source_hash,
+                source_reference=f"categorized-history-row-{row['row_index']}",
+                source_ordinal=ordinal,
+            )
+        )
+        inserted += 1
+        imported_by_account_id[account.id] += 1
+
+    for account_id, batch in batches_by_account_id.items():
+        batch.imported_rows = imported_by_account_id[account_id]
+        batch.skipped_duplicates = skipped_by_account_id[account_id]
+        batch.warnings_json = json.dumps(warnings)
+
+    record_audit_event(
+        db,
+        "categorized_history_import",
+        actor,
+        "import_batch",
+        filename,
+        {"filename": filename, "inserted": inserted, "skipped": skipped, "accounts_created": len(accounts_created), "categories_created": len(categories_created)},
+    )
+    return {
+        "inserted": inserted,
+        "skipped": skipped,
+        "accounts_created": len(accounts_created),
+        "categories_created": len(categories_created),
+        "warnings": warnings,
+    }
+
 
 def preview_import(content: bytes, preset_type: str) -> PreviewResult:
     return parse_csv_preview(content, preset_type)
@@ -502,6 +731,7 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
         existing = db.scalar(select(Transaction).where(Transaction.account_id == account.id, Transaction.source_hash == source_hash))
         if existing:
             skipped += 1
+            skipped_by_account_id[account.id] += 1
             continue
 
         amount_cents = parse_decimal_to_cents(row.get("amount")) or 0

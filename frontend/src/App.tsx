@@ -303,6 +303,7 @@ export function App() {
   const [selectedHoldingIds, setSelectedHoldingIds] = useState<number[]>([]);
   const [lastSelectedHoldingId, setLastSelectedHoldingId] = useState<number | null>(null);
   const [appImportFile, setAppImportFile] = useState<File | null>(null);
+  const [categorizedHistoryFile, setCategorizedHistoryFile] = useState<File | null>(null);
   const [bulkReviewCategoryId, setBulkReviewCategoryId] = useState<number | "">("");
   const [bulkReviewType, setBulkReviewType] = useState("expense");
   const [selectedTransactionAccountFilters, setSelectedTransactionAccountFilters] = useState<number[]>([]);
@@ -700,6 +701,36 @@ export function App() {
       showToast({ tone: "success", message: "App data restored from export." });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Import failed." });
+    }
+  }
+
+  async function importCategorizedHistory() {
+    setToast(null);
+    if (!categorizedHistoryFile) {
+      showToast({ tone: "error", message: "Choose a categorized history spreadsheet first." });
+      return;
+    }
+    const form = new FormData();
+    form.append("file", categorizedHistoryFile);
+    try {
+      const response = await fetch(apiUrl("/api/imports/categorized-history"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "x-csrf-token": csrf },
+        body: form,
+      });
+      if (!response.ok) {
+        throw new Error(await readableApiError(response, "/api/imports/categorized-history"));
+      }
+      const result = await parseApiJson<{ inserted: number; skipped: number; accounts_created: number; categories_created: number; warnings: string[] }>(response, "/api/imports/categorized-history");
+      setCategorizedHistoryFile(null);
+      await loadData();
+      showToast({
+        tone: "success",
+        message: `Imported ${result.inserted} categorized transactions, created ${result.accounts_created} accounts and ${result.categories_created} categories. Skipped ${result.skipped} duplicates.`,
+      });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Categorized history import failed." });
     }
   }
   async function detectTransfers() {
@@ -1257,24 +1288,21 @@ export function App() {
               </button>
             </div>
 
-            <div className="appDataPanel">
-              <div>
-                <strong>App data export</strong>
-                <span>Download a JSON backup that can be imported back into this app later.</span>
-              </div>
-              <div className="buttonRow">
-                <button className="secondaryButton" onClick={() => void downloadAppExport()}>
-                  <ArrowDownToLine size={16} />
-                  Export app data
-                </button>
-                <input type="file" accept="application/json,.json" onChange={(event) => setAppImportFile(event.target.files?.[0] ?? null)} />
-                <button className="dangerTextButton" onClick={() => void restoreAppExport()} disabled={!appImportFile}>
-                  Import backup
-                </button>
-              </div>
-            </div>
             {importWorkspaceTab === "smart" ? (
               <>
+                <div className="historyImportPanel">
+                  <div>
+                    <strong>Categorized history import</strong>
+                    <span>Upload an older categorized spreadsheet. Expected columns: Account, Posted Date, Payee, Amount, and Expense Category. Missing accounts and categories are created automatically.</span>
+                  </div>
+                  <div className="buttonRow">
+                    <input type="file" accept=".csv,.xlsx,.xlsm" onChange={(event) => setCategorizedHistoryFile(event.target.files?.[0] ?? null)} />
+                    <button className="primaryButton" onClick={() => void importCategorizedHistory()} disabled={!categorizedHistoryFile}>
+                      <ArrowDownToLine size={16} />
+                      Import categorized history
+                    </button>
+                  </div>
+                </div>
                 <div className="compactForm">
                   <input type="file" accept=".csv" onChange={(event) => chooseImportFile(event.target.files?.[0] ?? null)} />
                   <div className="buttonRow">
@@ -1875,6 +1903,26 @@ export function App() {
               </div>
             ))}
             {filteredTransactions.length === 0 ? <p className="emptyText">No transactions match those filters.</p> : null}
+          </div>
+        </section>
+
+        <section className="settingsPanel">
+          <PanelTitle icon={Settings} title="Settings" subtitle="Backup and restore this local app data." />
+          <div className="appDataPanel">
+            <div>
+              <strong>App data export</strong>
+              <span>Download a JSON backup that can be imported back into this app later. Importing a backup replaces the local app data.</span>
+            </div>
+            <div className="buttonRow">
+              <button className="secondaryButton" onClick={() => void downloadAppExport()}>
+                <ArrowDownToLine size={16} />
+                Export app data
+              </button>
+              <input type="file" accept="application/json,.json" onChange={(event) => setAppImportFile(event.target.files?.[0] ?? null)} />
+              <button className="dangerTextButton" onClick={() => void restoreAppExport()} disabled={!appImportFile}>
+                Import backup
+              </button>
+            </div>
           </div>
         </section>
       </main>

@@ -992,12 +992,14 @@ textarea {
 .analysisPanel,
 .suggestedAccountForm,
 .manualOverride,
+.historyImportPanel,
 .appDataPanel {
   display: grid;
   gap: 10px;
 }
 
 .analysisPanel,
+.historyImportPanel,
 .appDataPanel {
   margin-bottom: 12px;
   padding: 12px;
@@ -1008,6 +1010,7 @@ textarea {
 
 .analysisHeader,
 .matchedAccountCard,
+.historyImportPanel,
 .appDataPanel {
   display: flex;
   align-items: center;
@@ -1017,6 +1020,7 @@ textarea {
 
 .analysisHeader div,
 .matchedAccountCard div,
+.historyImportPanel div:first-child,
 .appDataPanel div:first-child {
   min-width: 0;
   display: grid;
@@ -1026,6 +1030,7 @@ textarea {
 .analysisHeader span,
 .matchedAccountCard span,
 .manualOverride label,
+.historyImportPanel span,
 .appDataPanel span {
   color: var(--muted);
   font-size: 12px;
@@ -1218,6 +1223,7 @@ textarea {
   color: var(--green);
 }
 
+.settingsPanel,
 .ledgerPanel {
   margin-top: 12px;
   padding: 16px;

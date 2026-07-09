@@ -2,8 +2,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import Account
-from app.services.importers import detect_preset_from_content, preview_import, suggest_account_for_import
+from app.models import Account, Category, Transaction
+from app.services.importers import commit_categorized_history, detect_preset_from_content, preview_import, suggest_account_for_import
 
 
 def test_detect_card_reference_preset():
@@ -184,3 +184,46 @@ def test_preview_venmo_maps_transaction_types():
     preview = preview_import(content, "venmo_activity")
 
     assert [row["transaction_type"] for row in preview.rows] == ["refund", "expense", "transfer"]
+
+
+def test_commit_categorized_history_creates_accounts_categories_and_confirmed_transactions():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        content = (
+            b"Account,Posted Date,Payee,Amount,Expense Category\n"
+            b"Chase Sapphire,08/01/2018,ANNUAL MEMBERSHIP FEE,150.00,Fees & Charges\n"
+            b"Venmo,08/04/2018,Withdrew cash,-36.70,Income\n"
+        )
+
+        result = commit_categorized_history(session, "history.csv", content)
+        session.commit()
+
+        accounts = session.query(Account).order_by(Account.display_name).all()
+        categories = session.query(Category).order_by(Category.label).all()
+        transactions = session.query(Transaction).order_by(Transaction.raw_description).all()
+
+        assert result["inserted"] == 2
+        assert result["accounts_created"] == 2
+        assert result["categories_created"] == 2
+        assert [account.display_name for account in accounts] == ["Chase Sapphire", "Venmo"]
+        assert [category.label for category in categories] == ["Fees & Charges", "Income"]
+        assert all(transaction.review_status == "confirmed" for transaction in transactions)
+        assert {transaction.transaction_type for transaction in transactions} == {"expense", "income"}
+
+
+def test_commit_categorized_history_skips_duplicates_on_reupload():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        content = b"Account,Posted Date,Payee,Amount,Expense Category\nChase Sapphire,08/01/2018,ANNUAL MEMBERSHIP FEE,150.00,Fees & Charges\n"
+
+        first = commit_categorized_history(session, "history.csv", content)
+        session.commit()
+        second = commit_categorized_history(session, "history.csv", content)
+        session.commit()
+
+        assert first["inserted"] == 1
+        assert second["inserted"] == 0
+        assert second["skipped"] == 1
+        assert session.query(Transaction).count() == 1
