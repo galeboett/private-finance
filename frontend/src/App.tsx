@@ -126,6 +126,7 @@ type NetWorthAccount = { account_id: number; account: string; account_type: stri
 type AllocationRow = { asset_class: string; market_value_cents: number };
 type TransactionSortKey = "date" | "amount";
 type SortDirection = "asc" | "desc";
+type FilterOption = { value: string; label: string };
 type HoldingRow = {
   id: number;
   account_id: number;
@@ -155,6 +156,23 @@ const navItems = [
 ];
 
 const reportTabs = ["Reports", "Cash Flow", "Spending", "Income", "Net Worth"];
+
+const monthOptions: FilterOption[] = [
+  { value: "01", label: "January" },
+  { value: "02", label: "February" },
+  { value: "03", label: "March" },
+  { value: "04", label: "April" },
+  { value: "05", label: "May" },
+  { value: "06", label: "June" },
+  { value: "07", label: "July" },
+  { value: "08", label: "August" },
+  { value: "09", label: "September" },
+  { value: "10", label: "October" },
+  { value: "11", label: "November" },
+  { value: "12", label: "December" },
+];
+
+const uncategorizedFilterValue = "__uncategorized__";
 
 const transactionTypes = [
   { value: "expense", label: "Expense" },
@@ -243,6 +261,10 @@ function visibleIdsFilter(visibleIds: number[], selectedIds: number[]) {
   return visibleIds.filter((id) => selectedIds.includes(id));
 }
 
+function toggleValue<T>(current: T[], value: T) {
+  return current.includes(value) ? current.filter((item) => item !== value) : [...current, value];
+}
+
 export function App() {
   const [configured, setConfigured] = useState(false);
   const [csrf, setCsrf] = useState("");
@@ -283,10 +305,11 @@ export function App() {
   const [appImportFile, setAppImportFile] = useState<File | null>(null);
   const [bulkReviewCategoryId, setBulkReviewCategoryId] = useState<number | "">("");
   const [bulkReviewType, setBulkReviewType] = useState("expense");
-  const [transactionAccountFilter, setTransactionAccountFilter] = useState<number | "">("");
-  const [transactionMonthFilter, setTransactionMonthFilter] = useState("");
-  const [transactionYearFilter, setTransactionYearFilter] = useState("");
-  const [transactionCategoryFilter, setTransactionCategoryFilter] = useState<number | "">("");
+  const [selectedTransactionAccountFilters, setSelectedTransactionAccountFilters] = useState<number[]>([]);
+  const [selectedTransactionMonthFilters, setSelectedTransactionMonthFilters] = useState<string[]>([]);
+  const [selectedTransactionYearFilters, setSelectedTransactionYearFilters] = useState<string[]>([]);
+  const [selectedTransactionCategoryFilters, setSelectedTransactionCategoryFilters] = useState<string[]>([]);
+  const [transactionFiltersInitialized, setTransactionFiltersInitialized] = useState(false);
   const [transactionSortKey, setTransactionSortKey] = useState<TransactionSortKey>("date");
   const [transactionSortDirection, setTransactionSortDirection] = useState<SortDirection>("desc");
   const [accountForm, setAccountForm] = useState({
@@ -300,6 +323,16 @@ export function App() {
     void loadBootstrap();
   }, []);
 
+  useEffect(() => {
+    if (transactionFiltersInitialized || transactions.length === 0) {
+      return;
+    }
+    setSelectedTransactionAccountFilters(accounts.map((account) => account.id));
+    setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value));
+    setSelectedTransactionYearFilters(Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))));
+    setSelectedTransactionCategoryFilters([...categories.map((category) => String(category.id)), uncategorizedFilterValue]);
+    setTransactionFiltersInitialized(true);
+  }, [accounts, categories, transactions, transactionFiltersInitialized]);
   async function loadBootstrap() {
     const data = await api<{ configured: boolean; categories: BootstrapCategory[] }>("/api/bootstrap");
     setConfigured(data.configured);
@@ -853,6 +886,21 @@ export function App() {
     }
   }
 
+  function toggleTransactionSort(nextSortKey: TransactionSortKey) {
+    if (transactionSortKey === nextSortKey) {
+      setTransactionSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setTransactionSortKey(nextSortKey);
+    setTransactionSortDirection("desc");
+  }
+
+  function sortIndicator(sortKey: TransactionSortKey) {
+    if (transactionSortKey !== sortKey) {
+      return "";
+    }
+    return transactionSortDirection === "asc" ? " (asc)" : " (desc)";
+  }
   function requestDelete(target: DeleteTarget) {
     setDeleteTarget(target);
     setDeleteConfirmText("");
@@ -1052,11 +1100,12 @@ export function App() {
   const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status));
   const visibleReviewTransactions = reviewTransactions.slice(0, 5);
   const transactionYears = Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))).sort((left, right) => right.localeCompare(left));
+  const transactionCategoryOptions: FilterOption[] = [...categories.map((category) => ({ value: String(category.id), label: category.label })), { value: uncategorizedFilterValue, label: "Uncategorized" }];
   const filteredTransactions = transactions
-    .filter((transaction) => !transactionAccountFilter || transaction.account_id === transactionAccountFilter)
-    .filter((transaction) => !transactionMonthFilter || transaction.transaction_date.slice(5, 7) === transactionMonthFilter)
-    .filter((transaction) => !transactionYearFilter || transaction.transaction_date.slice(0, 4) === transactionYearFilter)
-    .filter((transaction) => !transactionCategoryFilter || transaction.category_id === transactionCategoryFilter)
+    .filter((transaction) => selectedTransactionAccountFilters.includes(transaction.account_id))
+    .filter((transaction) => selectedTransactionMonthFilters.includes(transaction.transaction_date.slice(5, 7)))
+    .filter((transaction) => selectedTransactionYearFilters.includes(transaction.transaction_date.slice(0, 4)))
+    .filter((transaction) => selectedTransactionCategoryFilters.includes(transaction.category_id ? String(transaction.category_id) : uncategorizedFilterValue))
     .sort((left, right) => {
       const direction = transactionSortDirection === "asc" ? 1 : -1;
       if (transactionSortKey === "amount") {
@@ -1688,53 +1737,38 @@ export function App() {
         <section className="ledgerPanel">
           <PanelTitle icon={ReceiptText} title="All Transactions" subtitle="A searchable repository for every imported transaction." />
           <div className="transactionFilters">
-            <select value={transactionAccountFilter} onChange={(event) => setTransactionAccountFilter(event.target.value ? Number(event.target.value) : "")}>
-              <option value="">All accounts</option>
-              {accounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {account.display_name}
-                </option>
-              ))}
-            </select>
-            <select value={transactionMonthFilter} onChange={(event) => setTransactionMonthFilter(event.target.value)}>
-              <option value="">All months</option>
-              <option value="01">January</option>
-              <option value="02">February</option>
-              <option value="03">March</option>
-              <option value="04">April</option>
-              <option value="05">May</option>
-              <option value="06">June</option>
-              <option value="07">July</option>
-              <option value="08">August</option>
-              <option value="09">September</option>
-              <option value="10">October</option>
-              <option value="11">November</option>
-              <option value="12">December</option>
-            </select>
-            <select value={transactionYearFilter} onChange={(event) => setTransactionYearFilter(event.target.value)}>
-              <option value="">All years</option>
-              {transactionYears.map((year) => (
-                <option key={year} value={year}>
-                  {year}
-                </option>
-              ))}
-            </select>
-            <select value={transactionCategoryFilter} onChange={(event) => setTransactionCategoryFilter(event.target.value ? Number(event.target.value) : "")}>
-              <option value="">All categories</option>
-              {categories.map((category) => (
-                <option key={category.id} value={category.id}>
-                  {category.label}
-                </option>
-              ))}
-            </select>
-            <select value={transactionSortKey} onChange={(event) => setTransactionSortKey(event.target.value as TransactionSortKey)}>
-              <option value="date">Sort by date</option>
-              <option value="amount">Sort by amount</option>
-            </select>
-            <select value={transactionSortDirection} onChange={(event) => setTransactionSortDirection(event.target.value as SortDirection)}>
-              <option value="desc">Descending</option>
-              <option value="asc">Ascending</option>
-            </select>
+            <MultiSelectFilter
+              label="Accounts"
+              options={accounts.map((account) => ({ value: String(account.id), label: account.display_name }))}
+              selectedValues={selectedTransactionAccountFilters.map(String)}
+              onToggle={(value) => setSelectedTransactionAccountFilters((current) => toggleValue(current, Number(value)))}
+              onSelectAll={() => setSelectedTransactionAccountFilters(accounts.map((account) => account.id))}
+              onDeselectAll={() => setSelectedTransactionAccountFilters([])}
+            />
+            <MultiSelectFilter
+              label="Months"
+              options={monthOptions}
+              selectedValues={selectedTransactionMonthFilters}
+              onToggle={(value) => setSelectedTransactionMonthFilters((current) => toggleValue(current, value))}
+              onSelectAll={() => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value))}
+              onDeselectAll={() => setSelectedTransactionMonthFilters([])}
+            />
+            <MultiSelectFilter
+              label="Years"
+              options={transactionYears.map((year) => ({ value: year, label: year }))}
+              selectedValues={selectedTransactionYearFilters}
+              onToggle={(value) => setSelectedTransactionYearFilters((current) => toggleValue(current, value))}
+              onSelectAll={() => setSelectedTransactionYearFilters(transactionYears)}
+              onDeselectAll={() => setSelectedTransactionYearFilters([])}
+            />
+            <MultiSelectFilter
+              label="Categories"
+              options={transactionCategoryOptions}
+              selectedValues={selectedTransactionCategoryFilters}
+              onToggle={(value) => setSelectedTransactionCategoryFilters((current) => toggleValue(current, value))}
+              onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
+              onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
+            />
           </div>
           {filteredTransactions.length > 0 ? (
             <div className="selectionToolbar">
@@ -1762,13 +1796,22 @@ export function App() {
           <div className="ledgerTable">
             <div className="ledgerHeader">
               <span>Select</span>
-              <span>Date</span>
+              <span>
+                <button type="button" className="sortableHeader" onClick={() => toggleTransactionSort("date")}>
+                  Date{sortIndicator("date")}
+                </button>
+              </span>
               <span>Institution</span>
               <span>Account</span>
               <span>Description</span>
+              <span>Details</span>
               <span>Type</span>
               <span>Category</span>
-              <span>Amount</span>
+              <span>
+                <button type="button" className="sortableHeader" onClick={() => toggleTransactionSort("amount")}>
+                  Amount{sortIndicator("amount")}
+                </button>
+              </span>
               <span>Action</span>
             </div>
             {filteredTransactions.map((transaction) => (
@@ -1783,18 +1826,28 @@ export function App() {
                   <span>{formatShortDate(transaction.transaction_date)}</span>
                   <span>{transaction.institution_name ?? "-"}</span>
                   <span>{transaction.account_name}</span>
-                  <strong className="ledgerDescription">
-                    {transaction.raw_description}
-                    {transaction.user_note ? <small>{transaction.user_note}</small> : null}
-                  </strong>
-                  <select value={transaction.transaction_type} onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value }, true)}>
+                  <strong className="ledgerDescription">{transaction.raw_description}</strong>
+                  <textarea
+                    className="editableCell detailsCell"
+                    defaultValue={transaction.user_note ?? ""}
+                    onBlur={(event) => {
+                      const nextNote = event.currentTarget.value;
+                      if (nextNote !== (transaction.user_note ?? "")) {
+                        void updateTransaction(transaction.id, { user_note: nextNote }, true);
+                      }
+                    }}
+                    placeholder="Add details"
+                    rows={1}
+                    title="Add your own context, like what you actually bought."
+                  />
+                  <select className="editableCell" value={transaction.transaction_type} onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value }, true)}>
                     {transactionTypes.map((type) => (
                       <option key={type.value} value={type.value}>
                         {type.label}
                       </option>
                     ))}
                   </select>
-                  <select value={transaction.category_id ?? ""} onChange={(event) => void updateTransaction(transaction.id, { category_id: event.target.value ? Number(event.target.value) : null }, true)}>
+                  <select className="editableCell" value={transaction.category_id ?? ""} onChange={(event) => void updateTransaction(transaction.id, { category_id: event.target.value ? Number(event.target.value) : null }, true)}>
                     <option value="">No category</option>
                     {categories.map((categoryOption) => (
                       <option key={categoryOption.id} value={categoryOption.id}>
@@ -1829,6 +1882,48 @@ export function App() {
   );
 }
 
+function MultiSelectFilter({
+  label,
+  options,
+  selectedValues,
+  onToggle,
+  onSelectAll,
+  onDeselectAll,
+}: {
+  label: string;
+  options: FilterOption[];
+  selectedValues: string[];
+  onToggle: (value: string) => void;
+  onSelectAll: () => void;
+  onDeselectAll: () => void;
+}) {
+  const selectedCount = selectedValues.length;
+  const summary = selectedCount === options.length ? "All" : selectedCount === 0 ? "None" : `${selectedCount} selected`;
+
+  return (
+    <details className="multiFilter">
+      <summary>
+        <span>{label}</span>
+        <strong>{summary}</strong>
+      </summary>
+      <div className="multiFilterMenu">
+        <div className="multiFilterActions">
+          <button type="button" className="ghostButton" onClick={onSelectAll}>Select all</button>
+          <button type="button" className="ghostButton" onClick={onDeselectAll}>Deselect all</button>
+        </div>
+        <div className="multiFilterOptions">
+          {options.map((option) => (
+            <label key={option.value}>
+              <input type="checkbox" checked={selectedValues.includes(option.value)} onChange={() => onToggle(option.value)} />
+              <span>{option.label}</span>
+            </label>
+          ))}
+          {options.length === 0 ? <span className="emptyText">No options yet.</span> : null}
+        </div>
+      </div>
+    </details>
+  );
+}
 function DeleteConfirmInline({
   target,
   confirmText,

@@ -1229,9 +1229,126 @@ textarea {
 
 .transactionFilters {
   display: grid;
-  grid-template-columns: repeat(6, minmax(130px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(4, minmax(170px, 1fr));
+  gap: 10px;
   margin: 12px 0;
+  position: relative;
+  z-index: 3;
+}
+
+.multiFilter {
+  position: relative;
+  min-width: 0;
+}
+
+.multiFilter summary {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  list-style: none;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: linear-gradient(135deg, #fbfcfb 0%, var(--green-soft) 100%);
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(21, 29, 34, 0.05);
+}
+
+.multiFilter summary::-webkit-details-marker {
+  display: none;
+}
+
+.multiFilter summary span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.multiFilter summary strong {
+  color: var(--green);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.multiFilter[open] summary {
+  border-color: rgba(46, 155, 99, 0.35);
+  box-shadow: 0 8px 24px rgba(46, 155, 99, 0.14);
+}
+
+.multiFilterMenu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.multiFilterActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.multiFilterActions .ghostButton {
+  padding: 6px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.multiFilterOptions {
+  max-height: 150px;
+  display: grid;
+  gap: 4px;
+  overflow: auto;
+}
+
+.multiFilterOptions label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 999px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.multiFilterOptions label:hover {
+  background: var(--green-soft);
+}
+
+.multiFilterOptions input {
+  width: auto;
+  min-height: 0;
+}
+
+.sortableHeader {
+  width: fit-content;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+  padding: 5px 8px;
+}
+
+.sortableHeader:hover {
+  background: var(--green-soft);
+  color: var(--green);
 }
 
 .ledgerTable {
@@ -1240,9 +1357,9 @@ textarea {
 
 .ledgerHeader,
 .ledgerRow {
-  min-width: 1240px;
+  min-width: 1420px;
   display: grid;
-  grid-template-columns: 64px 92px 140px 150px minmax(240px, 1.5fr) 132px 150px 112px 86px;
+  grid-template-columns: 64px 104px 140px 150px minmax(260px, 1.4fr) minmax(190px, 0.9fr) 132px 150px 116px 86px;
   gap: 10px;
   align-items: center;
   padding: 9px 0;
@@ -1262,15 +1379,39 @@ textarea {
 }
 
 .ledgerDescription {
-  display: grid;
-  gap: 3px;
+  display: block;
+  overflow-wrap: anywhere;
 }
 
-.ledgerDescription small {
+.editableCell {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink);
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.detailsCell {
+  min-height: 34px;
+  resize: vertical;
+  border-radius: 14px;
+  line-height: 1.35;
+}
+
+.editableCell:hover,
+.editableCell:focus {
+  border-color: rgba(46, 155, 99, 0.25);
+  background: var(--green-soft);
+  box-shadow: inset 0 0 0 1px rgba(46, 155, 99, 0.12);
+  outline: none;
+}
+
+.editableCell::placeholder {
   color: var(--muted);
-  font-weight: 500;
 }
-
 .emptyText {
   margin: 0;
   color: var(--muted);
