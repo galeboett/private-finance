@@ -1019,31 +1019,6 @@ export function App() {
           </div>
         ) : null}
 
-        {deleteTarget ? (
-          <section className="deleteConfirmPanel">
-            <div>
-              <strong>{deleteTarget.kind.endsWith("bulk") ? "Delete selected items?" : deleteTarget.kind === "account" ? "Delete this account and its imported data?" : `Delete this ${deleteTarget.kind} row?`}</strong>
-              <span>{deleteTarget.label}</span>
-              <small>Accounts delete their imported transactions, holdings, presets, and import history. Audit history remains append-only.</small>
-            </div>
-            <input value={deleteConfirmText} onChange={(event) => setDeleteConfirmText(event.target.value)} placeholder="Type DELETE to confirm" />
-            <div className="buttonRow">
-              <button className="dangerButton" onClick={() => void confirmDelete()} disabled={deleteConfirmText !== "DELETE"}>
-                Delete
-              </button>
-              <button
-                className="secondaryButton"
-                onClick={() => {
-                  setDeleteTarget(null);
-                  setDeleteConfirmText("");
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </section>
-        ) : null}
-
         <section className="metricsGrid" aria-label="Financial summary">
           <MetricTile label="Total income" value={formatMoney(totalIncomeCents)} tone="green" />
           <MetricTile label="Total expenses" value={formatMoney(totalExpenseCents)} tone="red" />
@@ -1077,6 +1052,8 @@ export function App() {
               selectedHoldingIds={selectedHoldingIds}
               selectedVisibleHoldingIds={selectedVisibleHoldingIds}
               visibleHoldingIds={visibleHoldingIds}
+              deleteTarget={deleteTarget}
+              deleteConfirmText={deleteConfirmText}
               onToggleHoldingSelection={toggleHoldingSelection}
               onRequestBulkHoldingDelete={requestBulkHoldingDelete}
               onClearHoldingSelection={() => {
@@ -1085,6 +1062,12 @@ export function App() {
               }}
               onUpdateHoldingDescription={updateHoldingDescription}
               onRequestDelete={requestDelete}
+              onConfirmDelete={confirmDelete}
+              onDeleteConfirmTextChange={setDeleteConfirmText}
+              onCancelDelete={() => {
+                setDeleteTarget(null);
+                setDeleteConfirmText("");
+              }}
             />
           </section>
 
@@ -1274,31 +1257,57 @@ export function App() {
                     </button>
                   </div>
                 ) : null}
+                {deleteTarget?.kind === "account_bulk" ? (
+                  <DeleteConfirmInline
+                    target={deleteTarget}
+                    confirmText={deleteConfirmText}
+                    onConfirmTextChange={setDeleteConfirmText}
+                    onConfirm={confirmDelete}
+                    onCancel={() => {
+                      setDeleteTarget(null);
+                      setDeleteConfirmText("");
+                    }}
+                  />
+                ) : null}
                 <div className="denseList">
                   {accounts.map((account) => (
-                    <div className={selectedAccountId === account.id ? "accountRow selected" : "accountRow"} key={account.id}>
-                      <input
-                        type="checkbox"
-                        checked={selectedAccountIds.includes(account.id)}
-                        onChange={(event) => toggleAccountSelection(account.id, accountIds, (event.nativeEvent as MouseEvent).shiftKey)}
-                        title="Select account. Hold Shift to select a range."
-                      />
-                      <button className="accountMainButton" onClick={() => beginEditAccount(account)}>
-                        <Landmark size={16} />
-                        <span>
-                          {account.display_name}
-                          {account.institution_name ? <small>{account.institution_name}</small> : null}
-                        </span>
-                      </button>
-                      <small>{readableAccountType(account.account_type)}</small>
-                      <div className="inlineActions">
-                        <button className="secondaryButton" onClick={() => beginEditAccount(account)} title="Edit account">
-                          <Pencil size={14} />
+                    <div className="inlineDeleteGroup" key={account.id}>
+                      <div className={selectedAccountId === account.id ? "accountRow selected" : "accountRow"}>
+                        <input
+                          type="checkbox"
+                          checked={selectedAccountIds.includes(account.id)}
+                          onChange={(event) => toggleAccountSelection(account.id, accountIds, (event.nativeEvent as MouseEvent).shiftKey)}
+                          title="Select account. Hold Shift to select a range."
+                        />
+                        <button className="accountMainButton" onClick={() => beginEditAccount(account)}>
+                          <Landmark size={16} />
+                          <span>
+                            {account.display_name}
+                            {account.institution_name ? <small>{account.institution_name}</small> : null}
+                          </span>
                         </button>
-                        <button className="dangerTextButton" onClick={() => requestDelete({ kind: "account", id: account.id, label: account.display_name })}>
-                          Delete
-                        </button>
+                        <small>{readableAccountType(account.account_type)}</small>
+                        <div className="inlineActions">
+                          <button className="secondaryButton" onClick={() => beginEditAccount(account)} title="Edit account">
+                            <Pencil size={14} />
+                          </button>
+                          <button className="dangerTextButton" onClick={() => requestDelete({ kind: "account", id: account.id, label: account.display_name })}>
+                            Delete
+                          </button>
+                        </div>
                       </div>
+                      {deleteTarget?.kind === "account" && deleteTarget.id === account.id ? (
+                        <DeleteConfirmInline
+                          target={deleteTarget}
+                          confirmText={deleteConfirmText}
+                          onConfirmTextChange={setDeleteConfirmText}
+                          onConfirm={confirmDelete}
+                          onCancel={() => {
+                            setDeleteTarget(null);
+                            setDeleteConfirmText("");
+                          }}
+                        />
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -1374,6 +1383,18 @@ export function App() {
                 </button>
               </div>
             ) : null}
+            {deleteTarget?.kind === "transaction_bulk" ? (
+              <DeleteConfirmInline
+                target={deleteTarget}
+                confirmText={deleteConfirmText}
+                onConfirmTextChange={setDeleteConfirmText}
+                onConfirm={confirmDelete}
+                onCancel={() => {
+                  setDeleteTarget(null);
+                  setDeleteConfirmText("");
+                }}
+              />
+            ) : null}
             {lastSavedRule ? (
               <div className="ruleApplyPanel">
                 <div>
@@ -1392,67 +1413,81 @@ export function App() {
             ) : null}
             <div className="reviewEditor">
               {visibleReviewTransactions.map((transaction) => (
-                <article className={selectedTransactionIds.includes(transaction.id) ? "reviewCard selected" : "reviewCard"} key={transaction.id}>
-                  <div className="reviewCardTop">
-                    <input
-                      type="checkbox"
-                      checked={selectedTransactionIds.includes(transaction.id)}
-                      onChange={(event) => toggleTransactionSelection(transaction.id, visibleReviewIds, (event.nativeEvent as MouseEvent).shiftKey)}
-                      title="Select transaction. Hold Shift to select a range."
-                    />
-                    <div>
-                      <strong>{transaction.raw_description}</strong>
-                      <span className="reviewMetaRow"><small>{transaction.transaction_date}</small><span className={reviewStatusClass(transaction.review_status)}>{reviewStatusLabel(transaction.review_status)}</span></span>
+                <div className="inlineDeleteGroup" key={transaction.id}>
+                  <article className={selectedTransactionIds.includes(transaction.id) ? "reviewCard selected" : "reviewCard"}>
+                    <div className="reviewCardTop">
+                      <input
+                        type="checkbox"
+                        checked={selectedTransactionIds.includes(transaction.id)}
+                        onChange={(event) => toggleTransactionSelection(transaction.id, visibleReviewIds, (event.nativeEvent as MouseEvent).shiftKey)}
+                        title="Select transaction. Hold Shift to select a range."
+                      />
+                      <div>
+                        <strong>{transaction.raw_description}</strong>
+                        <span className="reviewMetaRow"><small>{transaction.transaction_date}</small><span className={reviewStatusClass(transaction.review_status)}>{reviewStatusLabel(transaction.review_status)}</span></span>
+                      </div>
+                      <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
                     </div>
-                    <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
-                  </div>
-                  <div className="reviewControls">
-                    <select
-                      value={transaction.transaction_type}
-                      onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value })}
-                    >
-                      {transactionTypes.map((type) => (
-                        <option key={type.value} value={type.value}>
-                          {type.label}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      value={transaction.category_id ?? ""}
-                      onChange={(event) => void updateTransaction(transaction.id, { category_id: event.target.value ? Number(event.target.value) : null })}
-                    >
-                      <option value="">No category</option>
-                      {categories.map((category) => (
-                        <option key={category.id} value={category.id}>
-                          {category.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <textarea
-                    value={transaction.user_note ?? ""}
-                    onChange={(event) => void updateTransaction(transaction.id, { user_note: event.target.value })}
-                    placeholder="Add your own context, like what you actually bought."
-                    rows={2}
-                  />
-                  <div className="ruleHint">
-                    <strong>Rule to save:</strong> future descriptions containing "{suggestedRuleText(transaction.raw_description)}" will use {readableAccountType(transaction.transaction_type)}
-                    {transaction.category_id ? ` / ${categories.find((category) => category.id === transaction.category_id)?.label ?? "selected category"}` : " / no category"}. Applying it now also confirms matching rows.
-                  </div>
-                  <div className="reviewActions">
-                    <button className="secondaryButton" onClick={() => void saveRuleFromTransaction(transaction)}>
-                      <Sparkles size={16} />
-                      Save rule
-                    </button>
-                    <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>
-                      Delete
-                    </button>
-                    <button className="primaryButton" onClick={() => void confirmTransaction(transaction)}>
-                      <CheckCircle2 size={16} />
-                      Confirm
-                    </button>
-                  </div>
-                </article>
+                    <div className="reviewControls">
+                      <select
+                        value={transaction.transaction_type}
+                        onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value })}
+                      >
+                        {transactionTypes.map((type) => (
+                          <option key={type.value} value={type.value}>
+                            {type.label}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={transaction.category_id ?? ""}
+                        onChange={(event) => void updateTransaction(transaction.id, { category_id: event.target.value ? Number(event.target.value) : null })}
+                      >
+                        <option value="">No category</option>
+                        {categories.map((category) => (
+                          <option key={category.id} value={category.id}>
+                            {category.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <textarea
+                      value={transaction.user_note ?? ""}
+                      onChange={(event) => void updateTransaction(transaction.id, { user_note: event.target.value })}
+                      placeholder="Add your own context, like what you actually bought."
+                      rows={2}
+                    />
+                    <div className="ruleHint">
+                      <strong>Rule to save:</strong> future descriptions containing "{suggestedRuleText(transaction.raw_description)}" will use {readableAccountType(transaction.transaction_type)}
+                      {transaction.category_id ? ` / ${categories.find((category) => category.id === transaction.category_id)?.label ?? "selected category"}` : " / no category"}. Applying it now also confirms matching rows.
+                    </div>
+                    <div className="reviewActions">
+                      <button className="secondaryButton" onClick={() => void saveRuleFromTransaction(transaction)}>
+                        <Sparkles size={16} />
+                        Save rule
+                      </button>
+                      <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>
+                        Delete
+                      </button>
+                      <button className="primaryButton" onClick={() => void confirmTransaction(transaction)}>
+                        <CheckCircle2 size={16} />
+                        Confirm
+                      </button>
+                    </div>
+                  </article>
+                  {deleteTarget?.kind === "transaction" && deleteTarget.id === transaction.id ? (
+                    <DeleteConfirmInline
+                      target={deleteTarget}
+                      confirmText={deleteConfirmText}
+                      onConfirmTextChange={setDeleteConfirmText}
+                      onConfirm={confirmDelete}
+                      onCancel={() => {
+                        setDeleteTarget(null);
+                        setDeleteConfirmText("");
+                      }}
+                    />
+                  ) : null}
+                </div>
               ))}
               {reviewTransactions.length === 0 ? <p className="emptyText">No items waiting for review. New imports will appear here before reports rely on them.</p> : null}
             </div>
@@ -1538,6 +1573,18 @@ export function App() {
               </button>
             </div>
           ) : null}
+          {deleteTarget?.kind === "transaction_bulk" ? (
+            <DeleteConfirmInline
+              target={deleteTarget}
+              confirmText={deleteConfirmText}
+              onConfirmTextChange={setDeleteConfirmText}
+              onConfirm={confirmDelete}
+              onCancel={() => {
+                setDeleteTarget(null);
+                setDeleteConfirmText("");
+              }}
+            />
+          ) : null}
           <div className="ledgerTable">
             <div className="ledgerHeader">
               <span>Select</span>
@@ -1552,25 +1599,39 @@ export function App() {
             {recentTransactions.map((transaction) => {
               const category = categories.find((item) => item.id === transaction.category_id);
               return (
-                <div className={selectedTransactionIds.includes(transaction.id) ? "ledgerRow selected" : "ledgerRow"} key={transaction.id}>
-                  <input
-                    type="checkbox"
-                    checked={selectedTransactionIds.includes(transaction.id)}
-                    onChange={(event) => toggleTransactionSelection(transaction.id, recentTransactionIds, (event.nativeEvent as MouseEvent).shiftKey)}
-                    title="Select transaction. Hold Shift to select a range."
-                  />
-                  <span>{transaction.transaction_date}</span>
-                  <strong className="ledgerDescription">
-                    {transaction.raw_description}
-                    {transaction.user_note ? <small>{transaction.user_note}</small> : null}
-                  </strong>
-                  <span>{readableAccountType(transaction.transaction_type)}</span>
-                  <span>{category?.label ?? "Uncategorized"}</span>
-                  <span className={reviewStatusClass(transaction.review_status)}>{reviewStatusLabel(transaction.review_status)}</span>
-                  <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
-                  <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>
-                    Delete
-                  </button>
+                <div className="inlineDeleteGroup ledgerDeleteGroup" key={transaction.id}>
+                  <div className={selectedTransactionIds.includes(transaction.id) ? "ledgerRow selected" : "ledgerRow"}>
+                    <input
+                      type="checkbox"
+                      checked={selectedTransactionIds.includes(transaction.id)}
+                      onChange={(event) => toggleTransactionSelection(transaction.id, recentTransactionIds, (event.nativeEvent as MouseEvent).shiftKey)}
+                      title="Select transaction. Hold Shift to select a range."
+                    />
+                    <span>{transaction.transaction_date}</span>
+                    <strong className="ledgerDescription">
+                      {transaction.raw_description}
+                      {transaction.user_note ? <small>{transaction.user_note}</small> : null}
+                    </strong>
+                    <span>{readableAccountType(transaction.transaction_type)}</span>
+                    <span>{category?.label ?? "Uncategorized"}</span>
+                    <span className={reviewStatusClass(transaction.review_status)}>{reviewStatusLabel(transaction.review_status)}</span>
+                    <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
+                    <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>
+                      Delete
+                    </button>
+                  </div>
+                  {deleteTarget?.kind === "transaction" && deleteTarget.id === transaction.id ? (
+                    <DeleteConfirmInline
+                      target={deleteTarget}
+                      confirmText={deleteConfirmText}
+                      onConfirmTextChange={setDeleteConfirmText}
+                      onConfirm={confirmDelete}
+                      onCancel={() => {
+                        setDeleteTarget(null);
+                        setDeleteConfirmText("");
+                      }}
+                    />
+                  ) : null}
                 </div>
               );
             })}
@@ -1579,6 +1640,39 @@ export function App() {
         </section>
       </main>
     </div>
+  );
+}
+
+function DeleteConfirmInline({
+  target,
+  confirmText,
+  onConfirmTextChange,
+  onConfirm,
+  onCancel,
+}: {
+  target: DeleteTarget;
+  confirmText: string;
+  onConfirmTextChange: (value: string) => void;
+  onConfirm: () => Promise<void>;
+  onCancel: () => void;
+}) {
+  return (
+    <section className="deleteConfirmPanel inlineDeleteConfirm">
+      <div>
+        <strong>{target.kind.endsWith("bulk") ? "Delete selected items?" : target.kind === "account" ? "Delete this account and its imported data?" : `Delete this ${target.kind} row?`}</strong>
+        <span>{target.label}</span>
+        <small>Accounts delete their imported transactions, holdings, presets, and import history. Audit history remains append-only.</small>
+      </div>
+      <input value={confirmText} onChange={(event) => onConfirmTextChange(event.target.value)} placeholder="Type DELETE to confirm" />
+      <div className="buttonRow">
+        <button className="dangerButton" onClick={() => void onConfirm()} disabled={confirmText !== "DELETE"}>
+          Delete
+        </button>
+        <button className="secondaryButton" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -1603,11 +1697,16 @@ function ReportSurface({
   selectedHoldingIds,
   selectedVisibleHoldingIds,
   visibleHoldingIds,
+  deleteTarget,
+  deleteConfirmText,
   onToggleHoldingSelection,
   onRequestBulkHoldingDelete,
   onClearHoldingSelection,
   onUpdateHoldingDescription,
   onRequestDelete,
+  onConfirmDelete,
+  onDeleteConfirmTextChange,
+  onCancelDelete,
 }: {
   activeTab: string;
   income: number;
@@ -1621,11 +1720,16 @@ function ReportSurface({
   selectedHoldingIds: number[];
   selectedVisibleHoldingIds: number[];
   visibleHoldingIds: number[];
+  deleteTarget: DeleteTarget | null;
+  deleteConfirmText: string;
   onToggleHoldingSelection: (holdingId: number, visibleIds: number[], shiftKey: boolean) => void;
   onRequestBulkHoldingDelete: (ids: number[]) => void;
   onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
   onRequestDelete: (target: DeleteTarget) => void;
+  onConfirmDelete: () => Promise<void>;
+  onDeleteConfirmTextChange: (value: string) => void;
+  onCancelDelete: () => void;
 }) {
   if (activeTab === "Spending") {
     return <SpendingReport rows={categoryTotals} />;
@@ -1634,7 +1738,7 @@ function ReportSurface({
     return <IncomeReport income={income} expenses={expenses} net={net} />;
   }
   if (activeTab === "Net Worth") {
-    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onRequestDelete={onRequestDelete} />;
+    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} deleteTarget={deleteTarget} deleteConfirmText={deleteConfirmText} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onRequestDelete={onRequestDelete} onConfirmDelete={onConfirmDelete} onDeleteConfirmTextChange={onDeleteConfirmTextChange} onCancelDelete={onCancelDelete} />;
   }
   if (activeTab === "Cash Flow") {
     return <MonthlyCashFlowReport rows={cashFlowRows} income={income} expenses={expenses} net={net} />;
@@ -1719,11 +1823,16 @@ function NetWorthReport({
   selectedHoldingIds,
   selectedVisibleHoldingIds,
   visibleHoldingIds,
+  deleteTarget,
+  deleteConfirmText,
   onToggleHoldingSelection,
   onRequestBulkHoldingDelete,
   onClearHoldingSelection,
   onUpdateHoldingDescription,
   onRequestDelete,
+  onConfirmDelete,
+  onDeleteConfirmTextChange,
+  onCancelDelete,
 }: {
   accounts: NetWorthAccount[];
   allocationRows: AllocationRow[];
@@ -1731,11 +1840,16 @@ function NetWorthReport({
   selectedHoldingIds: number[];
   selectedVisibleHoldingIds: number[];
   visibleHoldingIds: number[];
+  deleteTarget: DeleteTarget | null;
+  deleteConfirmText: string;
   onToggleHoldingSelection: (holdingId: number, visibleIds: number[], shiftKey: boolean) => void;
   onRequestBulkHoldingDelete: (ids: number[]) => void;
   onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
   onRequestDelete: (target: DeleteTarget) => void;
+  onConfirmDelete: () => Promise<void>;
+  onDeleteConfirmTextChange: (value: string) => void;
+  onCancelDelete: () => void;
 }) {
   const total = accounts.reduce((sum, row) => sum + row.market_value_cents, 0);
   const max = Math.max(...accounts.map((row) => row.market_value_cents), 1);
@@ -1776,6 +1890,15 @@ function NetWorthReport({
             </button>
           </div>
         ) : null}
+        {deleteTarget?.kind === "holding_bulk" ? (
+          <DeleteConfirmInline
+            target={deleteTarget}
+            confirmText={deleteConfirmText}
+            onConfirmTextChange={onDeleteConfirmTextChange}
+            onConfirm={onConfirmDelete}
+            onCancel={onCancelDelete}
+          />
+        ) : null}
         <div className="holdingsTable">
           <div className="holdingsHeader">
             <span>Select</span>
@@ -1789,30 +1912,41 @@ function NetWorthReport({
             <span>Action</span>
           </div>
           {holdingRows.slice(0, 12).map((row) => (
-            <div className={selectedHoldingIds.includes(row.id) ? "holdingsRow selected" : "holdingsRow"} key={row.id}>
-              <input
-                type="checkbox"
-                checked={selectedHoldingIds.includes(row.id)}
-                onChange={(event) => onToggleHoldingSelection(row.id, visibleHoldingIds, (event.nativeEvent as MouseEvent).shiftKey)}
-                title="Select holding. Hold Shift to select a range."
-              />
-              <span>{row.account}</span>
-              <strong>{row.symbol || "Holding"}</strong>
-              <div className="holdingDescriptionEdit">
+            <div className="inlineDeleteGroup holdingsDeleteGroup" key={row.id}>
+              <div className={selectedHoldingIds.includes(row.id) ? "holdingsRow selected" : "holdingsRow"}>
                 <input
-                  defaultValue={row.user_description ?? row.csv_description ?? ""}
-                  onBlur={(event) => void updateIfChanged(row, event.currentTarget.value, onUpdateHoldingDescription)}
-                  placeholder="Add your description"
+                  type="checkbox"
+                  checked={selectedHoldingIds.includes(row.id)}
+                  onChange={(event) => onToggleHoldingSelection(row.id, visibleHoldingIds, (event.nativeEvent as MouseEvent).shiftKey)}
+                  title="Select holding. Hold Shift to select a range."
                 />
-                {row.csv_description ? <small>CSV: {row.csv_description}</small> : null}
+                <span>{row.account}</span>
+                <strong>{row.symbol || "Holding"}</strong>
+                <div className="holdingDescriptionEdit">
+                  <input
+                    defaultValue={row.user_description ?? row.csv_description ?? ""}
+                    onBlur={(event) => void updateIfChanged(row, event.currentTarget.value, onUpdateHoldingDescription)}
+                    placeholder="Add your description"
+                  />
+                  {row.csv_description ? <small>CSV: {row.csv_description}</small> : null}
+                </div>
+                <span>{row.quantity ?? "-"}</span>
+                <span>{row.display_price_cents == null ? "-" : formatMoney(row.display_price_cents)}</span>
+                <span>{row.price_date}</span>
+                <span>{formatMoney(row.display_market_value_cents)}</span>
+                <button className="dangerTextButton" onClick={() => onRequestDelete({ kind: "holding", id: row.id, label: `${row.symbol || row.description || "Holding"} in ${row.account}` })}>
+                  Delete
+                </button>
               </div>
-              <span>{row.quantity ?? "-"}</span>
-              <span>{row.display_price_cents == null ? "-" : formatMoney(row.display_price_cents)}</span>
-              <span>{row.price_date}</span>
-              <span>{formatMoney(row.display_market_value_cents)}</span>
-              <button className="dangerTextButton" onClick={() => onRequestDelete({ kind: "holding", id: row.id, label: `${row.symbol || row.description || "Holding"} in ${row.account}` })}>
-                Delete
-              </button>
+              {deleteTarget?.kind === "holding" && deleteTarget.id === row.id ? (
+                <DeleteConfirmInline
+                  target={deleteTarget}
+                  confirmText={deleteConfirmText}
+                  onConfirmTextChange={onDeleteConfirmTextChange}
+                  onConfirm={onConfirmDelete}
+                  onCancel={onCancelDelete}
+                />
+              ) : null}
             </div>
           ))}
           {holdingRows.length === 0 ? <p className="emptyText">No holdings rows to inspect yet.</p> : null}

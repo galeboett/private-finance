@@ -224,6 +224,28 @@ button:disabled {
   color: #7a382f;
 }
 
+.inlineDeleteGroup {
+  display: grid;
+  gap: 8px;
+}
+
+.inlineDeleteConfirm {
+  margin: -2px 0 10px;
+}
+
+.holdingsDeleteGroup {
+  min-width: 1060px;
+}
+
+.ledgerDeleteGroup {
+  min-width: 930px;
+}
+
+.holdingsDeleteGroup .holdingsRow,
+.ledgerDeleteGroup .ledgerRow {
+  min-width: 0;
+}
+
 .selectionToolbar {
   display: flex;
   flex-wrap: wrap;
