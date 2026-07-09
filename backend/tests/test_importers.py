@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db import Base
 from app.models import Account, Category, Transaction
-from app.services.importers import commit_categorized_history, detect_preset_from_content, preview_import, suggest_account_for_import
+from app.services.importers import commit_categorized_history, commit_reviewed_categorized_history, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
 
 
 def test_detect_card_reference_preset():
@@ -229,21 +229,31 @@ def test_commit_categorized_history_skips_duplicates_on_reupload():
         assert session.query(Transaction).count() == 1
 
 
-def test_commit_categorized_history_skips_rows_missing_dates():
+def test_categorized_history_surfaces_rows_missing_dates_for_review():
+    content = (
+        b"Account,Posted Date,Payee,Amount,Expense Category\n"
+        b"Chase Sapphire,08/01/2018,ANNUAL MEMBERSHIP FEE,150.00,Fees & Charges\n"
+        b"Chase Sapphire,,Subtotal,,\n"
+        b"Venmo,08/04/2018,Withdrew cash,-36.70,Income\n"
+    )
+
+    review = review_categorized_history("history.csv", content)
+
+    assert review["needs_review"] is True
+    assert review["rows"][1]["errors"] == ["Posted Date", "Amount"]
+
+
+def test_commit_reviewed_categorized_history_imports_edited_rows():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as session:
-        content = (
-            b"Account,Posted Date,Payee,Amount,Expense Category\n"
-            b"Chase Sapphire,08/01/2018,ANNUAL MEMBERSHIP FEE,150.00,Fees & Charges\n"
-            b"Chase Sapphire,,Subtotal,,\n"
-            b"Venmo,08/04/2018,Withdrew cash,-36.70,Income\n"
-        )
+        rows = [
+            {"row_index": "2", "account": "Chase Sapphire", "posted_date": "08/01/2018", "payee": "ANNUAL MEMBERSHIP FEE", "amount": "150.00", "category": "Fees & Charges"},
+            {"row_index": "3", "account": "Chase Sapphire", "posted_date": "08/02/2018", "payee": "Subtotal", "amount": "1.00", "category": "Fees & Charges"},
+        ]
 
-        result = commit_categorized_history(session, "history.csv", content)
+        result = commit_reviewed_categorized_history(session, "history.csv", rows)
         session.commit()
 
         assert result["inserted"] == 2
-        assert result["skipped"] == 1
-        assert "missing Posted Date" in result["warnings"][0]
         assert session.query(Transaction).count() == 2

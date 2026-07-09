@@ -542,25 +542,47 @@ def _read_history_rows(filename: str, content: bytes) -> list[dict[str, str]]:
 
 
 
-def _history_transaction_type(category_label: str | None, amount_cents: int, account_type: str) -> str:
-    label = (category_label or "").strip().lower()
-    if "income" in label:
-        return "income"
-    if "transfer" in label or "payment" in label:
-        return "transfer"
-    if amount_cents > 0 and account_type == "credit_card":
-        return "expense"
-    if amount_cents < 0 and account_type in {"checking", "savings"} and "refund" not in label:
-        return "expense"
-    return "expense"
 
 
-def commit_categorized_history(db: Session, filename: str, content: bytes, actor: str = "local-user") -> dict:
+def _history_row_errors(row: dict[str, str]) -> list[str]:
+    errors: list[str] = []
+    if not (row.get("account") or "").strip():
+        errors.append("Account")
+    posted_date_text = (row.get("posted_date") or "").strip()
+    if not posted_date_text:
+        errors.append("Posted Date")
+    else:
+        try:
+            _parse_import_date(posted_date_text)
+        except ValueError:
+            errors.append("Posted Date")
+    if not (row.get("payee") or "").strip():
+        errors.append("Payee")
+    amount_text = (row.get("amount") or "").strip()
+    if not amount_text:
+        errors.append("Amount")
+    else:
+        try:
+            parse_decimal_to_cents(amount_text)
+        except ValueError:
+            errors.append("Amount")
+    return errors
+
+
+def review_categorized_history(filename: str, content: bytes) -> dict:
     rows = _read_history_rows(filename, content)
+    reviewed_rows = [{**row, "errors": _history_row_errors(row)} for row in rows]
+    return {"rows": reviewed_rows, "needs_review": any(row["errors"] for row in reviewed_rows)}
+
+
+def _commit_categorized_history_rows(db: Session, filename: str, rows: list[dict[str, str]], actor: str = "local-user") -> dict:
     if not rows:
         raise ValueError("The categorized history file did not contain transaction rows")
+    invalid_rows = [{**row, "errors": _history_row_errors(row)} for row in rows if _history_row_errors(row)]
+    if invalid_rows:
+        raise ValueError("Some categorized history rows still need Account, Posted Date, Payee, or Amount before import")
 
-    file_hash = hashlib.sha256(content).hexdigest()
+    file_hash = hashlib.sha256(json.dumps(rows, sort_keys=True).encode("utf-8")).hexdigest()
     batches_by_account_id: dict[int, ImportBatch] = {}
     imported_by_account_id: Counter[int] = Counter()
     skipped_by_account_id: Counter[int] = Counter()
@@ -589,24 +611,8 @@ def commit_categorized_history(db: Session, filename: str, content: bytes, actor
         posted_date_text = (row.get("posted_date") or "").strip()
         amount_text = (row.get("amount") or "").strip()
         description = (row.get("payee") or "").strip()
-        if not posted_date_text or not amount_text or not description:
-            missing = ", ".join(
-                label
-                for label, value in (("Posted Date", posted_date_text), ("Amount", amount_text), ("Payee", description))
-                if not value
-            )
-            warnings.append(f"Skipped row {row['row_index']}: missing {missing}.")
-            skipped += 1
-            skipped_by_account_id[account.id] += 1
-            continue
-        try:
-            transaction_date = _parse_import_date(posted_date_text)
-            amount_cents = parse_decimal_to_cents(amount_text) or 0
-        except ValueError as exc:
-            warnings.append(f"Skipped row {row['row_index']}: {exc}.")
-            skipped += 1
-            skipped_by_account_id[account.id] += 1
-            continue
+        transaction_date = _parse_import_date(posted_date_text)
+        amount_cents = parse_decimal_to_cents(amount_text) or 0
 
         key = (account.id, transaction_date.isoformat(), amount_text, description, row.get("category") or "")
         description_counter[key] += 1
@@ -668,6 +674,38 @@ def commit_categorized_history(db: Session, filename: str, content: bytes, actor
         "categories_created": len(categories_created),
         "warnings": warnings,
     }
+
+def _history_transaction_type(category_label: str | None, amount_cents: int, account_type: str) -> str:
+    label = (category_label or "").strip().lower()
+    if "income" in label:
+        return "income"
+    if "transfer" in label or "payment" in label:
+        return "transfer"
+    if amount_cents > 0 and account_type == "credit_card":
+        return "expense"
+    if amount_cents < 0 and account_type in {"checking", "savings"} and "refund" not in label:
+        return "expense"
+    return "expense"
+
+
+def commit_categorized_history(db: Session, filename: str, content: bytes, actor: str = "local-user") -> dict:
+    rows = _read_history_rows(filename, content)
+    return _commit_categorized_history_rows(db, filename, rows, actor)
+
+
+def commit_reviewed_categorized_history(db: Session, filename: str, rows: list[dict[str, str]], actor: str = "local-user") -> dict:
+    cleaned_rows = [
+        {
+            "row_index": str(row.get("row_index") or index + 1),
+            "account": str(row.get("account") or "").strip(),
+            "posted_date": str(row.get("posted_date") or "").strip(),
+            "payee": str(row.get("payee") or "").strip(),
+            "amount": str(row.get("amount") or "").strip(),
+            "category": str(row.get("category") or "").strip(),
+        }
+        for index, row in enumerate(rows)
+    ]
+    return _commit_categorized_history_rows(db, filename, cleaned_rows, actor)
 
 
 def preview_import(content: bytes, preset_type: str) -> PreviewResult:

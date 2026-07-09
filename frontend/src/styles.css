@@ -1505,3 +1505,59 @@ textarea {
     grid-template-columns: 1fr;
   }
 }
+
+.historyReviewPanel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid #f2c5bd;
+  border-radius: 8px;
+  background: #fff8f6;
+}
+
+.historyReviewHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.historyReviewHeader div {
+  display: grid;
+  gap: 3px;
+}
+
+.historyReviewHeader span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.historyReviewRows {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.historyReviewRow {
+  display: grid;
+  grid-template-columns: 58px minmax(120px, 1fr) 120px minmax(180px, 1.5fr) 110px minmax(130px, 1fr) 74px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid rgba(211, 77, 63, 0.12);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.historyReviewRow small {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.historyReviewRow .missingField {
+  border-color: var(--red);
+  background: var(--red-soft);
+  box-shadow: 0 0 0 2px rgba(211, 77, 63, 0.08);
+}

@@ -93,6 +93,20 @@ type ImportAnalysis = {
   warnings: string[];
 };
 
+type CategorizedHistoryRow = {
+  row_index: string;
+  account: string;
+  posted_date: string;
+  payee: string;
+  amount: string;
+  category: string;
+  errors?: string[];
+};
+
+type CategorizedHistoryImportResponse =
+  | { needs_review: true; filename: string; rows: CategorizedHistoryRow[] }
+  | { needs_review?: false; inserted: number; skipped: number; accounts_created: number; categories_created: number; warnings: string[] };
+
 type ToastState = {
   tone: "success" | "error" | "info";
   message: string;
@@ -304,6 +318,8 @@ export function App() {
   const [lastSelectedHoldingId, setLastSelectedHoldingId] = useState<number | null>(null);
   const [appImportFile, setAppImportFile] = useState<File | null>(null);
   const [categorizedHistoryFile, setCategorizedHistoryFile] = useState<File | null>(null);
+  const [categorizedHistoryFilename, setCategorizedHistoryFilename] = useState("");
+  const [categorizedHistoryRows, setCategorizedHistoryRows] = useState<CategorizedHistoryRow[]>([]);
   const [bulkReviewCategoryId, setBulkReviewCategoryId] = useState<number | "">("");
   const [bulkReviewType, setBulkReviewType] = useState("expense");
   const [selectedTransactionAccountFilters, setSelectedTransactionAccountFilters] = useState<number[]>([]);
@@ -704,6 +720,55 @@ export function App() {
     }
   }
 
+  function categorizedHistoryMissingFields(row: CategorizedHistoryRow) {
+    return [
+      ["Account", row.account],
+      ["Posted Date", row.posted_date],
+      ["Payee", row.payee],
+      ["Amount", row.amount],
+    ]
+      .filter(([, value]) => !String(value ?? "").trim())
+      .map(([label]) => label);
+  }
+
+  function updateCategorizedHistoryRow(index: number, patch: Partial<CategorizedHistoryRow>) {
+    setCategorizedHistoryRows((current) => current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch, errors: [] } : row)));
+  }
+
+  function deleteCategorizedHistoryRow(index: number) {
+    setCategorizedHistoryRows((current) => current.filter((_, rowIndex) => rowIndex !== index));
+  }
+
+  async function commitReviewedCategorizedHistory() {
+    setToast(null);
+    const rowsWithMissingFields = categorizedHistoryRows.filter((row) => categorizedHistoryMissingFields(row).length > 0);
+    if (rowsWithMissingFields.length > 0) {
+      showToast({ tone: "error", message: `Fix or delete ${rowsWithMissingFields.length} categorized history rows before importing.` });
+      return;
+    }
+    if (categorizedHistoryRows.length === 0) {
+      showToast({ tone: "error", message: "There are no categorized history rows left to import." });
+      return;
+    }
+    try {
+      const result = await api<{ inserted: number; skipped: number; accounts_created: number; categories_created: number; warnings: string[] }>("/api/imports/categorized-history/reviewed", {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ filename: categorizedHistoryFilename || "categorized-history", rows: categorizedHistoryRows }),
+      });
+      setCategorizedHistoryFile(null);
+      setCategorizedHistoryFilename("");
+      setCategorizedHistoryRows([]);
+      await loadData();
+      showToast({
+        tone: "success",
+        message: `Imported ${result.inserted} categorized transactions, created ${result.accounts_created} accounts and ${result.categories_created} categories. Skipped ${result.skipped} duplicates.`,
+      });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Reviewed categorized history import failed." });
+    }
+  }
+
   async function importCategorizedHistory() {
     setToast(null);
     if (!categorizedHistoryFile) {
@@ -722,8 +787,16 @@ export function App() {
       if (!response.ok) {
         throw new Error(await readableApiError(response, "/api/imports/categorized-history"));
       }
-      const result = await parseApiJson<{ inserted: number; skipped: number; accounts_created: number; categories_created: number; warnings: string[] }>(response, "/api/imports/categorized-history");
+      const result = await parseApiJson<CategorizedHistoryImportResponse>(response, "/api/imports/categorized-history");
+      if (result.needs_review) {
+        setCategorizedHistoryFilename(result.filename);
+        setCategorizedHistoryRows(result.rows);
+        showToast({ tone: "info", message: `${result.rows.filter((row) => row.errors?.length).length} rows need missing data before import.` });
+        return;
+      }
       setCategorizedHistoryFile(null);
+      setCategorizedHistoryFilename("");
+      setCategorizedHistoryRows([]);
       await loadData();
       showToast({
         tone: "success",
@@ -1296,13 +1369,43 @@ export function App() {
                     <span>Upload an older categorized spreadsheet. Expected columns: Account, Posted Date, Payee, Amount, and Expense Category. Missing accounts and categories are created automatically.</span>
                   </div>
                   <div className="buttonRow">
-                    <input type="file" accept=".csv,.xlsx,.xlsm" onChange={(event) => setCategorizedHistoryFile(event.target.files?.[0] ?? null)} />
+                    <input type="file" accept=".csv,.xlsx,.xlsm" onChange={(event) => { setCategorizedHistoryFile(event.target.files?.[0] ?? null); setCategorizedHistoryRows([]); setCategorizedHistoryFilename(""); }} />
                     <button className="primaryButton" onClick={() => void importCategorizedHistory()} disabled={!categorizedHistoryFile}>
                       <ArrowDownToLine size={16} />
                       Import categorized history
                     </button>
                   </div>
                 </div>
+                {categorizedHistoryRows.length > 0 ? (
+                  <div className="historyReviewPanel">
+                    <div className="historyReviewHeader">
+                      <div>
+                        <strong>Review categorized history rows</strong>
+                        <span>Fill in highlighted fields or delete rows you do not want to import.</span>
+                      </div>
+                      <button className="primaryButton" onClick={() => void commitReviewedCategorizedHistory()}>
+                        Import reviewed rows
+                      </button>
+                    </div>
+                    <div className="historyReviewRows">
+                      {categorizedHistoryRows.map((row, index) => {
+                        const missing = categorizedHistoryMissingFields(row);
+                        const fieldMissing = (label: string) => missing.includes(label) || (row.errors ?? []).includes(label);
+                        return (
+                          <div className="historyReviewRow" key={`${row.row_index}-${index}`}>
+                            <small>Row {row.row_index}</small>
+                            <input className={fieldMissing("Account") ? "missingField" : ""} value={row.account} onChange={(event) => updateCategorizedHistoryRow(index, { account: event.target.value })} placeholder="Account" />
+                            <input className={fieldMissing("Posted Date") ? "missingField" : ""} value={row.posted_date} onChange={(event) => updateCategorizedHistoryRow(index, { posted_date: event.target.value })} placeholder="MM/DD/YYYY" />
+                            <input className={fieldMissing("Payee") ? "missingField" : ""} value={row.payee} onChange={(event) => updateCategorizedHistoryRow(index, { payee: event.target.value })} placeholder="Payee" />
+                            <input className={fieldMissing("Amount") ? "missingField" : ""} value={row.amount} onChange={(event) => updateCategorizedHistoryRow(index, { amount: event.target.value })} placeholder="Amount" />
+                            <input value={row.category} onChange={(event) => updateCategorizedHistoryRow(index, { category: event.target.value })} placeholder="Category" />
+                            <button className="dangerTextButton" onClick={() => deleteCategorizedHistoryRow(index)}>Delete</button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="compactForm">
                   <input type="file" accept=".csv" onChange={(event) => chooseImportFile(event.target.files?.[0] ?? null)} />
                   <div className="buttonRow">
