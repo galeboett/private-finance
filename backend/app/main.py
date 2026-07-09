@@ -398,11 +398,14 @@ def list_transactions(account_id: int | None = None, review_status: str | None =
         query = query.where(Transaction.account_id == account_id)
     if review_status:
         query = query.where(Transaction.review_status == review_status)
-    rows = db.scalars(query.limit(200)).all()
+    rows = db.scalars(query).all()
+    accounts = {account.id: account for account in db.scalars(select(Account)).all()}
     return [
         {
             "id": row.id,
             "account_id": row.account_id,
+            "institution_name": accounts[row.account_id].institution.name if row.account_id in accounts and accounts[row.account_id].institution else None,
+            "account_name": accounts[row.account_id].display_name if row.account_id in accounts else "Unknown account",
             "transaction_date": row.transaction_date.isoformat(),
             "amount_cents": row.amount_cents,
             "amount": cents_to_decimal_string(row.amount_cents),

@@ -1227,15 +1227,22 @@ textarea {
   box-shadow: var(--shadow);
 }
 
+.transactionFilters {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(130px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
 .ledgerTable {
   overflow-x: auto;
 }
 
 .ledgerHeader,
 .ledgerRow {
-  min-width: 930px;
+  min-width: 1240px;
   display: grid;
-  grid-template-columns: 70px 108px minmax(220px, 1.4fr) 132px 140px 112px 112px 86px;
+  grid-template-columns: 64px 92px 140px 150px minmax(240px, 1.5fr) 132px 150px 112px 86px;
   gap: 10px;
   align-items: center;
   padding: 9px 0;
@@ -1320,6 +1327,10 @@ textarea {
   .metricsGrid,
   .contentGrid,
   .workGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .transactionFilters {
     grid-template-columns: 1fr;
   }
 

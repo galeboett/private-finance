@@ -50,6 +50,8 @@ type ReviewItem = {
 type TransactionRow = {
   id: number;
   account_id: number;
+  institution_name: string | null;
+  account_name: string;
   raw_description: string;
   amount_cents: number;
   transaction_type: string;
@@ -122,6 +124,8 @@ type CategoryTotal = { category: string; amount_cents: number };
 type MonthlyCashFlow = { month: string; income_cents: number; expense_cents: number; net_cents: number };
 type NetWorthAccount = { account_id: number; account: string; account_type: string; latest_date: string; market_value_cents: number };
 type AllocationRow = { asset_class: string; market_value_cents: number };
+type TransactionSortKey = "date" | "amount";
+type SortDirection = "asc" | "desc";
 type HoldingRow = {
   id: number;
   account_id: number;
@@ -164,6 +168,14 @@ const transactionTypes = [
 
 const formatMoney = (cents: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
+
+const formatShortDate = (value: string | null | undefined) => {
+  if (!value) return "-";
+  const [datePart] = value.split("T");
+  const [year, month, day] = datePart.split("-");
+  if (!year || !month || !day) return value;
+  return `${month}/${day}/${year.slice(-2)}`;
+};
 
 const readableAccountType = (value: string) => value.replace("_", " ");
 
@@ -271,6 +283,12 @@ export function App() {
   const [appImportFile, setAppImportFile] = useState<File | null>(null);
   const [bulkReviewCategoryId, setBulkReviewCategoryId] = useState<number | "">("");
   const [bulkReviewType, setBulkReviewType] = useState("expense");
+  const [transactionAccountFilter, setTransactionAccountFilter] = useState<number | "">("");
+  const [transactionMonthFilter, setTransactionMonthFilter] = useState("");
+  const [transactionYearFilter, setTransactionYearFilter] = useState("");
+  const [transactionCategoryFilter, setTransactionCategoryFilter] = useState<number | "">("");
+  const [transactionSortKey, setTransactionSortKey] = useState<TransactionSortKey>("date");
+  const [transactionSortDirection, setTransactionSortDirection] = useState<SortDirection>("desc");
   const [accountForm, setAccountForm] = useState({
     institution_name: "",
     display_name: "",
@@ -1033,12 +1051,25 @@ export function App() {
   const previewRows = importPreview?.rows.slice(0, 6) ?? [];
   const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status));
   const visibleReviewTransactions = reviewTransactions.slice(0, 5);
-  const recentTransactions = transactions.slice(0, 8);
+  const transactionYears = Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))).sort((left, right) => right.localeCompare(left));
+  const filteredTransactions = transactions
+    .filter((transaction) => !transactionAccountFilter || transaction.account_id === transactionAccountFilter)
+    .filter((transaction) => !transactionMonthFilter || transaction.transaction_date.slice(5, 7) === transactionMonthFilter)
+    .filter((transaction) => !transactionYearFilter || transaction.transaction_date.slice(0, 4) === transactionYearFilter)
+    .filter((transaction) => !transactionCategoryFilter || transaction.category_id === transactionCategoryFilter)
+    .sort((left, right) => {
+      const direction = transactionSortDirection === "asc" ? 1 : -1;
+      if (transactionSortKey === "amount") {
+        return (left.amount_cents - right.amount_cents) * direction;
+      }
+      const dateCompare = left.transaction_date.localeCompare(right.transaction_date);
+      return dateCompare === 0 ? (left.id - right.id) * direction : dateCompare * direction;
+    });
   const visibleReviewIds = visibleReviewTransactions.map((transaction) => transaction.id);
-  const recentTransactionIds = recentTransactions.map((transaction) => transaction.id);
+  const repositoryTransactionIds = filteredTransactions.map((transaction) => transaction.id);
   const selectedVisibleReviewIds = visibleIdsFilter(visibleReviewIds, selectedTransactionIds);
   const selectedVisibleReviewTransactions = visibleReviewTransactions.filter((transaction) => selectedVisibleReviewIds.includes(transaction.id));
-  const selectedRecentTransactionIds = recentTransactionIds.filter((id) => selectedTransactionIds.includes(id));
+  const selectedRepositoryTransactionIds = repositoryTransactionIds.filter((id) => selectedTransactionIds.includes(id));
   const accountIds = accounts.map((account) => account.id);
   const selectedVisibleAccountIds = accountIds.filter((id) => selectedAccountIds.includes(id));
   const visibleHoldingIds = holdingRows.slice(0, 12).map((row) => row.id);
@@ -1417,13 +1448,13 @@ export function App() {
                       <div>
                         <small>Money out</small>
                         <strong>{fromAccount?.display_name ?? `Account ${candidate.from_transaction.account_id}`}</strong>
-                        <span>{candidate.from_transaction.transaction_date} / {candidate.from_transaction.raw_description}</span>
+                        <span>{formatShortDate(candidate.from_transaction.transaction_date)} / {candidate.from_transaction.raw_description}</span>
                         <b>{formatMoney(candidate.from_transaction.amount_cents)}</b>
                       </div>
                       <div>
                         <small>Money in</small>
                         <strong>{toAccount?.display_name ?? `Account ${candidate.to_transaction.account_id}`}</strong>
-                        <span>{candidate.to_transaction.transaction_date} / {candidate.to_transaction.raw_description}</span>
+                        <span>{formatShortDate(candidate.to_transaction.transaction_date)} / {candidate.to_transaction.raw_description}</span>
                         <b>{formatMoney(candidate.to_transaction.amount_cents)}</b>
                       </div>
                     </div>
@@ -1518,7 +1549,7 @@ export function App() {
                       />
                       <div>
                         <strong>{transaction.raw_description}</strong>
-                        <span className="reviewMetaRow"><small>{transaction.transaction_date}</small><span className={reviewStatusClass(transaction.review_status)}>{reviewStatusLabel(transaction.review_status)}</span></span>
+                        <span className="reviewMetaRow"><small>{formatShortDate(transaction.transaction_date)}</small><span className={reviewStatusClass(transaction.review_status)}>{reviewStatusLabel(transaction.review_status)}</span></span>
                       </div>
                       <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
                     </div>
@@ -1655,14 +1686,63 @@ export function App() {
         </section>
 
         <section className="ledgerPanel">
-          <PanelTitle icon={ReceiptText} title="Recent Transactions" subtitle="The ledger after imports, edits, and review decisions." />
-          {recentTransactions.length > 0 ? (
+          <PanelTitle icon={ReceiptText} title="All Transactions" subtitle="A searchable repository for every imported transaction." />
+          <div className="transactionFilters">
+            <select value={transactionAccountFilter} onChange={(event) => setTransactionAccountFilter(event.target.value ? Number(event.target.value) : "")}>
+              <option value="">All accounts</option>
+              {accounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.display_name}
+                </option>
+              ))}
+            </select>
+            <select value={transactionMonthFilter} onChange={(event) => setTransactionMonthFilter(event.target.value)}>
+              <option value="">All months</option>
+              <option value="01">January</option>
+              <option value="02">February</option>
+              <option value="03">March</option>
+              <option value="04">April</option>
+              <option value="05">May</option>
+              <option value="06">June</option>
+              <option value="07">July</option>
+              <option value="08">August</option>
+              <option value="09">September</option>
+              <option value="10">October</option>
+              <option value="11">November</option>
+              <option value="12">December</option>
+            </select>
+            <select value={transactionYearFilter} onChange={(event) => setTransactionYearFilter(event.target.value)}>
+              <option value="">All years</option>
+              {transactionYears.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </select>
+            <select value={transactionCategoryFilter} onChange={(event) => setTransactionCategoryFilter(event.target.value ? Number(event.target.value) : "")}>
+              <option value="">All categories</option>
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.label}
+                </option>
+              ))}
+            </select>
+            <select value={transactionSortKey} onChange={(event) => setTransactionSortKey(event.target.value as TransactionSortKey)}>
+              <option value="date">Sort by date</option>
+              <option value="amount">Sort by amount</option>
+            </select>
+            <select value={transactionSortDirection} onChange={(event) => setTransactionSortDirection(event.target.value as SortDirection)}>
+              <option value="desc">Descending</option>
+              <option value="asc">Ascending</option>
+            </select>
+          </div>
+          {filteredTransactions.length > 0 ? (
             <div className="selectionToolbar">
-              <span>{selectedRecentTransactionIds.length} selected</span>
-              <button className="dangerTextButton" onClick={() => requestBulkTransactionDelete(selectedRecentTransactionIds)} disabled={selectedRecentTransactionIds.length === 0}>
+              <span>{selectedRepositoryTransactionIds.length} selected / {filteredTransactions.length} shown</span>
+              <button className="dangerTextButton" onClick={() => requestBulkTransactionDelete(selectedRepositoryTransactionIds)} disabled={selectedRepositoryTransactionIds.length === 0}>
                 Delete selected
               </button>
-              <button className="secondaryButton" onClick={() => setSelectedTransactionIds((current) => current.filter((id) => !recentTransactionIds.includes(id)))}>
+              <button className="secondaryButton" onClick={() => setSelectedTransactionIds((current) => current.filter((id) => !repositoryTransactionIds.includes(id)))}>
                 Clear
               </button>
             </div>
@@ -1683,66 +1763,65 @@ export function App() {
             <div className="ledgerHeader">
               <span>Select</span>
               <span>Date</span>
+              <span>Institution</span>
+              <span>Account</span>
               <span>Description</span>
               <span>Type</span>
               <span>Category</span>
-              <span>Status</span>
               <span>Amount</span>
               <span>Action</span>
             </div>
-            {recentTransactions.map((transaction) => {
-              const category = categories.find((item) => item.id === transaction.category_id);
-              return (
-                <div className="inlineDeleteGroup ledgerDeleteGroup" key={transaction.id}>
-                  <div className={selectedTransactionIds.includes(transaction.id) ? "ledgerRow selected" : "ledgerRow"}>
-                    <input
-                      type="checkbox"
-                      checked={selectedTransactionIds.includes(transaction.id)}
-                      onChange={(event) => toggleTransactionSelection(transaction.id, recentTransactionIds, (event.nativeEvent as MouseEvent).shiftKey)}
-                      title="Select transaction. Hold Shift to select a range."
-                    />
-                    <span>{transaction.transaction_date}</span>
-                    <strong className="ledgerDescription">
-                      {transaction.raw_description}
-                      {transaction.user_note ? <small>{transaction.user_note}</small> : null}
-                    </strong>
-                    <select value={transaction.transaction_type} onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value }, true)}>
-                      {transactionTypes.map((type) => (
-                        <option key={type.value} value={type.value}>
-                          {type.label}
-                        </option>
-                      ))}
-                    </select>
-                    <select value={transaction.category_id ?? ""} onChange={(event) => void updateTransaction(transaction.id, { category_id: event.target.value ? Number(event.target.value) : null }, true)}>
-                      <option value="">No category</option>
-                      {categories.map((categoryOption) => (
-                        <option key={categoryOption.id} value={categoryOption.id}>
-                          {categoryOption.label}
-                        </option>
-                      ))}
-                    </select>
-                    <span className={reviewStatusClass(transaction.review_status)}>{reviewStatusLabel(transaction.review_status)}</span>
-                    <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
-                    <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>
-                      Delete
-                    </button>
-                  </div>
-                  {deleteTarget?.kind === "transaction" && deleteTarget.id === transaction.id ? (
-                    <DeleteConfirmInline
-                      target={deleteTarget}
-                      confirmText={deleteConfirmText}
-                      onConfirmTextChange={setDeleteConfirmText}
-                      onConfirm={confirmDelete}
-                      onCancel={() => {
-                        setDeleteTarget(null);
-                        setDeleteConfirmText("");
-                      }}
-                    />
-                  ) : null}
+            {filteredTransactions.map((transaction) => (
+              <div className="inlineDeleteGroup ledgerDeleteGroup" key={transaction.id}>
+                <div className={selectedTransactionIds.includes(transaction.id) ? "ledgerRow selected" : "ledgerRow"}>
+                  <input
+                    type="checkbox"
+                    checked={selectedTransactionIds.includes(transaction.id)}
+                    onChange={(event) => toggleTransactionSelection(transaction.id, repositoryTransactionIds, (event.nativeEvent as MouseEvent).shiftKey)}
+                    title="Select transaction. Hold Shift to select a range."
+                  />
+                  <span>{formatShortDate(transaction.transaction_date)}</span>
+                  <span>{transaction.institution_name ?? "-"}</span>
+                  <span>{transaction.account_name}</span>
+                  <strong className="ledgerDescription">
+                    {transaction.raw_description}
+                    {transaction.user_note ? <small>{transaction.user_note}</small> : null}
+                  </strong>
+                  <select value={transaction.transaction_type} onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value }, true)}>
+                    {transactionTypes.map((type) => (
+                      <option key={type.value} value={type.value}>
+                        {type.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select value={transaction.category_id ?? ""} onChange={(event) => void updateTransaction(transaction.id, { category_id: event.target.value ? Number(event.target.value) : null }, true)}>
+                    <option value="">No category</option>
+                    {categories.map((categoryOption) => (
+                      <option key={categoryOption.id} value={categoryOption.id}>
+                        {categoryOption.label}
+                      </option>
+                    ))}
+                  </select>
+                  <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
+                  <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>
+                    Delete
+                  </button>
                 </div>
-              );
-            })}
-            {recentTransactions.length === 0 ? <p className="emptyText">No transactions yet. Import a CSV to start the ledger.</p> : null}
+                {deleteTarget?.kind === "transaction" && deleteTarget.id === transaction.id ? (
+                  <DeleteConfirmInline
+                    target={deleteTarget}
+                    confirmText={deleteConfirmText}
+                    onConfirmTextChange={setDeleteConfirmText}
+                    onConfirm={confirmDelete}
+                    onCancel={() => {
+                      setDeleteTarget(null);
+                      setDeleteConfirmText("");
+                    }}
+                  />
+                ) : null}
+              </div>
+            ))}
+            {filteredTransactions.length === 0 ? <p className="emptyText">No transactions match those filters.</p> : null}
           </div>
         </section>
       </main>
@@ -1973,7 +2052,7 @@ function NetWorthReport({
           <div className="barRow" key={row.account_id}>
             <div>
               <strong>{row.account}</strong>
-              <span>{formatMoney(row.market_value_cents)} / {row.latest_date}</span>
+              <span>{formatMoney(row.market_value_cents)} / {formatShortDate(row.latest_date)}</span>
             </div>
             <div className="barTrack blue">
               <div style={{ width: `${Math.max(4, Math.round((row.market_value_cents / max) * 100))}%` }} />
@@ -2016,7 +2095,7 @@ function NetWorthReport({
             <span>Quantity</span>
             <span className="stackedHeader">
               Price
-              <small>{sharedPriceDate}</small>
+              <small>{formatShortDate(sharedPriceDate)}</small>
             </span>
             <span>Value</span>
             <span>Action</span>
