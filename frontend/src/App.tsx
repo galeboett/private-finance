@@ -19,6 +19,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 
 type BootstrapCategory = { id: number; key: string; label: string };
@@ -196,6 +197,9 @@ const uncategorizedFilterValue = "__uncategorized__";
 const TRANSACTION_PAGE_SIZE = 100;
 const taxonomyStorageKey = "privateFinance.accountTaxonomy.v1";
 const collapsedTaxonomyStorageKey = "privateFinance.collapsedTaxonomy.v1";
+const sidebarWidthStorageKey = "privateFinance.sidebarWidth.v1";
+const minSidebarWidth = 190;
+const maxSidebarWidth = 420;
 const dashboardWidgetStorageKey = "privateFinance.dashboardWidgets.v1";
 const defaultDashboardWidgets: DashboardWidgetConfig = {
   taxonomy: true,
@@ -405,6 +409,17 @@ function writeStoredJson<T>(key: string, value: T) {
   window.localStorage.setItem(key, JSON.stringify(value));
 }
 
+function readStoredNumber(key: string, fallback: number, min: number, max: number): number {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+  const parsed = Number(window.localStorage.getItem(key));
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, parsed));
+}
+
 function taxonomyLabelForAccount(account: AccountSummary, overrides: AccountTaxonomyOverrides): string {
   const override = overrides[String(account.id)]?.trim();
   if (override) {
@@ -498,6 +513,7 @@ export function App() {
   const [dashboardWidgets, setDashboardWidgets] = useState<DashboardWidgetConfig>(() =>
     readStoredJson<DashboardWidgetConfig>(dashboardWidgetStorageKey, defaultDashboardWidgets),
   );
+  const [sidebarWidth, setSidebarWidth] = useState(() => readStoredNumber(sidebarWidthStorageKey, 244, minSidebarWidth, maxSidebarWidth));
   const [bulkInstitutionName, setBulkInstitutionName] = useState("");
   const [accountForm, setAccountForm] = useState({
     institution_name: "",
@@ -1574,6 +1590,30 @@ export function App() {
   const reviewCount = reviewTransactions.length;
   const accountNeedingTaxonomy = accounts.find((account) => !taxonomyOverrides[String(account.id)] && !account.institution_name);
 
+  function startSidebarResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    const pointerId = event.pointerId;
+    event.currentTarget.setPointerCapture(pointerId);
+    let latestWidth = startWidth;
+
+    function onPointerMove(moveEvent: PointerEvent) {
+      const nextWidth = Math.min(maxSidebarWidth, Math.max(minSidebarWidth, startWidth + moveEvent.clientX - startX));
+      latestWidth = nextWidth;
+      setSidebarWidth(nextWidth);
+    }
+
+    function onPointerUp() {
+      window.localStorage.setItem(sidebarWidthStorageKey, String(latestWidth));
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    }
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp, { once: true });
+  }
+
   function openAccountView(accountId: number) {
     setFocusedAccountId(accountId);
     setSelectedAccountId(accountId);
@@ -1653,7 +1693,7 @@ export function App() {
   }
 
   return (
-    <div className="appFrame">
+    <div className="appFrame" style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)` }}>
       <aside className="sidebar">
         <div className="brandBlock">
           <strong>Private Finance</strong>
@@ -1685,7 +1725,7 @@ export function App() {
           <div className="sidebarSection" key={section.label}>
             <div className="sidebarSectionHeader">
               <span>{section.label}</span>
-              <span>{formatMoney(section.totalCents)}</span>
+              <span className={section.totalCents < 0 ? "sidebarSectionBalance negative" : "sidebarSectionBalance"}>{formatMoney(section.totalCents)}</span>
             </div>
             <div className="sidebarAccounts">
               {section.groups.map((group) => {
@@ -1696,7 +1736,7 @@ export function App() {
                     <button className="sidebarGroupHeader" onClick={() => toggleTaxonomyGroup(section.label, group.label)} title={`${isCollapsed ? "Expand" : "Collapse"} ${group.label}`}>
                       <span className="sidebarGroupToggle">{isCollapsed ? "+" : "-"}</span>
                       <span>{group.label}</span>
-                      <span>{formatMoney(group.totalCents)}</span>
+                      <span className={group.totalCents < 0 ? "sidebarGroupBalance negative" : "sidebarGroupBalance"}>{formatMoney(group.totalCents)}</span>
                     </button>
                     {isCollapsed
                       ? null
@@ -1710,7 +1750,7 @@ export function App() {
                                 {account.display_name}
                                 {account.last_four ? ` (${account.last_four})` : ""}
                               </span>
-                              <span className="sidebarAccountBalance">{formatMoney(accountBalances.get(account.id) ?? 0)}</span>
+                              <span className={(accountBalances.get(account.id) ?? 0) < 0 ? "sidebarAccountBalance negative" : "sidebarAccountBalance"}>{formatMoney(accountBalances.get(account.id) ?? 0)}</span>
                             </button>
                           );
                         })}
@@ -1723,7 +1763,9 @@ export function App() {
         ))}
         <div className="sidebarFooter">
           <button className="taxonomyToggleButton" onClick={() => setTaxonomyEditorOpen((current) => !current)}>
-            <Sparkles size={14} />
+            <span className="sidebarActionIcon">
+              <Sparkles size={11} />
+            </span>
             <span>Customize Taxonomy</span>
           </button>
           {taxonomyEditorOpen ? (
@@ -1761,10 +1803,13 @@ export function App() {
               setImportModalOpen(true);
             }}
           >
-            <Plus size={16} />
+            <span className="sidebarActionIcon">
+              <Plus size={11} />
+            </span>
             Add Account
           </button>
         </div>
+        <button className="sidebarResizeHandle" aria-label="Resize sidebar" title="Drag to resize sidebar" onPointerDown={startSidebarResize} />
       </aside>
 
       <main className="workspace">

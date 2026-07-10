@@ -81,19 +81,22 @@ button:disabled {
 .appFrame {
   height: 100vh;
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 244px minmax(0, 1fr);
   overflow: hidden;
 }
 
 .sidebar {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   height: 100vh;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 12px 10px 14px;
-  background: linear-gradient(180deg, #1a1e3c 0%, #161a35 100%);
+  padding: 10px 8px 12px;
+  background:
+    radial-gradient(circle at 0 0, rgba(96, 116, 255, 0.12), transparent 34%),
+    linear-gradient(180deg, #181b42 0%, #151937 58%, #12162f 100%);
   color: #f5f7ff;
   border-right: 0;
 }
@@ -101,11 +104,11 @@ button:disabled {
 .brandBlock {
   display: grid;
   gap: 2px;
-  padding: 6px 10px 10px;
+  padding: 6px 10px 8px;
 }
 
 .brandBlock strong {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
 }
 
@@ -117,21 +120,22 @@ button:disabled {
 .sidebar nav,
 .sidebarAccounts {
   display: grid;
-  gap: 2px;
+  gap: 1px;
 }
 
 .navItem {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 9px;
+  padding: 8px 10px;
   color: rgba(245, 247, 255, 0.88);
   background: transparent;
   border: 0;
   border-radius: 8px;
   text-align: left;
-  font-size: 14px;
+  font-size: 12px;
+  font-weight: 700;
   position: relative;
 }
 
@@ -140,15 +144,15 @@ button:disabled {
 }
 
 .navItem.active {
-  background: rgba(59, 106, 232, 0.35);
+  background: rgba(83, 88, 154, 0.48);
   font-weight: 700;
-  box-shadow: inset 3px 0 0 #6f92ff;
+  box-shadow: inset 3px 0 0 #8892ff;
 }
 
 .sidebarSection {
   display: grid;
-  gap: 4px;
-  margin-top: 8px;
+  gap: 3px;
+  margin-top: 10px;
 }
 
 .sidebarSectionHeader {
@@ -156,25 +160,56 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 12px 4px;
-  color: rgba(245, 247, 255, 0.55);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
+  padding: 5px 7px 4px;
+  color: rgba(230, 235, 255, 0.72);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.11em;
   text-transform: uppercase;
+}
+
+.sidebarSectionHeader::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-right: 1.5px solid rgba(230, 235, 255, 0.64);
+  border-bottom: 1.5px solid rgba(230, 235, 255, 0.64);
+  transform: rotate(45deg);
+  margin-right: -3px;
+}
+
+.sidebarSectionHeader span:first-child {
+  margin-right: auto;
+}
+
+.sidebarSectionBalance,
+.sidebarGroupBalance {
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebarSectionBalance.negative,
+.sidebarGroupBalance.negative,
+.sidebarAccountBalance.negative {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #a74552;
+  font-weight: 800;
+  box-shadow: 0 1px 4px rgba(7, 10, 29, 0.18);
 }
 
 .sidebarAccount {
   width: 100%;
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) auto;
+  grid-template-columns: 9px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
-  padding: 9px 12px;
+  gap: 7px;
+  min-height: 28px;
+  padding: 6px 7px 6px 20px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
-  color: rgba(245, 247, 255, 0.92);
+  color: rgba(250, 252, 255, 0.94);
   text-align: left;
 }
 
@@ -183,13 +218,13 @@ button:disabled {
 }
 
 .sidebarAccount.active {
-  background: rgba(59, 106, 232, 0.42);
-  box-shadow: inset 3px 0 0 #6f92ff;
+  background: rgba(88, 91, 157, 0.58);
+  box-shadow: inset 3px 0 0 #8d97ff;
 }
 
 .attentionDot {
-  width: 7px;
-  height: 7px;
+  width: 5px;
+  height: 5px;
   border-radius: 999px;
   background: #ffffff;
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.15);
@@ -203,12 +238,15 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
 .sidebarAccountBalance {
-  font-size: 12px;
-  color: rgba(245, 247, 255, 0.78);
+  font-size: 11px;
+  color: rgba(226, 232, 255, 0.82);
+  font-weight: 800;
   font-variant-numeric: tabular-nums;
 }
 
@@ -219,17 +257,17 @@ button:disabled {
 
 .sidebarGroupHeader {
   display: grid;
-  grid-template-columns: 12px minmax(0, 1fr) auto;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  padding: 5px 12px 3px 26px;
+  padding: 4px 7px 3px 9px;
   border: 0;
   background: transparent;
-  color: rgba(245, 247, 255, 0.66);
-  font-size: 11px;
+  color: rgba(230, 235, 255, 0.66);
+  font-size: 10.5px;
   font-weight: 800;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   text-align: left;
 }
 
@@ -244,23 +282,43 @@ button:disabled {
 }
 
 .sidebarGroupToggle {
-  color: rgba(245, 247, 255, 0.42);
+  color: rgba(245, 247, 255, 0.5);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
 .taxonomyToggleButton {
   width: 100%;
-  min-height: 34px;
+  min-height: 32px;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin-bottom: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  justify-content: flex-start;
+  gap: 9px;
+  margin-bottom: 7px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.11);
+  color: rgba(250, 252, 255, 0.94);
+  font-size: 12px;
+  font-weight: 800;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.taxonomyToggleButton:hover,
+.addAccountButton:hover {
+  background: rgba(255, 255, 255, 0.17);
+}
+
+.sidebarActionIcon {
+  width: 15px;
+  height: 15px;
+  display: inline-grid;
+  place-items: center;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(245, 247, 255, 0.9);
-  font-weight: 700;
+  background: rgba(255, 255, 255, 0.9);
+  color: #202650;
+  flex: 0 0 auto;
 }
 
 .taxonomyEditor {
@@ -325,20 +383,47 @@ button:disabled {
 
 .addAccountButton {
   width: 100%;
-  min-height: 36px;
+  min-height: 33px;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  border-radius: 999px;
-  background: transparent;
+  justify-content: flex-start;
+  gap: 9px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.11);
   color: #fff;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 800;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
-.addAccountButton:hover {
-  background: rgba(255, 255, 255, 0.08);
+.sidebarResizeHandle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  z-index: 3;
+  width: 8px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.sidebarResizeHandle::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  right: 3px;
+  width: 2px;
+  height: calc(100% - 24px);
+  border-radius: 999px;
+  background: transparent;
+}
+
+.sidebarResizeHandle:hover::after {
+  background: rgba(255, 255, 255, 0.24);
 }
 
 .workspace {
