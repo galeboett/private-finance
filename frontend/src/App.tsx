@@ -1721,28 +1721,90 @@ export function App() {
                 </button>
               </div>
             </header>
+            <div className="transactionFilters accountFilters stickyFilters">
+              <MultiSelectFilter
+                label="Months"
+                options={monthOptions}
+                selectedValues={selectedTransactionMonthFilters}
+                onToggle={(value) => setSelectedTransactionMonthFilters((current) => toggleValue(current, value))}
+                onSelectAll={() => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value))}
+                onDeselectAll={() => setSelectedTransactionMonthFilters([])}
+              />
+              <MultiSelectFilter
+                label="Years"
+                options={transactionYears.map((year) => ({ value: year, label: year }))}
+                selectedValues={selectedTransactionYearFilters}
+                onToggle={(value) => setSelectedTransactionYearFilters((current) => toggleValue(current, value))}
+                onSelectAll={() => setSelectedTransactionYearFilters(transactionYears)}
+                onDeselectAll={() => setSelectedTransactionYearFilters([])}
+              />
+              <MultiSelectFilter
+                label="Categories"
+                options={transactionCategoryOptions}
+                selectedValues={selectedTransactionCategoryFilters}
+                onToggle={(value) => setSelectedTransactionCategoryFilters((current) => toggleValue(current, value))}
+                onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
+                onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
+              />
+            </div>
           </div>
         ) : null}
 
         {activeView === "all-accounts" ? (
-          <header className="accountLedgerHeader stickyAccountChrome">
-            <div>
-              <h1>All Accounts</h1>
-              <div className="accountMetaRow">
-                <span>{accounts.length} accounts</span>
-                <span>{missingCategoryTransactions.length} need a category</span>
+          <div className="stickyAccountChrome">
+            <header className="accountLedgerHeader">
+              <div>
+                <h1>All Accounts</h1>
+                <div className="accountMetaRow">
+                  <span>{accounts.length} accounts</span>
+                  <span>{missingCategoryTransactions.length} need a category</span>
+                </div>
               </div>
+              <div className="accountActionBar">
+                <button className="primaryButton compactButton" onClick={() => openImportModal()}>
+                  <FileUp size={14} />
+                  File Import
+                </button>
+                <button className="ghostButton compactIconButton" title="Refresh data" onClick={() => void loadData()}>
+                  <RefreshCw size={14} />
+                </button>
+              </div>
+            </header>
+            <div className="transactionFilters stickyFilters">
+              <MultiSelectFilter
+                label="Accounts"
+                options={accounts.map((account) => ({ value: String(account.id), label: account.display_name }))}
+                selectedValues={selectedTransactionAccountFilters.map(String)}
+                onToggle={(value) => setSelectedTransactionAccountFilters((current) => toggleValue(current, Number(value)))}
+                onSelectAll={() => setSelectedTransactionAccountFilters(accounts.map((account) => account.id))}
+                onDeselectAll={() => setSelectedTransactionAccountFilters([])}
+              />
+              <MultiSelectFilter
+                label="Months"
+                options={monthOptions}
+                selectedValues={selectedTransactionMonthFilters}
+                onToggle={(value) => setSelectedTransactionMonthFilters((current) => toggleValue(current, value))}
+                onSelectAll={() => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value))}
+                onDeselectAll={() => setSelectedTransactionMonthFilters([])}
+              />
+              <MultiSelectFilter
+                label="Years"
+                options={transactionYears.map((year) => ({ value: year, label: year }))}
+                selectedValues={selectedTransactionYearFilters}
+                onToggle={(value) => setSelectedTransactionYearFilters((current) => toggleValue(current, value))}
+                onSelectAll={() => setSelectedTransactionYearFilters(transactionYears)}
+                onDeselectAll={() => setSelectedTransactionYearFilters([])}
+              />
+              <MultiSelectFilter
+                label="Categories"
+                options={transactionCategoryOptions}
+                selectedValues={selectedTransactionCategoryFilters}
+                onToggle={(value) => setSelectedTransactionCategoryFilters((current) => toggleValue(current, value))}
+                onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
+                onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
+              />
             </div>
-            <div className="accountActionBar">
-              <button className="primaryButton compactButton" onClick={() => openImportModal()}>
-                <FileUp size={14} />
-                File Import
-              </button>
-              <button className="ghostButton compactIconButton" title="Refresh data" onClick={() => void loadData()}>
-                <RefreshCw size={14} />
-              </button>
-            </div>
-          </header>
+          </div>
         ) : null}
 
         {(activeView === "review" || activeView === "settings") && (
@@ -2278,42 +2340,6 @@ export function App() {
         {(activeView === "account" || activeView === "all-accounts") && (
         <section className="ledgerPanel ledgerWorkspace">
           <PanelTitle icon={ReceiptText} title={activeView === "account" ? "Account Transactions" : "All Transactions"} subtitle={activeView === "account" ? "Transactions for the selected account." : "A searchable repository for every imported transaction."} />
-          <div className={activeView === "all-accounts" ? "transactionFilters" : "transactionFilters accountFilters"}>
-            {activeView === "all-accounts" ? (
-              <MultiSelectFilter
-                label="Accounts"
-                options={accounts.map((account) => ({ value: String(account.id), label: account.display_name }))}
-                selectedValues={selectedTransactionAccountFilters.map(String)}
-                onToggle={(value) => setSelectedTransactionAccountFilters((current) => toggleValue(current, Number(value)))}
-                onSelectAll={() => setSelectedTransactionAccountFilters(accounts.map((account) => account.id))}
-                onDeselectAll={() => setSelectedTransactionAccountFilters([])}
-              />
-            ) : null}
-            <MultiSelectFilter
-              label="Months"
-              options={monthOptions}
-              selectedValues={selectedTransactionMonthFilters}
-              onToggle={(value) => setSelectedTransactionMonthFilters((current) => toggleValue(current, value))}
-              onSelectAll={() => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value))}
-              onDeselectAll={() => setSelectedTransactionMonthFilters([])}
-            />
-            <MultiSelectFilter
-              label="Years"
-              options={transactionYears.map((year) => ({ value: year, label: year }))}
-              selectedValues={selectedTransactionYearFilters}
-              onToggle={(value) => setSelectedTransactionYearFilters((current) => toggleValue(current, value))}
-              onSelectAll={() => setSelectedTransactionYearFilters(transactionYears)}
-              onDeselectAll={() => setSelectedTransactionYearFilters([])}
-            />
-            <MultiSelectFilter
-              label="Categories"
-              options={transactionCategoryOptions}
-              selectedValues={selectedTransactionCategoryFilters}
-              onToggle={(value) => setSelectedTransactionCategoryFilters((current) => toggleValue(current, value))}
-              onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
-              onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
-            />
-          </div>
           {filteredTransactions.length > 0 ? (
             <div className="selectionToolbar">
               <span>
