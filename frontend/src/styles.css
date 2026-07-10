@@ -212,6 +212,99 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+.sidebarTaxonomyGroup {
+  display: grid;
+  gap: 1px;
+}
+
+.sidebarGroupHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 12px 3px 26px;
+  color: rgba(245, 247, 255, 0.66);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.sidebarGroupHeader span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taxonomyToggleButton {
+  width: 100%;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(245, 247, 255, 0.9);
+  font-weight: 700;
+}
+
+.taxonomyEditor {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  background: rgba(8, 12, 31, 0.44);
+}
+
+.taxonomyEditor label {
+  color: rgba(245, 247, 255, 0.6);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.taxonomyEditor input,
+.taxonomyEditor select {
+  min-width: 0;
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.taxonomyEditor option {
+  color: #111827;
+}
+
+.taxonomyActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.taxonomyActions button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-weight: 800;
+}
+
+.taxonomyEditor p {
+  margin: 0;
+  color: rgba(245, 247, 255, 0.56);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .sidebarFooter {
   margin-top: auto;
   padding-top: 8px;
@@ -1941,6 +2034,133 @@ select.editableCell {
   padding: 0 20px 20px;
 }
 
+.dashboardControls {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dashboardControls h2 {
+  margin: 2px 0 2px;
+  font-size: 18px;
+}
+
+.dashboardControls p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.dashboardCustomizer {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.widgetToggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.widgetToggle span {
+  display: grid;
+  gap: 2px;
+}
+
+.widgetToggle strong {
+  font-size: 13px;
+}
+
+.widgetToggle small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.dashboardWidgetGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.dashboardWidget {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-height: 156px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at top right, rgba(79, 164, 193, 0.14), transparent 34%),
+    var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.dashboardWidget.wide {
+  grid-column: span 2;
+}
+
+.widgetHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.widgetHeader strong {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboardWidget p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.taxonomySummaryRows,
+.miniRankList {
+  display: grid;
+  gap: 8px;
+}
+
+.taxonomySummaryRow,
+.miniRankList div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(250, 249, 245, 0.72);
+}
+
+.taxonomySummaryRow div {
+  display: grid;
+  gap: 2px;
+}
+
+.taxonomySummaryRow strong,
+.miniRankList strong {
+  font-size: 13px;
+}
+
+.taxonomySummaryRow span,
+.miniRankList span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .emptyText {
   margin: 0;
   color: var(--muted);
@@ -1956,6 +2176,9 @@ select.editableCell {
   .brandBlock span,
   .sidebarSectionHeader span:last-child,
   .sidebarAccountBalance,
+  .sidebarGroupHeader,
+  .taxonomyToggleButton span,
+  .taxonomyEditor,
   .navItem span,
   .addAccountButton span,
   .sidebarAccountName {
@@ -1968,8 +2191,13 @@ select.editableCell {
   }
 
   .contentGrid,
+  .dashboardWidgetGrid,
   .workGrid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .dashboardCustomizer {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .importWorkspace {
@@ -2018,8 +2246,19 @@ select.editableCell {
 
   .metricsGrid,
   .contentGrid,
+  .dashboardWidgetGrid,
+  .dashboardCustomizer,
   .workGrid {
     grid-template-columns: 1fr;
+  }
+
+  .dashboardWidget.wide {
+    grid-column: span 1;
+  }
+
+  .dashboardControls {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .transactionFilters {

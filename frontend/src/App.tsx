@@ -160,6 +160,11 @@ type HoldingRow = {
 };
 
 type AppView = "overview" | "all-accounts" | "account" | "review" | "reports" | "settings";
+type AccountTaxonomyOverrides = Record<string, string>;
+type TaxonomySection = { label: string; rows: AccountSummary[]; emptyText: string };
+type TaxonomyGroup = { label: string; rows: AccountSummary[]; totalCents: number };
+type DashboardWidgetKey = "taxonomy" | "review" | "spending" | "cashflow" | "imports";
+type DashboardWidgetConfig = Record<DashboardWidgetKey, boolean>;
 
 const primaryNavItems: Array<{ id: AppView; label: string; icon: typeof LayoutDashboard }> = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -188,6 +193,22 @@ const monthOptions: FilterOption[] = [
 
 const uncategorizedFilterValue = "__uncategorized__";
 const TRANSACTION_PAGE_SIZE = 100;
+const taxonomyStorageKey = "privateFinance.accountTaxonomy.v1";
+const dashboardWidgetStorageKey = "privateFinance.dashboardWidgets.v1";
+const defaultDashboardWidgets: DashboardWidgetConfig = {
+  taxonomy: true,
+  review: true,
+  spending: true,
+  cashflow: true,
+  imports: true,
+};
+const dashboardWidgetOptions: Array<{ key: DashboardWidgetKey; label: string; description: string }> = [
+  { key: "taxonomy", label: "Account map", description: "Balances by account type and institution/custom group." },
+  { key: "review", label: "Review workload", description: "Transactions that still need categorization or duplicate review." },
+  { key: "spending", label: "Top spending", description: "Largest expense categories for the selected period." },
+  { key: "cashflow", label: "Cash-flow trend", description: "Recent income, expense, and net movement." },
+  { key: "imports", label: "Import readiness", description: "Quick next steps for loading new CSV files." },
+];
 
 const reportPeriodOptions: Array<{ value: ReportPeriod; label: string }> = [
   { value: "this_month", label: "This month" },
@@ -363,6 +384,49 @@ function isMonthInReportPeriod(month: string, period: ReportPeriod, now = new Da
   return month >= startKey && month <= thisMonth;
 }
 
+function readStoredJson<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? ({ ...fallback, ...JSON.parse(raw) } as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStoredJson<T>(key: string, value: T) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(key, JSON.stringify(value));
+}
+
+function taxonomyLabelForAccount(account: AccountSummary, overrides: AccountTaxonomyOverrides): string {
+  const override = overrides[String(account.id)]?.trim();
+  if (override) {
+    return override;
+  }
+  return account.institution_name?.trim() || "Unassigned";
+}
+
+function buildTaxonomyGroups(rows: AccountSummary[], accountBalances: Map<number, number>, overrides: AccountTaxonomyOverrides): TaxonomyGroup[] {
+  const groups = new Map<string, TaxonomyGroup>();
+  for (const account of rows) {
+    const label = taxonomyLabelForAccount(account, overrides);
+    const existing = groups.get(label) ?? { label, rows: [], totalCents: 0 };
+    existing.rows.push(account);
+    existing.totalCents += accountBalances.get(account.id) ?? 0;
+    groups.set(label, existing);
+  }
+  return Array.from(groups.values()).sort((left, right) => {
+    if (left.label === "Unassigned") return 1;
+    if (right.label === "Unassigned") return -1;
+    return left.label.localeCompare(right.label);
+  });
+}
+
 export function App() {
   const [configured, setConfigured] = useState(false);
   const [csrf, setCsrf] = useState("");
@@ -421,6 +485,14 @@ export function App() {
   const [focusedTransactionId, setFocusedTransactionId] = useState<number | null>(null);
   const [editingTransactionId, setEditingTransactionId] = useState<number | null>(null);
   const [reportPeriod, setReportPeriod] = useState<ReportPeriod>("this_year");
+  const [taxonomyOverrides, setTaxonomyOverrides] = useState<AccountTaxonomyOverrides>(() => readStoredJson<AccountTaxonomyOverrides>(taxonomyStorageKey, {}));
+  const [taxonomyEditorOpen, setTaxonomyEditorOpen] = useState(false);
+  const [taxonomyAccountId, setTaxonomyAccountId] = useState<number | "">("");
+  const [taxonomyGroupDraft, setTaxonomyGroupDraft] = useState("");
+  const [dashboardCustomizeOpen, setDashboardCustomizeOpen] = useState(false);
+  const [dashboardWidgets, setDashboardWidgets] = useState<DashboardWidgetConfig>(() =>
+    readStoredJson<DashboardWidgetConfig>(dashboardWidgetStorageKey, defaultDashboardWidgets),
+  );
   const [bulkInstitutionName, setBulkInstitutionName] = useState("");
   const [accountForm, setAccountForm] = useState({
     institution_name: "",
@@ -1466,6 +1538,19 @@ export function App() {
       .sort((left, right) => right.amount_cents - left.amount_cents);
   })();
   const netWorthCents = netWorthAccounts.reduce((sum, row) => sum + row.market_value_cents, 0);
+  const taxonomySections: TaxonomySection[] = [
+    { label: "Bank Accounts", rows: bankAccounts, emptyText: "No bank accounts yet." },
+    { label: "Credit Cards", rows: creditCardAccounts, emptyText: "No credit cards yet." },
+    { label: "Brokerages", rows: brokerageAccounts, emptyText: "No brokerages yet." },
+  ];
+  const taxonomyTree = taxonomySections.map((section) => ({
+    ...section,
+    totalCents: section.rows.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0),
+    groups: buildTaxonomyGroups(section.rows, accountBalances, taxonomyOverrides),
+  }));
+  const latestCashFlowRows = periodCashFlowRows.slice(-4).reverse();
+  const reviewCount = reviewTransactions.length;
+  const accountNeedingTaxonomy = accounts.find((account) => !taxonomyOverrides[String(account.id)] && !account.institution_name);
 
   function openAccountView(accountId: number) {
     setFocusedAccountId(accountId);
@@ -1484,6 +1569,36 @@ export function App() {
       setSelectedAccountId(focusedAccountId);
     }
     setImportModalOpen(true);
+  }
+
+  function saveTaxonomyOverride() {
+    if (!taxonomyAccountId || !taxonomyGroupDraft.trim()) {
+      showToast({ tone: "error", message: "Choose an account and enter a group name first." });
+      return;
+    }
+    const next = { ...taxonomyOverrides, [String(taxonomyAccountId)]: taxonomyGroupDraft.trim() };
+    setTaxonomyOverrides(next);
+    writeStoredJson(taxonomyStorageKey, next);
+    showToast({ tone: "success", message: "Account taxonomy updated." });
+  }
+
+  function clearTaxonomyOverride() {
+    if (!taxonomyAccountId) {
+      showToast({ tone: "error", message: "Choose an account to reset." });
+      return;
+    }
+    const next = { ...taxonomyOverrides };
+    delete next[String(taxonomyAccountId)];
+    setTaxonomyOverrides(next);
+    writeStoredJson(taxonomyStorageKey, next);
+    setTaxonomyGroupDraft("");
+    showToast({ tone: "success", message: "Account now uses its institution as the group." });
+  }
+
+  function toggleDashboardWidget(key: DashboardWidgetKey) {
+    const next = { ...dashboardWidgets, [key]: !dashboardWidgets[key] };
+    setDashboardWidgets(next);
+    writeStoredJson(dashboardWidgetStorageKey, next);
   }
 
   function scrollToUncategorized() {
@@ -1537,36 +1652,72 @@ export function App() {
             );
           })}
         </nav>
-        {[
-          { label: "Bank Accounts", rows: bankAccounts, emptyText: "No bank accounts yet." },
-          { label: "Credit Cards", rows: creditCardAccounts, emptyText: "No credit cards yet." },
-          { label: "Brokerages", rows: brokerageAccounts, emptyText: "No brokerages yet." },
-        ].map((section) => (
+        {taxonomyTree.map((section) => (
           <div className="sidebarSection" key={section.label}>
             <div className="sidebarSectionHeader">
               <span>{section.label}</span>
-              <span>{formatMoney(section.rows.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0))}</span>
+              <span>{formatMoney(section.totalCents)}</span>
             </div>
             <div className="sidebarAccounts">
-              {section.rows.map((account) => {
-                const missingCount = missingCategoryCountByAccount.get(account.id) ?? 0;
-                const isActive = activeView === "account" && focusedAccountId === account.id;
-                return (
-                  <button key={account.id} className={isActive ? "sidebarAccount active" : "sidebarAccount"} onClick={() => openAccountView(account.id)} title={account.display_name}>
-                    <span className={missingCount > 0 ? "attentionDot" : "attentionDot hidden"} />
-                    <span className="sidebarAccountName">
-                      {account.display_name}
-                      {account.last_four ? ` (${account.last_four})` : ""}
-                    </span>
-                    <span className="sidebarAccountBalance">{formatMoney(accountBalances.get(account.id) ?? 0)}</span>
-                  </button>
-                );
-              })}
+              {section.groups.map((group) => (
+                <div className="sidebarTaxonomyGroup" key={`${section.label}-${group.label}`}>
+                  <div className="sidebarGroupHeader">
+                    <span>{group.label}</span>
+                    <span>{formatMoney(group.totalCents)}</span>
+                  </div>
+                  {group.rows.map((account) => {
+                    const missingCount = missingCategoryCountByAccount.get(account.id) ?? 0;
+                    const isActive = activeView === "account" && focusedAccountId === account.id;
+                    return (
+                      <button key={account.id} className={isActive ? "sidebarAccount active" : "sidebarAccount"} onClick={() => openAccountView(account.id)} title={account.display_name}>
+                        <span className={missingCount > 0 ? "attentionDot" : "attentionDot hidden"} />
+                        <span className="sidebarAccountName">
+                          {account.display_name}
+                          {account.last_four ? ` (${account.last_four})` : ""}
+                        </span>
+                        <span className="sidebarAccountBalance">{formatMoney(accountBalances.get(account.id) ?? 0)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
               {section.rows.length === 0 ? <p className="emptyText" style={{ color: "rgba(245,247,255,0.55)", padding: "0 12px" }}>{section.emptyText}</p> : null}
             </div>
           </div>
         ))}
         <div className="sidebarFooter">
+          <button className="taxonomyToggleButton" onClick={() => setTaxonomyEditorOpen((current) => !current)}>
+            <Sparkles size={14} />
+            <span>Customize Taxonomy</span>
+          </button>
+          {taxonomyEditorOpen ? (
+            <div className="taxonomyEditor">
+              <label>Account</label>
+              <select
+                value={taxonomyAccountId}
+                onChange={(event) => {
+                  const nextId = event.target.value ? Number(event.target.value) : "";
+                  setTaxonomyAccountId(nextId);
+                  const account = accounts.find((candidate) => candidate.id === nextId);
+                  setTaxonomyGroupDraft(account ? taxonomyLabelForAccount(account, taxonomyOverrides) : "");
+                }}
+              >
+                <option value="">Choose account</option>
+                {accounts.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.display_name}
+                  </option>
+                ))}
+              </select>
+              <label>Group under</label>
+              <input value={taxonomyGroupDraft} onChange={(event) => setTaxonomyGroupDraft(event.target.value)} placeholder="Chase, BoA, Fidelity..." />
+              <div className="taxonomyActions">
+                <button onClick={saveTaxonomyOverride}>Save</button>
+                <button onClick={clearTaxonomyOverride}>Reset</button>
+              </div>
+              <p>{accountNeedingTaxonomy ? `${accountNeedingTaxonomy.display_name} still needs an institution or custom group.` : "Defaults come from each account's institution."}</p>
+            </div>
+          ) : null}
           <button
             className="addAccountButton"
             onClick={() => {
@@ -1626,6 +1777,116 @@ export function App() {
               <MetricTile label="Expenses" value={formatMoney(reportExpenseCents || totalExpenseCents)} tone="red" />
               <MetricTile label="Net" value={formatMoney(reportNetCents || netIncomeCents)} tone="neutral" />
               <MetricTile label="Savings rate" value={`${savingsRate}%`} tone="neutral" />
+            </section>
+
+            <section className="dashboardControls overviewTools">
+              <div>
+                <span className="eyebrow">Custom dashboard</span>
+                <h2>Your finance cockpit</h2>
+                <p>Toggle the cards that help you decide what needs attention next.</p>
+              </div>
+              <button className="secondaryButton" onClick={() => setDashboardCustomizeOpen((current) => !current)}>
+                <Sparkles size={16} />
+                Customize
+              </button>
+            </section>
+            {dashboardCustomizeOpen ? (
+              <section className="dashboardCustomizer overviewTools">
+                {dashboardWidgetOptions.map((option) => (
+                  <label className="widgetToggle" key={option.key}>
+                    <input type="checkbox" checked={dashboardWidgets[option.key]} onChange={() => toggleDashboardWidget(option.key)} />
+                    <span>
+                      <strong>{option.label}</strong>
+                      <small>{option.description}</small>
+                    </span>
+                  </label>
+                ))}
+              </section>
+            ) : null}
+
+            <section className="dashboardWidgetGrid overviewTools" aria-label="Dashboard widgets">
+              {dashboardWidgets.taxonomy ? (
+                <article className="dashboardWidget wide">
+                  <div className="widgetHeader">
+                    <span className="eyebrow">Account map</span>
+                    <strong>{formatMoney(taxonomyTree.reduce((sum, section) => sum + section.totalCents, 0))}</strong>
+                  </div>
+                  <div className="taxonomySummaryRows">
+                    {taxonomyTree.map((section) => (
+                      <div className="taxonomySummaryRow" key={section.label}>
+                        <div>
+                          <strong>{section.label}</strong>
+                          <span>{section.groups.length} group{section.groups.length === 1 ? "" : "s"}</span>
+                        </div>
+                        <span>{formatMoney(section.totalCents)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ) : null}
+
+              {dashboardWidgets.review ? (
+                <article className="dashboardWidget">
+                  <div className="widgetHeader">
+                    <span className="eyebrow">Review workload</span>
+                    <strong>{reviewCount}</strong>
+                  </div>
+                  <p>{reviewCount === 0 ? "No transactions are waiting for review." : "Categorize, confirm, or resolve these before trusting reports."}</p>
+                  <button className="secondaryButton compactButton" onClick={() => setActiveView("review")}>
+                    Open Review
+                  </button>
+                </article>
+              ) : null}
+
+              {dashboardWidgets.spending ? (
+                <article className="dashboardWidget">
+                  <div className="widgetHeader">
+                    <span className="eyebrow">Top spending</span>
+                    <strong>{periodCategoryTotals.length}</strong>
+                  </div>
+                  <div className="miniRankList">
+                    {periodCategoryTotals.slice(0, 4).map((row) => (
+                      <div key={row.category}>
+                        <span>{row.category}</span>
+                        <strong>{formatMoney(row.amount_cents)}</strong>
+                      </div>
+                    ))}
+                    {periodCategoryTotals.length === 0 ? <p className="emptyText">No categorized expenses in this period yet.</p> : null}
+                  </div>
+                </article>
+              ) : null}
+
+              {dashboardWidgets.cashflow ? (
+                <article className="dashboardWidget">
+                  <div className="widgetHeader">
+                    <span className="eyebrow">Cash-flow trend</span>
+                    <strong>{formatMoney(reportNetCents)}</strong>
+                  </div>
+                  <div className="miniRankList">
+                    {latestCashFlowRows.map((row) => (
+                      <div key={row.month}>
+                        <span>{row.month}</span>
+                        <strong className={row.net_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(row.net_cents)}</strong>
+                      </div>
+                    ))}
+                    {latestCashFlowRows.length === 0 ? <p className="emptyText">Import transactions to build a monthly trend.</p> : null}
+                  </div>
+                </article>
+              ) : null}
+
+              {dashboardWidgets.imports ? (
+                <article className="dashboardWidget">
+                  <div className="widgetHeader">
+                    <span className="eyebrow">Import readiness</span>
+                    <strong>{accounts.length}</strong>
+                  </div>
+                  <p>{accounts.length === 0 ? "Start with a CSV so the app can suggest or create accounts." : "Use Smart import when you have a new bank, card, or brokerage CSV."}</p>
+                  <button className="primaryButton compactButton" onClick={() => openImportModal()}>
+                    <FileUp size={14} />
+                    Import CSV
+                  </button>
+                </article>
+              ) : null}
             </section>
 
             <section className="contentGrid overviewContent">
