@@ -301,6 +301,7 @@ button:disabled {
 
 .secondaryButton {
   background: var(--surface-2);
+  border-radius: 999px;
 }
 
 .dangerButton {
@@ -1042,9 +1043,8 @@ textarea {
   background: #fbfcfb;
 }
 
-.reviewCard.selected,
-.ledgerRow.selected {
-  background: var(--red-soft);
+.reviewCard.selected {
+  background: var(--blue-soft);
 }
 
 .reviewCardTop {
@@ -1358,6 +1358,10 @@ textarea {
   z-index: 3;
 }
 
+.transactionFilters.accountFilters {
+  grid-template-columns: repeat(3, minmax(170px, 1fr));
+}
+
 .multiFilter {
   position: relative;
   min-width: 0;
@@ -1373,10 +1377,10 @@ textarea {
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: linear-gradient(135deg, #fbfcfb 0%, var(--green-soft) 100%);
+  background: linear-gradient(135deg, #fbfcfe 0%, var(--blue-soft) 100%);
   color: var(--ink);
   cursor: pointer;
-  box-shadow: 0 4px 14px rgba(21, 29, 34, 0.05);
+  box-shadow: 0 4px 14px rgba(26, 30, 60, 0.05);
 }
 
 .multiFilter summary::-webkit-details-marker {
@@ -1392,14 +1396,14 @@ textarea {
 }
 
 .multiFilter summary strong {
-  color: var(--green);
+  color: var(--blue);
   font-size: 12px;
   white-space: nowrap;
 }
 
 .multiFilter[open] summary {
-  border-color: rgba(46, 155, 99, 0.35);
-  box-shadow: 0 8px 24px rgba(46, 155, 99, 0.14);
+  border-color: rgba(59, 106, 232, 0.35);
+  box-shadow: 0 8px 24px rgba(59, 106, 232, 0.14);
 }
 
 .multiFilterMenu {
@@ -1447,7 +1451,7 @@ textarea {
 }
 
 .multiFilterOptions label:hover {
-  background: var(--green-soft);
+  background: var(--blue-soft);
 }
 
 .multiFilterOptions input {
@@ -1469,8 +1473,8 @@ textarea {
 }
 
 .sortableHeader:hover {
-  background: var(--green-soft);
-  color: var(--green);
+  background: var(--blue-soft);
+  color: var(--blue);
 }
 
 .ledgerTable {
@@ -1508,12 +1512,13 @@ textarea {
 .editableCell {
   width: 100%;
   min-height: 34px;
-  padding: 7px 10px;
-  border: 1px solid transparent;
+  padding: 7px 12px;
+  border: 1px solid rgba(59, 106, 232, 0.28);
   border-radius: 999px;
-  background: transparent;
+  background: var(--blue-soft);
   color: var(--ink);
   transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  appearance: none;
 }
 
 .detailsCell {
@@ -1525,14 +1530,99 @@ textarea {
 
 .editableCell:hover,
 .editableCell:focus {
-  border-color: rgba(59, 106, 232, 0.28);
-  background: var(--blue-soft);
+  border-color: rgba(59, 106, 232, 0.45);
+  background: #dfe8ff;
   box-shadow: inset 0 0 0 1px rgba(59, 106, 232, 0.12);
   outline: none;
 }
 
 .editableCell::placeholder {
   color: var(--muted);
+}
+
+select.editableCell {
+  border-radius: 999px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--blue) 50%), linear-gradient(135deg, var(--blue) 50%, transparent 50%);
+  background-position: calc(100% - 16px) calc(50% - 2px), calc(100% - 11px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;
+}
+
+.ledgerReadonlyCell {
+  display: block;
+  min-height: 34px;
+  padding: 7px 10px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.ledgerRow {
+  cursor: pointer;
+}
+
+.ledgerRow.focused,
+.ledgerRow.selected {
+  background: #f3f7ff;
+}
+
+.ledgerRow.editing {
+  background: #e7efff;
+  box-shadow: inset 0 0 0 1px rgba(59, 106, 232, 0.18);
+}
+
+.ledgerRow.needsAttention {
+  background: #f3f7ff;
+}
+
+.ledgerRow.needsAttention.selected,
+.ledgerRow.needsAttention.focused {
+  background: #e7efff;
+}
+
+.rowEditActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: -4px 0 10px;
+}
+
+.paginationBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 0;
+  color: var(--muted);
+}
+
+.periodChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.periodChip {
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.periodChip.active {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.reportPeriodHint {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .categoryTrigger {
@@ -1786,13 +1876,6 @@ textarea {
   padding: 0 20px 20px;
 }
 
-.ledgerRow.needsAttention {
-  background: #f3f7ff;
-}
-
-.ledgerRow.needsAttention.selected {
-  background: #e7efff;
-}
 .emptyText {
   margin: 0;
   color: var(--muted);

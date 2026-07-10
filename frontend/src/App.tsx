@@ -139,6 +139,7 @@ type NetWorthAccount = { account_id: number; account: string; account_type: stri
 type AllocationRow = { asset_class: string; market_value_cents: number };
 type TransactionSortKey = "date" | "amount";
 type SortDirection = "asc" | "desc";
+type ReportPeriod = "this_month" | "this_year" | "last_12_months" | "all";
 type FilterOption = { value: string; label: string };
 type HoldingRow = {
   id: number;
@@ -186,6 +187,14 @@ const monthOptions: FilterOption[] = [
 ];
 
 const uncategorizedFilterValue = "__uncategorized__";
+const TRANSACTION_PAGE_SIZE = 100;
+
+const reportPeriodOptions: Array<{ value: ReportPeriod; label: string }> = [
+  { value: "this_month", label: "This month" },
+  { value: "this_year", label: "This year" },
+  { value: "last_12_months", label: "Last 12 months" },
+  { value: "all", label: "All time" },
+];
 
 const transactionTypes = [
   { value: "expense", label: "Expense" },
@@ -313,6 +322,47 @@ function toggleValue<T>(current: T[], value: T) {
   return current.includes(value) ? current.filter((item) => item !== value) : [...current, value];
 }
 
+function monthKeyFromDate(value: string): string {
+  return value.slice(0, 7);
+}
+
+function isTransactionInReportPeriod(transactionDate: string, period: ReportPeriod, now = new Date()): boolean {
+  if (period === "all") {
+    return true;
+  }
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const thisMonth = `${year}-${month}`;
+  const thisYear = String(year);
+  if (period === "this_month") {
+    return monthKeyFromDate(transactionDate) === thisMonth;
+  }
+  if (period === "this_year") {
+    return transactionDate.slice(0, 4) === thisYear;
+  }
+  const start = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+  const startKey = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}`;
+  return monthKeyFromDate(transactionDate) >= startKey && monthKeyFromDate(transactionDate) <= thisMonth;
+}
+
+function isMonthInReportPeriod(month: string, period: ReportPeriod, now = new Date()): boolean {
+  if (period === "all") {
+    return true;
+  }
+  const year = now.getFullYear();
+  const monthNum = String(now.getMonth() + 1).padStart(2, "0");
+  const thisMonth = `${year}-${monthNum}`;
+  if (period === "this_month") {
+    return month === thisMonth;
+  }
+  if (period === "this_year") {
+    return month.startsWith(String(year));
+  }
+  const start = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+  const startKey = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}`;
+  return month >= startKey && month <= thisMonth;
+}
+
 export function App() {
   const [configured, setConfigured] = useState(false);
   const [csrf, setCsrf] = useState("");
@@ -367,6 +417,10 @@ export function App() {
   const [transactionFiltersInitialized, setTransactionFiltersInitialized] = useState(false);
   const [transactionSortKey, setTransactionSortKey] = useState<TransactionSortKey>("date");
   const [transactionSortDirection, setTransactionSortDirection] = useState<SortDirection>("desc");
+  const [transactionPage, setTransactionPage] = useState(1);
+  const [focusedTransactionId, setFocusedTransactionId] = useState<number | null>(null);
+  const [editingTransactionId, setEditingTransactionId] = useState<number | null>(null);
+  const [reportPeriod, setReportPeriod] = useState<ReportPeriod>("this_year");
   const [accountForm, setAccountForm] = useState({
     institution_name: "",
     display_name: "",
@@ -388,6 +442,19 @@ export function App() {
     setSelectedTransactionCategoryFilters([...categories.map((category) => String(category.id)), uncategorizedFilterValue]);
     setTransactionFiltersInitialized(true);
   }, [accounts, categories, transactions, transactionFiltersInitialized]);
+
+  useEffect(() => {
+    setTransactionPage(1);
+  }, [
+    activeView,
+    focusedAccountId,
+    selectedTransactionAccountFilters,
+    selectedTransactionMonthFilters,
+    selectedTransactionYearFilters,
+    selectedTransactionCategoryFilters,
+    transactionSortKey,
+    transactionSortDirection,
+  ]);
   async function loadBootstrap() {
     const data = await api<{ configured: boolean; categories: BootstrapCategory[] }>("/api/bootstrap");
     setConfigured(data.configured);
@@ -1268,9 +1335,13 @@ export function App() {
     );
   }
 
-  const totalIncomeCents = transactions.filter((transaction) => transaction.transaction_type === "income").reduce((sum, transaction) => sum + transaction.amount_cents, 0);
+  const totalIncomeCents = transactions
+    .filter((transaction) => transaction.transaction_type === "income" && isTransactionInReportPeriod(transaction.transaction_date, reportPeriod))
+    .reduce((sum, transaction) => sum + transaction.amount_cents, 0);
   const totalExpenseCents = Math.abs(
-    transactions.filter((transaction) => transaction.transaction_type === "expense").reduce((sum, transaction) => sum + transaction.amount_cents, 0),
+    transactions
+      .filter((transaction) => transaction.transaction_type === "expense" && isTransactionInReportPeriod(transaction.transaction_date, reportPeriod))
+      .reduce((sum, transaction) => sum + transaction.amount_cents, 0),
   );
   const netIncomeCents = totalIncomeCents - totalExpenseCents;
   const savingsRate = totalIncomeCents > 0 ? Math.max(0, Math.round((netIncomeCents / totalIncomeCents) * 1000) / 10) : 0;
@@ -1291,13 +1362,13 @@ export function App() {
     let rows = transactions;
     if (activeView === "account" && focusedAccountId) {
       rows = rows.filter((transaction) => transaction.account_id === focusedAccountId);
-    } else {
-      rows = rows
-        .filter((transaction) => selectedTransactionAccountFilters.includes(transaction.account_id))
-        .filter((transaction) => selectedTransactionMonthFilters.includes(transaction.transaction_date.slice(5, 7)))
-        .filter((transaction) => selectedTransactionYearFilters.includes(transaction.transaction_date.slice(0, 4)))
-        .filter((transaction) => selectedTransactionCategoryFilters.includes(transaction.category_id ? String(transaction.category_id) : uncategorizedFilterValue));
+    } else if (activeView === "all-accounts") {
+      rows = rows.filter((transaction) => selectedTransactionAccountFilters.includes(transaction.account_id));
     }
+    rows = rows
+      .filter((transaction) => selectedTransactionMonthFilters.includes(transaction.transaction_date.slice(5, 7)))
+      .filter((transaction) => selectedTransactionYearFilters.includes(transaction.transaction_date.slice(0, 4)))
+      .filter((transaction) => selectedTransactionCategoryFilters.includes(transaction.category_id ? String(transaction.category_id) : uncategorizedFilterValue));
     return [...rows].sort((left, right) => {
       const direction = transactionSortDirection === "asc" ? 1 : -1;
       if (transactionSortKey === "amount") {
@@ -1307,6 +1378,8 @@ export function App() {
       return dateCompare === 0 ? (left.id - right.id) * direction : dateCompare * direction;
     });
   })();
+  const transactionPageCount = Math.max(1, Math.ceil(filteredTransactions.length / TRANSACTION_PAGE_SIZE));
+  const pagedTransactions = filteredTransactions.slice(0, transactionPage * TRANSACTION_PAGE_SIZE);
   const visibleReviewIds = visibleReviewTransactions.map((transaction) => transaction.id);
   const repositoryTransactionIds = filteredTransactions.map((transaction) => transaction.id);
   const selectedVisibleReviewIds = visibleIdsFilter(visibleReviewIds, selectedTransactionIds);
@@ -1316,9 +1389,26 @@ export function App() {
   const selectedVisibleAccountIds = accountIds.filter((id) => selectedAccountIds.includes(id));
   const visibleHoldingIds = holdingRows.slice(0, 12).map((row) => row.id);
   const selectedVisibleHoldingIds = visibleHoldingIds.filter((id) => selectedHoldingIds.includes(id));
-  const reportIncomeCents = cashFlowRows.reduce((sum, row) => sum + row.income_cents, 0);
-  const reportExpenseCents = cashFlowRows.reduce((sum, row) => sum + row.expense_cents, 0);
-  const reportNetCents = cashFlowRows.reduce((sum, row) => sum + row.net_cents, 0);
+  const periodCashFlowRows = cashFlowRows.filter((row) => isMonthInReportPeriod(row.month, reportPeriod));
+  const reportIncomeCents = periodCashFlowRows.reduce((sum, row) => sum + row.income_cents, 0);
+  const reportExpenseCents = periodCashFlowRows.reduce((sum, row) => sum + row.expense_cents, 0);
+  const reportNetCents = periodCashFlowRows.reduce((sum, row) => sum + row.net_cents, 0);
+  const periodCategoryTotals = (() => {
+    const totals = new Map<string, number>();
+    for (const transaction of transactions) {
+      if (transaction.transaction_type !== "expense" || !transaction.category_id) {
+        continue;
+      }
+      if (!isTransactionInReportPeriod(transaction.transaction_date, reportPeriod)) {
+        continue;
+      }
+      const label = categories.find((category) => category.id === transaction.category_id)?.label ?? "Uncategorized";
+      totals.set(label, (totals.get(label) ?? 0) + Math.abs(transaction.amount_cents));
+    }
+    return Array.from(totals.entries())
+      .map(([category, amount_cents]) => ({ category, amount_cents }))
+      .sort((left, right) => right.amount_cents - left.amount_cents);
+  })();
   const netWorthCents = netWorthAccounts.reduce((sum, row) => sum + row.market_value_cents, 0);
 
   function openAccountView(accountId: number) {
@@ -1326,6 +1416,8 @@ export function App() {
     setSelectedAccountId(accountId);
     setActiveView("account");
     setCategoryEditor(null);
+    setFocusedTransactionId(null);
+    setEditingTransactionId(null);
   }
 
   function openImportModal(accountId?: number) {
@@ -1343,7 +1435,21 @@ export function App() {
     if (!firstMissing) {
       return;
     }
+    setFocusedTransactionId(firstMissing.id);
     document.getElementById(`transaction-row-${firstMissing.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function handleTransactionRowClick(transactionId: number) {
+    if (editingTransactionId === transactionId) {
+      return;
+    }
+    if (focusedTransactionId === transactionId) {
+      setEditingTransactionId(transactionId);
+      return;
+    }
+    setFocusedTransactionId(transactionId);
+    setEditingTransactionId(null);
+    setCategoryEditor(null);
   }
 
   return (
@@ -1437,6 +1543,18 @@ export function App() {
                 ))}
               </div>
               <div className="toolbar">
+                <div className="periodChips" role="group" aria-label="Report period">
+                  {reportPeriodOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={reportPeriod === option.value ? "periodChip active" : "periodChip"}
+                      onClick={() => setReportPeriod(option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
                 <button className="ghostButton" title="Refresh data" onClick={() => void loadData()}>
                   <RefreshCw size={16} />
                 </button>
@@ -1448,9 +1566,9 @@ export function App() {
             </header>
 
             <section className="metricsGrid overviewMetrics" aria-label="Financial summary">
-              <MetricTile label="Total income" value={formatMoney(totalIncomeCents)} tone="green" />
-              <MetricTile label="Total expenses" value={formatMoney(totalExpenseCents)} tone="red" />
-              <MetricTile label="Total net income" value={formatMoney(netIncomeCents)} tone="neutral" />
+              <MetricTile label="Income" value={formatMoney(reportIncomeCents || totalIncomeCents)} tone="green" />
+              <MetricTile label="Expenses" value={formatMoney(reportExpenseCents || totalExpenseCents)} tone="red" />
+              <MetricTile label="Net" value={formatMoney(reportNetCents || netIncomeCents)} tone="neutral" />
               <MetricTile label="Savings rate" value={`${savingsRate}%`} tone="neutral" />
             </section>
 
@@ -1460,6 +1578,7 @@ export function App() {
                   <div>
                     <span className="eyebrow">{activeTab}</span>
                     <h2>{reportTitle(activeTab)}</h2>
+                    <p className="reportPeriodHint">Showing {reportPeriodOptions.find((option) => option.value === reportPeriod)?.label.toLowerCase()} totals.</p>
                   </div>
                 </div>
                 <ReportSurface
@@ -1467,8 +1586,8 @@ export function App() {
                   income={reportIncomeCents}
                   expenses={reportExpenseCents}
                   net={reportNetCents}
-                  categoryTotals={categoryTotals}
-                  cashFlowRows={cashFlowRows}
+                  categoryTotals={periodCategoryTotals}
+                  cashFlowRows={periodCashFlowRows}
                   netWorthAccounts={netWorthAccounts}
                   allocationRows={allocationRows}
                   holdingRows={holdingRows}
@@ -2103,16 +2222,17 @@ export function App() {
         {(activeView === "account" || activeView === "all-accounts") && (
         <section className="ledgerPanel ledgerWorkspace">
           <PanelTitle icon={ReceiptText} title={activeView === "account" ? "Account Transactions" : "All Transactions"} subtitle={activeView === "account" ? "Transactions for the selected account." : "A searchable repository for every imported transaction."} />
-          {activeView === "all-accounts" ? (
-          <div className="transactionFilters">
-            <MultiSelectFilter
-              label="Accounts"
-              options={accounts.map((account) => ({ value: String(account.id), label: account.display_name }))}
-              selectedValues={selectedTransactionAccountFilters.map(String)}
-              onToggle={(value) => setSelectedTransactionAccountFilters((current) => toggleValue(current, Number(value)))}
-              onSelectAll={() => setSelectedTransactionAccountFilters(accounts.map((account) => account.id))}
-              onDeselectAll={() => setSelectedTransactionAccountFilters([])}
-            />
+          <div className={activeView === "all-accounts" ? "transactionFilters" : "transactionFilters accountFilters"}>
+            {activeView === "all-accounts" ? (
+              <MultiSelectFilter
+                label="Accounts"
+                options={accounts.map((account) => ({ value: String(account.id), label: account.display_name }))}
+                selectedValues={selectedTransactionAccountFilters.map(String)}
+                onToggle={(value) => setSelectedTransactionAccountFilters((current) => toggleValue(current, Number(value)))}
+                onSelectAll={() => setSelectedTransactionAccountFilters(accounts.map((account) => account.id))}
+                onDeselectAll={() => setSelectedTransactionAccountFilters([])}
+              />
+            ) : null}
             <MultiSelectFilter
               label="Months"
               options={monthOptions}
@@ -2138,10 +2258,12 @@ export function App() {
               onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
             />
           </div>
-          ) : null}
           {filteredTransactions.length > 0 ? (
             <div className="selectionToolbar">
-              <span>{selectedRepositoryTransactionIds.length} selected / {filteredTransactions.length} shown</span>
+              <span>
+                {selectedRepositoryTransactionIds.length} selected / {pagedTransactions.length} shown
+                {filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}
+              </span>
               <button className="dangerTextButton" onClick={() => requestBulkTransactionDelete(selectedRepositoryTransactionIds)} disabled={selectedRepositoryTransactionIds.length === 0}>
                 Delete selected
               </button>
@@ -2183,16 +2305,31 @@ export function App() {
               </span>
               <span>Action</span>
             </div>
-            {filteredTransactions.map((transaction) => {
+            {pagedTransactions.map((transaction) => {
               const needsCategory = transaction.transaction_type === "expense" && !transaction.category_id;
               const categoryLabel = categories.find((category) => category.id === transaction.category_id)?.label;
               const editorOpen = categoryEditor?.transactionId === transaction.id;
+              const isFocused = focusedTransactionId === transaction.id;
+              const isEditing = editingTransactionId === transaction.id;
+              const typeLabel = transactionTypes.find((type) => type.value === transaction.transaction_type)?.label ?? transaction.transaction_type;
               return (
               <div className="inlineDeleteGroup ledgerDeleteGroup" key={transaction.id} id={`transaction-row-${transaction.id}`}>
-                <div className={[selectedTransactionIds.includes(transaction.id) ? "ledgerRow selected" : "ledgerRow", needsCategory ? "needsAttention" : ""].filter(Boolean).join(" ")}>
+                <div
+                  className={[
+                    "ledgerRow",
+                    selectedTransactionIds.includes(transaction.id) ? "selected" : "",
+                    isFocused ? "focused" : "",
+                    isEditing ? "editing" : "",
+                    needsCategory ? "needsAttention" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  onClick={() => handleTransactionRowClick(transaction.id)}
+                >
                   <input
                     type="checkbox"
                     checked={selectedTransactionIds.includes(transaction.id)}
+                    onClick={(event) => event.stopPropagation()}
                     onChange={(event) => toggleTransactionSelection(transaction.id, repositoryTransactionIds, (event.nativeEvent as MouseEvent).shiftKey)}
                     title="Select transaction. Hold Shift to select a range."
                   />
@@ -2200,101 +2337,138 @@ export function App() {
                   <span>{transaction.institution_name ?? "-"}</span>
                   <span>{transaction.account_name}</span>
                   <strong className="ledgerDescription">{transaction.raw_description}</strong>
-                  <textarea
-                    className="editableCell detailsCell"
-                    defaultValue={transaction.user_note ?? ""}
-                    onBlur={(event) => {
-                      const nextNote = event.currentTarget.value;
-                      if (nextNote !== (transaction.user_note ?? "")) {
-                        void updateTransaction(transaction.id, { user_note: nextNote }, true);
-                      }
-                    }}
-                    placeholder="Add details"
-                    rows={1}
-                    title="Add your own context, like what you actually bought."
-                  />
-                  <select className="editableCell" value={transaction.transaction_type} onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value }, true)}>
-                    {transactionTypes.map((type) => (
-                      <option key={type.value} value={type.value}>
-                        {type.label}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="categoryPopupAnchor">
-                    <button
-                      type="button"
-                      className={["categoryTrigger", needsCategory ? "needsCategory" : "", editorOpen ? "open" : ""].filter(Boolean).join(" ")}
-                      onDoubleClick={() => setCategoryEditor({ transactionId: transaction.id, query: categoryLabel ?? "" })}
-                      onClick={() => {
-                        if (editorOpen) {
-                          setCategoryEditor(null);
+                  {isEditing ? (
+                    <textarea
+                      className="editableCell detailsCell"
+                      defaultValue={transaction.user_note ?? ""}
+                      onClick={(event) => event.stopPropagation()}
+                      onBlur={(event) => {
+                        const nextNote = event.currentTarget.value;
+                        if (nextNote !== (transaction.user_note ?? "")) {
+                          void updateTransaction(transaction.id, { user_note: nextNote }, false);
                         }
                       }}
-                      title="Double-click to search and assign a category"
+                      placeholder="Add details"
+                      rows={1}
+                      title="Add your own context, like what you actually bought."
+                    />
+                  ) : (
+                    <span className="ledgerReadonlyCell">{transaction.user_note || "Add details"}</span>
+                  )}
+                  {isEditing ? (
+                    <select
+                      className="editableCell"
+                      value={transaction.transaction_type}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value }, false)}
                     >
-                      <span>{needsCategory ? "This needs a category" : categoryLabel ?? "No category"}</span>
-                    </button>
-                    {editorOpen ? (
-                      <div className="categoryPopup" role="dialog" aria-label="Choose category">
-                        <input
-                          autoFocus
-                          value={categoryEditor?.query ?? ""}
-                          placeholder="Search for a category..."
-                          onChange={(event) => setCategoryEditor({ transactionId: transaction.id, query: event.target.value })}
-                          onKeyDown={(event) => {
-                            if (event.key === "Escape") {
-                              setCategoryEditor(null);
-                            }
-                          }}
-                        />
-                        <div className="categoryPopupList">
-                          <button
-                            type="button"
-                            className="categoryPopupOption"
-                            onClick={() => {
-                              void updateTransaction(transaction.id, { category_id: null }, true);
-                              setCategoryEditor(null);
-                            }}
-                          >
-                            <span>No category</span>
-                          </button>
-                          {categorySuggestions.map((categoryOption) => (
-                            <button
-                              type="button"
-                              className="categoryPopupOption"
-                              key={categoryOption.id}
-                              onClick={() => {
-                                void updateTransaction(transaction.id, { category_id: categoryOption.id }, true);
-                                setCategoryEditor(null);
+                      {transactionTypes.map((type) => (
+                        <option key={type.value} value={type.value}>
+                          {type.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className="ledgerReadonlyCell">{typeLabel}</span>
+                  )}
+                  <div className="categoryPopupAnchor" onClick={(event) => event.stopPropagation()}>
+                    {isEditing ? (
+                      <>
+                        <button
+                          type="button"
+                          className={["categoryTrigger", needsCategory ? "needsCategory" : "", editorOpen ? "open" : ""].filter(Boolean).join(" ")}
+                          onClick={() => setCategoryEditor({ transactionId: transaction.id, query: categoryLabel ?? "" })}
+                          title="Search and assign a category"
+                        >
+                          <span>{needsCategory ? "This needs a category" : categoryLabel ?? "No category"}</span>
+                        </button>
+                        {editorOpen ? (
+                          <div className="categoryPopup" role="dialog" aria-label="Choose category">
+                            <input
+                              autoFocus
+                              value={categoryEditor?.query ?? ""}
+                              placeholder="Search for a category..."
+                              onChange={(event) => setCategoryEditor({ transactionId: transaction.id, query: event.target.value })}
+                              onKeyDown={(event) => {
+                                if (event.key === "Escape") {
+                                  setCategoryEditor(null);
+                                }
                               }}
-                            >
-                              <span>{categoryOption.label}</span>
-                            </button>
-                          ))}
-                          {categorySuggestions.length === 0 ? <div className="categoryPopupEmpty">No matching categories.</div> : null}
-                        </div>
-                        <div className="categoryPopupActions">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void updateTransaction(transaction.id, { transaction_type: "transfer" }, true);
-                              setCategoryEditor(null);
-                            }}
-                          >
-                            Payment/Transfer
-                          </button>
-                          <button type="button" onClick={() => setCategoryEditor(null)}>
-                            Close
-                          </button>
-                        </div>
-                      </div>
-                    ) : null}
+                            />
+                            <div className="categoryPopupList">
+                              <button
+                                type="button"
+                                className="categoryPopupOption"
+                                onClick={() => {
+                                  void updateTransaction(transaction.id, { category_id: null }, false);
+                                  setCategoryEditor(null);
+                                }}
+                              >
+                                <span>No category</span>
+                              </button>
+                              {categorySuggestions.map((categoryOption) => (
+                                <button
+                                  type="button"
+                                  className="categoryPopupOption"
+                                  key={categoryOption.id}
+                                  onClick={() => {
+                                    void updateTransaction(transaction.id, { category_id: categoryOption.id }, false);
+                                    setCategoryEditor(null);
+                                  }}
+                                >
+                                  <span>{categoryOption.label}</span>
+                                </button>
+                              ))}
+                              {categorySuggestions.length === 0 ? <div className="categoryPopupEmpty">No matching categories.</div> : null}
+                            </div>
+                            <div className="categoryPopupActions">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void updateTransaction(transaction.id, { transaction_type: "transfer" }, false);
+                                  setCategoryEditor(null);
+                                }}
+                              >
+                                Payment/Transfer
+                              </button>
+                              <button type="button" onClick={() => setCategoryEditor(null)}>
+                                Close
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <span className={needsCategory ? "categoryTrigger needsCategory" : "ledgerReadonlyCell"}>
+                        {needsCategory ? "This needs a category" : categoryLabel ?? "No category"}
+                      </span>
+                    )}
                   </div>
                   <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
-                  <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>
+                  <button
+                    className="dangerTextButton"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description });
+                    }}
+                  >
                     Delete
                   </button>
                 </div>
+                {isEditing ? (
+                  <div className="rowEditActions">
+                    <button
+                      type="button"
+                      className="secondaryButton"
+                      onClick={() => {
+                        setEditingTransactionId(null);
+                        setCategoryEditor(null);
+                      }}
+                    >
+                      Done
+                    </button>
+                  </div>
+                ) : null}
                 {deleteTarget?.kind === "transaction" && deleteTarget.id === transaction.id ? (
                   <DeleteConfirmInline
                     target={deleteTarget}
@@ -2312,6 +2486,16 @@ export function App() {
             })}
             {filteredTransactions.length === 0 ? <p className="emptyText">No transactions match those filters.</p> : null}
           </div>
+          {pagedTransactions.length < filteredTransactions.length ? (
+            <div className="paginationBar">
+              <span>
+                Showing {pagedTransactions.length} of {filteredTransactions.length}
+              </span>
+              <button className="secondaryButton" onClick={() => setTransactionPage((current) => Math.min(transactionPageCount, current + 1))}>
+                Load more
+              </button>
+            </div>
+          ) : null}
         </section>
         )}
 
@@ -2612,9 +2796,27 @@ function SpendingReport({ rows }: { rows: CategoryTotal[] }) {
 }
 
 function MonthlyCashFlowReport({ rows, income, expenses, net }: { rows: MonthlyCashFlow[]; income: number; expenses: number; net: number }) {
+  const yearly = new Map<string, { income_cents: number; expense_cents: number; net_cents: number }>();
+  for (const row of rows) {
+    const year = row.month.slice(0, 4);
+    const current = yearly.get(year) ?? { income_cents: 0, expense_cents: 0, net_cents: 0 };
+    current.income_cents += row.income_cents;
+    current.expense_cents += row.expense_cents;
+    current.net_cents += row.net_cents;
+    yearly.set(year, current);
+  }
+  const yearlyRows = Array.from(yearly.entries())
+    .map(([year, values]) => ({ year, ...values }))
+    .sort((left, right) => right.year.localeCompare(left.year));
+
   return (
     <div className="reportStack">
       <CashFlowGraphic income={income} expenses={expenses} net={net} />
+      <div className="reportMiniGrid">
+        <ReportStat label="Period income" value={formatMoney(income)} />
+        <ReportStat label="Period expenses" value={formatMoney(expenses)} />
+        <ReportStat label="Period net" value={formatMoney(net)} />
+      </div>
       <div className="reportTable">
         <div className="reportTableHeader">
           <span>Month</span>
@@ -2622,7 +2824,7 @@ function MonthlyCashFlowReport({ rows, income, expenses, net }: { rows: MonthlyC
           <span>Expenses</span>
           <span>Net</span>
         </div>
-        {rows.slice(-6).map((row) => (
+        {rows.slice(-12).map((row) => (
           <div className="reportTableRow" key={row.month}>
             <strong>{row.month}</strong>
             <span>{formatMoney(row.income_cents)}</span>
@@ -2630,8 +2832,26 @@ function MonthlyCashFlowReport({ rows, income, expenses, net }: { rows: MonthlyC
             <span className={row.net_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(row.net_cents)}</span>
           </div>
         ))}
-        {rows.length === 0 ? <p className="emptyText">No income or expense transactions yet.</p> : null}
+        {rows.length === 0 ? <p className="emptyText">No cash-flow months in this period yet.</p> : null}
       </div>
+      {yearlyRows.length > 0 ? (
+        <div className="reportTable">
+          <div className="reportTableHeader">
+            <span>Year</span>
+            <span>Income</span>
+            <span>Expenses</span>
+            <span>Net</span>
+          </div>
+          {yearlyRows.map((row) => (
+            <div className="reportTableRow" key={row.year}>
+              <strong>{row.year}</strong>
+              <span>{formatMoney(row.income_cents)}</span>
+              <span>{formatMoney(row.expense_cents)}</span>
+              <span className={row.net_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(row.net_cents)}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
