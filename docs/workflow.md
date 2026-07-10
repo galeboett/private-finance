@@ -62,12 +62,12 @@ Save rule turns one reviewed transaction into a future suggestion.
 
 - It takes the first few cleaned words from the transaction description.
 - It stores a "description contains this text" rule with the category and type you selected.
-- Future imports that contain the same text are prefilled with that category and type.
-- Matching transactions still stay in review until you confirm them.
+- Future imports that contain the same text are prefilled with that category and transaction type, and stay in review until you confirm them.
 - Rules do not rewrite older transactions retroactively.
 - After saving a rule, you can optionally apply it to unreviewed transactions or all previous matching transactions.
 - Existing saved rules are also listed in the Review Inbox with the same apply options.
-- Bulk rule application never auto-confirms transactions.
+- Applying a rule to existing transactions sets the category and type and marks those transactions confirmed, since you chose to run the rule deliberately.
+- Saved rules can be edited or deleted later through the rules API, so a mistaken rule is never permanent.
 - If multiple rules match, lower priority numbers run first. The default priority is 100.
 
 ## Brokerage Files With Multiple Accounts

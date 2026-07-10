@@ -13,6 +13,18 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=12)
+
+
+class RuleUpdate(BaseModel):
+    category_id: int | None = None
+    match_text: str | None = None
+    suggested_transaction_type: str | None = None
+    priority: int | None = None
+
+
 class AccountCreate(BaseModel):
     institution_name: str | None = None
     display_name: str

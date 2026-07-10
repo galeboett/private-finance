@@ -94,10 +94,20 @@ npm run dev
 ## Security Notes
 
 - v1 binds to `127.0.0.1` only
-- session cookies are `HttpOnly` and `SameSite=Strict`
+- session cookies are `HttpOnly` and `SameSite=Strict`, with idle timeout and an absolute session lifetime
 - mutating endpoints require CSRF
-- exports escape formula-like cells
+- the password can be changed from a logged-in session (`POST /api/password`); changing it revokes all other sessions
+- exports escape formula-like cells and stream from memory (no plaintext copy is left on disk)
+- backups use SQLite's online backup API and are constrained to `data/backups/`
 - audit events are append-only at the database layer
+
+## Configuration
+
+Settings can be provided via a `.env` file in `backend/` or environment variables prefixed with `PF_`:
+
+- `PF_VENMO_SELF_NAME` — your display name as it appears in Venmo statement `From`/`To` columns. When set, imported Venmo descriptions correctly phrase who paid whom; when unset, descriptions keep the statement's own From/To order.
+- `PF_BACKUP_DIR` — where database backups are stored (default `data/backups`).
+- `PF_ABSOLUTE_SESSION_HOURS` — maximum session lifetime regardless of activity (default 12).
 
 ## Product Direction
 

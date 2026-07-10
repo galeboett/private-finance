@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import Base
 from app.models import Account, Category, Transaction
 from app.services.importers import commit_categorized_history, commit_reviewed_categorized_history, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
@@ -106,7 +107,8 @@ def test_detect_venmo_statement_with_intro_rows():
     assert detect_preset_from_content(content.decode("utf-8")) == "venmo_activity"
 
 
-def test_preview_venmo_statement_rows():
+def test_preview_venmo_statement_rows(monkeypatch):
+    monkeypatch.setattr(settings, "venmo_self_name", "Matt Matt")
     content = (
         b"Account Statement - (@hey-matt) ,,,,,,,,,,,,,,,,,,,,,\n"
         b"Account Activity,,,,,,,,,,,,,,,,,,,,,\n"
@@ -123,7 +125,8 @@ def test_preview_venmo_statement_rows():
     assert preview.rows[0]["source_reference"] == "4500240869271348286"
 
 
-def test_preview_venmo_ignores_crypto_summary_rows():
+def test_preview_venmo_ignores_crypto_summary_rows(monkeypatch):
+    monkeypatch.setattr(settings, "venmo_self_name", "Matt Matt")
     content = (
         b"Account Statement - (@hey-matt) ,,,,,,,,,,,,,,,,,,,,,\n"
         b"Account Activity,,,,,,,,,,,,,,,,,,,,,\n"
@@ -143,7 +146,8 @@ def test_preview_venmo_ignores_crypto_summary_rows():
     assert preview.rows[0]["raw_description"] == "Yt premium monthly | David Pham paid Matt Matt"
 
 
-def test_preview_venmo_prefers_note_date_without_year():
+def test_preview_venmo_prefers_note_date_without_year(monkeypatch):
+    monkeypatch.setattr(settings, "venmo_self_name", "Matt Matt")
     content = (
         b"Account Statement - (@hey-matt) ,,,,,,,,,,,,,,,,,,,,,\n"
         b"Account Activity,,,,,,,,,,,,,,,,,,,,,\n"
@@ -157,7 +161,8 @@ def test_preview_venmo_prefers_note_date_without_year():
     assert preview.rows[0]["posted_date"] == "2026-01-06"
 
 
-def test_preview_venmo_prefers_note_date_with_year():
+def test_preview_venmo_prefers_note_date_with_year(monkeypatch):
+    monkeypatch.setattr(settings, "venmo_self_name", "Matt Matt")
     content = (
         b"Account Statement - (@hey-matt) ,,,,,,,,,,,,,,,,,,,,,\n"
         b"Account Activity,,,,,,,,,,,,,,,,,,,,,\n"

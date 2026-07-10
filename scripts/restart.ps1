@@ -7,17 +7,31 @@ param(
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$python = "C:\Users\YehMa\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
-$nodeDir = "C:\Users\YehMa\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin"
-$pnpm = "C:\Users\YehMa\.cache\codex-runtimes\codex-primary-runtime\dependencies\bin\pnpm.cmd"
 $port = 8000
 
-if (-not (Test-Path $python)) {
-    $python = "python"
+# Tools resolve from PATH so any collaborator can run this from a clean machine.
+# Optional overrides: PF_PYTHON, PF_PNPM, PF_NODE_DIR environment variables.
+$python = if ($env:PF_PYTHON) { $env:PF_PYTHON } else { "python" }
+$pnpm = if ($env:PF_PNPM) { $env:PF_PNPM } else { "pnpm" }
+
+if ($env:PF_NODE_DIR -and (Test-Path $env:PF_NODE_DIR)) {
+    $env:Path = "$($env:PF_NODE_DIR);$env:Path"
 }
 
-if (Test-Path $nodeDir) {
-    $env:Path = "$nodeDir;$env:Path"
+if (-not (Get-Command $python -ErrorAction SilentlyContinue)) {
+    throw "Python was not found on PATH. Install Python 3.11+ or set the PF_PYTHON environment variable."
+}
+
+$useNpmFallback = $false
+if (-not (Get-Command $pnpm -ErrorAction SilentlyContinue)) {
+    if (Get-Command npm -ErrorAction SilentlyContinue) {
+        Write-Host "pnpm was not found; falling back to npm."
+        $pnpm = "npm"
+        $useNpmFallback = $true
+    }
+    else {
+        throw "Neither pnpm nor npm was found on PATH. Install Node.js (https://nodejs.org) or set PF_PNPM."
+    }
 }
 
 function Stop-BackendOnPort {
@@ -42,8 +56,10 @@ if (-not $SkipBuild) {
     if (-not (Test-Path "node_modules")) {
         & $pnpm install
     }
-    & $pnpm approve-builds --all
-    & $pnpm build
+    if (-not $useNpmFallback) {
+        & $pnpm approve-builds --all
+    }
+    & $pnpm run build
     Pop-Location
 }
 

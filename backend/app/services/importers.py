@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
+from ..config import settings
 from ..models import Account, Category, CategoryRule, HoldingSnapshot, ImportBatch, ImportPreset, StagingRow, Transaction
 from ..money import parse_decimal_to_cents
 from .accounts import infer_account_characterization, upsert_institution_by_name
@@ -44,6 +45,13 @@ class AccountImportSuggestion:
     warnings: list[str]
 
 
+def decode_text(content: bytes) -> str:
+    try:
+        return content.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("This file is not UTF-8 text. Re-export it as a UTF-8 CSV and try again.") from exc
+
+
 def detect_preset_from_content(text: str) -> str | None:
     for marker, preset in (
         (CARD_REFERENCE_HEADER, "card_reference"),
@@ -58,7 +66,7 @@ def detect_preset_from_content(text: str) -> str | None:
 
 
 def suggest_account_for_import(db: Session, filename: str, content: bytes) -> AccountImportSuggestion:
-    text = content.decode("utf-8-sig")
+    text = decode_text(content)
     preset_type = detect_preset_from_content(text)
     if not preset_type:
         raise ValueError("Could not detect import preset")
@@ -87,7 +95,7 @@ def suggest_account_for_import(db: Session, filename: str, content: bytes) -> Ac
 
 
 def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
-    text = content.decode("utf-8-sig")
+    text = decode_text(content)
     reader = list(csv.reader(io.StringIO(text)))
     warnings: list[str] = []
 
@@ -264,6 +272,10 @@ def _venmo_description(note: str, from_name: str, to_name: str, amount: str | No
 
 def _venmo_payment_direction(from_name: str, to_name: str, amount_cents: int) -> tuple[str | None, str | None]:
     self_name = _venmo_self_name(from_name, to_name)
+    if self_name is None:
+        # Without a configured owner name (PF_VENMO_SELF_NAME) the money direction is
+        # ambiguous for charges, so keep the file's own From -> To order.
+        return from_name or None, to_name or None
     other_name = _venmo_other_name(from_name, to_name, self_name)
     if amount_cents < 0:
         return self_name or from_name or None, other_name or to_name or None
@@ -273,8 +285,11 @@ def _venmo_payment_direction(from_name: str, to_name: str, amount_cents: int) ->
 
 
 def _venmo_self_name(from_name: str, to_name: str) -> str | None:
+    configured = (settings.venmo_self_name or "").strip().lower()
+    if not configured:
+        return None
     for name in (from_name, to_name):
-        if name and name.strip().lower() == "matt matt":
+        if name and name.strip().lower() == configured:
             return name
     return None
 
@@ -506,7 +521,7 @@ def _read_history_rows(filename: str, content: bytes) -> list[dict[str, str]]:
         sheet = workbook.active
         rows = [[_spreadsheet_cell_to_text(cell) for cell in row] for row in sheet.iter_rows(values_only=True)]
     else:
-        text = content.decode("utf-8-sig")
+        text = decode_text(content)
         rows = list(csv.reader(io.StringIO(text)))
     if not rows:
         raise ValueError("The categorized history file is empty")
@@ -690,10 +705,12 @@ def _history_transaction_type(category_label: str | None, amount_cents: int, acc
         return "income"
     if "transfer" in label or "payment" in label:
         return "transfer"
+    if "refund" in label:
+        return "refund"
     if amount_cents > 0 and account_type == "credit_card":
         return "expense"
-    if amount_cents < 0 and account_type in {"checking", "savings"} and "refund" not in label:
-        return "expense"
+    if amount_cents > 0 and account_type in {"checking", "savings", "cash"}:
+        return "income"
     return "expense"
 
 
@@ -721,8 +738,8 @@ def preview_import(content: bytes, preset_type: str) -> PreviewResult:
     return parse_csv_preview(content, preset_type)
 
 
-def commit_import(db: Session, account, preset: ImportPreset | None, filename: str, content: bytes, actor: str = "local-user") -> dict:
-    detected = preset.preset_type if preset else detect_preset_from_content(content.decode("utf-8-sig"))
+def commit_import(db: Session, account, preset: ImportPreset | None, filename: str, content: bytes, actor: str = "local-user", snapshot_date: date | None = None) -> dict:
+    detected = preset.preset_type if preset else detect_preset_from_content(decode_text(content))
     if not detected:
         raise ValueError("Unable to detect preset type")
     preview = preview_import(content, detected)
@@ -735,7 +752,17 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
     skipped = 0
     warnings = list(preview.warnings)
     description_counter: Counter[tuple[str, str, str | None]] = Counter()
-    rules = db.scalars(select(CategoryRule).order_by(CategoryRule.priority.asc())).all()
+    rules = db.scalars(select(CategoryRule).order_by(CategoryRule.priority.asc(), CategoryRule.id.asc())).all()
+
+    resolved_snapshot_date: date | None = None
+    cleared_snapshot_scopes: set[tuple[int, str]] = set()
+    if detected == "brokerage_positions":
+        resolved_snapshot_date = snapshot_date or _extract_snapshot_date(filename)
+        if resolved_snapshot_date is None:
+            resolved_snapshot_date = date.today()
+            warnings.append(
+                f"Could not find a date in the filename \"{filename}\"; recorded these positions as of today ({resolved_snapshot_date.isoformat()})."
+            )
 
     for row in preview.rows:
         target_account = account
@@ -758,10 +785,25 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
                 continue
             market_value_cents = parse_decimal_to_cents(row.get("market_value"))
             if market_value_cents is not None:
+                scope = (target_account.id, resolved_snapshot_date.isoformat())
+                if scope not in cleared_snapshot_scopes:
+                    # Re-importing a positions file replaces that account/date snapshot
+                    # instead of double-counting it.
+                    stale = db.scalars(
+                        select(HoldingSnapshot).where(
+                            HoldingSnapshot.account_id == target_account.id,
+                            HoldingSnapshot.snapshot_date == resolved_snapshot_date,
+                        )
+                    ).all()
+                    for stale_row in stale:
+                        db.delete(stale_row)
+                    if stale:
+                        db.flush()
+                    cleared_snapshot_scopes.add(scope)
                 db.add(
                     HoldingSnapshot(
                         account_id=target_account.id,
-                        snapshot_date=_extract_snapshot_date(filename),
+                        snapshot_date=resolved_snapshot_date,
                         symbol=row.get("symbol"),
                         description=row.get("description"),
                         quantity_basis_points=_parse_decimal_to_basis_points(row.get("quantity")),
@@ -790,17 +832,18 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
         existing = db.scalar(select(Transaction).where(Transaction.account_id == account.id, Transaction.source_hash == source_hash))
         if existing:
             skipped += 1
-            skipped_by_account_id[account.id] += 1
             continue
 
         amount_cents = parse_decimal_to_cents(row.get("amount")) or 0
         review_status = "needs_review"
         category_id = None
+        rule_transaction_type: str | None = None
         normalized = (row.get("raw_description") or "").strip()
+        haystack = normalized.upper()
         for rule in rules:
-            haystack = normalized.upper()
             if rule.field_name == "raw_description" and rule.match_text.upper() in haystack:
                 category_id = rule.category_id
+                rule_transaction_type = rule.suggested_transaction_type
                 review_status = "suggested"
                 break
 
@@ -812,7 +855,7 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
             amount_cents=amount_cents,
             raw_description=normalized,
             normalized_payee=normalized[:255],
-            transaction_type=row.get("transaction_type") or _normalize_transaction_type(normalized, amount_cents, account.account_type),
+            transaction_type=rule_transaction_type or row.get("transaction_type") or _normalize_transaction_type(normalized, amount_cents, account.account_type),
             category_id=category_id,
             review_status=review_status,
             source_hash=source_hash,
@@ -820,8 +863,10 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
             source_ordinal=ordinal,
             running_balance_cents=parse_decimal_to_cents(row.get("running_balance")),
         )
-        if _is_possible_duplicate(db, account.id, transaction):
+        duplicate_of_id = _find_possible_duplicate_id(db, account.id, transaction)
+        if duplicate_of_id is not None:
             transaction.review_status = "possible_duplicate"
+            transaction.duplicate_of_transaction_id = duplicate_of_id
         db.add(transaction)
         inserted += 1
 
@@ -883,21 +928,51 @@ def _parse_import_date(value: str | None) -> date:
 
 
 
-def _is_possible_duplicate(db: Session, account_id: int, candidate: Transaction) -> bool:
-    existing = db.scalars(
-        select(Transaction).where(
+def _find_possible_duplicate_id(db: Session, account_id: int, candidate: Transaction) -> int | None:
+    existing = db.scalar(
+        select(Transaction.id).where(
             Transaction.account_id == account_id,
             Transaction.transaction_date == candidate.transaction_date,
             Transaction.amount_cents == candidate.amount_cents,
             Transaction.raw_description != candidate.raw_description,
-        )
-    ).all()
-    return bool(existing)
+        ).limit(1)
+    )
+    return existing
 
 
-def _extract_snapshot_date(filename: str) -> date:
-    for token in filename.replace(".", "-").split("-"):
-        if token.isdigit() and len(token) == 4:
-            # Loose fallback when filename doesn't clearly encode a date.
-            return date.today()
-    return date.today()
+MONTH_ABBREVIATIONS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def _extract_snapshot_date(filename: str) -> date | None:
+    """Parse a snapshot date out of a positions filename, or return None when absent.
+
+    Handles the common export shapes:
+    - Portfolio_Positions_Jul-04-2026.csv (Fidelity style)
+    - positions-2026-07-04.csv / positions_20260704.csv
+    - positions 07-04-2026.csv
+    """
+    text = filename.lower()
+    match = re.search(r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[-_ ](\d{1,2})[-_ ](\d{4})", text)
+    if match:
+        parsed = _build_date(MONTH_ABBREVIATIONS[match.group(1)], int(match.group(2)), int(match.group(3)))
+        if parsed:
+            return parsed
+    match = re.search(r"(\d{4})[-_ .](\d{1,2})[-_ .](\d{1,2})", text)
+    if match:
+        parsed = _build_date(int(match.group(2)), int(match.group(3)), int(match.group(1)))
+        if parsed:
+            return parsed
+    match = re.search(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)", text)
+    if match:
+        parsed = _build_date(int(match.group(2)), int(match.group(3)), int(match.group(1)))
+        if parsed:
+            return parsed
+    match = re.search(r"(?<!\d)(\d{1,2})[-_ .](\d{1,2})[-_ .](\d{4})(?!\d)", text)
+    if match:
+        parsed = _build_date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        if parsed:
+            return parsed
+    return None

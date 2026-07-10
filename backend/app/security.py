@@ -4,6 +4,7 @@ import secrets
 from datetime import datetime, timedelta
 
 from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from fastapi import HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -23,8 +24,15 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, password_hash: str) -> bool:
     try:
         return bool(password_hasher.verify(password_hash, password))
-    except Exception:
+    except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
+
+
+def password_needs_rehash(password_hash: str) -> bool:
+    try:
+        return password_hasher.check_needs_rehash(password_hash)
+    except InvalidHashError:
+        return True
 
 
 def enforce_login_rate_limit(client_key: str) -> None:
@@ -77,11 +85,25 @@ def get_session_from_request(db: Session, request: Request) -> SessionToken:
     session = db.scalar(select(SessionToken).where(SessionToken.session_token == token))
     if not session:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
-    if session.expires_at < datetime.utcnow():
+    now = datetime.utcnow()
+    if session.expires_at < now:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
-    session.last_seen_at = datetime.utcnow()
-    session.expires_at = datetime.utcnow() + timedelta(minutes=settings.idle_timeout_minutes)
+    if session.created_at + timedelta(hours=settings.absolute_session_hours) < now:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
+    session.last_seen_at = now
+    session.expires_at = now + timedelta(minutes=settings.idle_timeout_minutes)
     return session
+
+
+def purge_expired_sessions(db: Session) -> int:
+    now = datetime.utcnow()
+    absolute_cutoff = now - timedelta(hours=settings.absolute_session_hours)
+    stale = db.scalars(
+        select(SessionToken).where((SessionToken.expires_at < now) | (SessionToken.created_at < absolute_cutoff))
+    ).all()
+    for row in stale:
+        db.delete(row)
+    return len(stale)
 
 
 def require_csrf(request: Request, session: SessionToken) -> None:

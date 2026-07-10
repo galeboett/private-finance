@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from sqlalchemy import delete, select, update
@@ -21,11 +21,11 @@ from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
 from .models import Account, AppUser, Category, CategoryRule, HoldingSnapshot, ImportBatch, ImportPreset, Institution, SecurityMetadata, SecurityPrice, SessionToken, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, RuleApplyRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
-from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, record_login_failure, require_csrf, set_session_cookie, verify_password
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, PasswordChangeRequest, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
+from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
-from .services.backups import create_backup, restore_backup
-from .services.importers import commit_categorized_history, commit_import, commit_reviewed_categorized_history, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
+from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
+from .services.importers import commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
 from .services.transfers import confirm_transfer_link, create_transfer_suggestions, list_unconfirmed_transfers, reject_transfer_link
 
@@ -96,6 +96,9 @@ def login(payload: LoginRequest, response: Response, request: Request, db: Sessi
         record_login_failure(client_key)
         raise HTTPException(status_code=401, detail="Invalid credentials")
     clear_login_failures(client_key)
+    if password_needs_rehash(user.password_hash):
+        user.password_hash = hash_password(payload.password)
+    purge_expired_sessions(db)
     session = create_session(db, user.id)
     db.commit()
     set_session_cookie(response, session)
@@ -111,6 +114,21 @@ def logout(request: Request, response: Response, session: SessionToken = Depends
     record_audit_event(db, "logout", "local-user", "session", str(session.id), {"message": "Logout"})
     db.commit()
     response.delete_cookie(settings.session_cookie_name)
+    return {"ok": True}
+
+
+@app.post("/api/password")
+def change_password(payload: PasswordChangeRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    user = db.get(AppUser, session.user_id)
+    if not user or not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status_code=403, detail="Current password is incorrect")
+    user.password_hash = hash_password(payload.new_password)
+    user.password_version += 1
+    # Invalidate every other session so a stolen cookie dies with the old password.
+    db.execute(delete(SessionToken).where(SessionToken.user_id == user.id, SessionToken.id != session.id))
+    record_audit_event(db, "password_change", "local-user", "app_user", str(user.id), {"password_version": user.password_version})
+    db.commit()
     return {"ok": True}
 
 
@@ -362,7 +380,10 @@ async def imports_preview(account_id: int, file: UploadFile = File(...), session
     content = await file.read()
     if len(content) > settings.import_file_size_limit_mb * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File too large")
-    preset_type = detect_preset_from_content(content.decode("utf-8-sig"))
+    try:
+        preset_type = detect_preset_from_content(decode_text(content))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     if not preset_type:
         raise HTTPException(status_code=400, detail="Could not detect import preset")
     try:
@@ -373,15 +394,23 @@ async def imports_preview(account_id: int, file: UploadFile = File(...), session
 
 
 @app.post("/api/imports/commit")
-async def imports_commit(request: Request, account_id: int, preset_id: int | None = None, file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+async def imports_commit(request: Request, account_id: int, preset_id: int | None = None, snapshot_date: str | None = None, file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
     account = db.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
     preset = db.get(ImportPreset, preset_id) if preset_id else None
     content = await file.read()
+    if len(content) > settings.import_file_size_limit_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large")
+    parsed_snapshot_date: date | None = None
+    if snapshot_date:
+        try:
+            parsed_snapshot_date = date.fromisoformat(snapshot_date)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="snapshot_date must be YYYY-MM-DD") from error
     try:
-        result = commit_import(db, account, preset, file.filename or "import.csv", content)
+        result = commit_import(db, account, preset, file.filename or "import.csv", content, snapshot_date=parsed_snapshot_date)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     db.commit()
@@ -451,6 +480,7 @@ def list_transactions(account_id: int | None = None, review_status: str | None =
             "transaction_type": row.transaction_type,
             "review_status": row.review_status,
             "category_id": row.category_id,
+            "duplicate_of_transaction_id": row.duplicate_of_transaction_id,
         }
         for row in rows
     ]
@@ -527,6 +557,7 @@ def review_inbox(session: SessionToken = Depends(current_session), db: Session =
             "transaction_type": row.transaction_type,
             "review_status": row.review_status,
             "date": row.transaction_date.isoformat(),
+            "duplicate_of_transaction_id": row.duplicate_of_transaction_id,
         }
         for row in rows
     ]
@@ -568,6 +599,36 @@ def apply_rule(rule_id: int, payload: RuleApplyRequest, request: Request, sessio
     record_audit_event(db, "rule_apply", "local-user", "category_rule", str(rule.id), {"scope": payload.scope, "matched": matched, "updated": updated})
     db.commit()
     return {"matched": matched, "updated": updated}
+
+
+@app.patch("/api/rules/{rule_id}")
+def update_rule(rule_id: int, payload: RuleUpdate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    rule = db.get(CategoryRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    updates = payload.model_dump(exclude_unset=True)
+    if "category_id" in updates and not db.get(Category, updates["category_id"]):
+        raise HTTPException(status_code=400, detail="Category not found")
+    if "match_text" in updates and not str(updates["match_text"]).strip():
+        raise HTTPException(status_code=400, detail="Match text is required")
+    for key, value in updates.items():
+        setattr(rule, key, value)
+    record_audit_event(db, "rule_update", "local-user", "category_rule", str(rule.id), updates)
+    db.commit()
+    return payload_from_rule(rule)
+
+
+@app.delete("/api/rules/{rule_id}")
+def delete_rule(rule_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    rule = db.get(CategoryRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    record_audit_event(db, "rule_delete", "local-user", "category_rule", str(rule.id), {"match_text": rule.match_text})
+    db.delete(rule)
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/rules")
@@ -892,31 +953,49 @@ async def import_app_data(
 
 @app.get("/api/exports/transactions.csv")
 def export_transactions(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    accounts = {account.id: account for account in db.scalars(select(Account)).all()}
+    categories = {category.id: category.label for category in db.scalars(select(Category)).all()}
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Date", "Description", "Amount", "Type", "Review Status"])
-    rows = db.scalars(select(Transaction).where(Transaction.status == "active").order_by(Transaction.transaction_date.asc())).all()
+    writer.writerow(["Date", "Posted Date", "Account", "Institution", "Description", "Amount", "Type", "Category", "Review Status", "Note"])
+    rows = db.scalars(select(Transaction).where(Transaction.status == "active").order_by(Transaction.transaction_date.asc(), Transaction.id.asc())).all()
     for row in rows:
+        account = accounts.get(row.account_id)
         writer.writerow(
             [
                 row.transaction_date.isoformat(),
+                row.posted_date.isoformat() if row.posted_date else "",
+                escape_csv_formula(account.display_name) if account else "",
+                escape_csv_formula(account.institution.name) if account and account.institution else "",
                 escape_csv_formula(row.raw_description),
                 cents_to_decimal_string(row.amount_cents),
                 row.transaction_type,
+                categories.get(row.category_id, ""),
                 row.review_status,
+                escape_csv_formula(row.user_note or ""),
             ]
         )
-    path = Path("data/exports")
-    path.mkdir(parents=True, exist_ok=True)
-    export_path = path / "transactions.csv"
-    export_path.write_text(output.getvalue(), encoding="utf-8")
-    return FileResponse(export_path)
+    # Stream from memory: no plaintext copy is left behind on disk.
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=transactions.csv"},
+    )
+
+
+@app.get("/api/backups")
+def get_backups(session: SessionToken = Depends(current_session)):
+    return {"backup_dir": str(Path(settings.backup_dir).resolve()), "backups": list_backups()}
 
 
 @app.post("/api/backups")
-def backup_database(request: Request, destination: str, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+def backup_database(request: Request, destination: str | None = None, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
-    output = create_backup(Path(destination))
+    try:
+        resolved = resolve_backup_destination(destination)
+        output = create_backup(resolved)
+    except BackupError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     record_audit_event(db, "backup_create", "local-user", "backup", str(output), {"destination": str(output)})
     db.commit()
     return {"path": str(output)}
@@ -925,10 +1004,20 @@ def backup_database(request: Request, destination: str, session: SessionToken = 
 @app.post("/api/backups/restore")
 def restore_database(request: Request, source: str, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
-    restore_backup(Path(source))
-    record_audit_event(db, "backup_restore", "local-user", "backup", str(source), {"source": source})
+    try:
+        resolved = resolve_restore_source(source)
+    except BackupError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    # Audit before the swap: the restored database's audit trail may predate this event.
+    record_audit_event(db, "backup_restore", "local-user", "backup", str(resolved), {"source": str(resolved)})
     db.commit()
-    return {"ok": True}
+    db.close()
+    try:
+        safety_copy = restore_backup(resolved)
+    except BackupError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    initialize_database()
+    return {"ok": True, "pre_restore_copy": str(safety_copy)}
 
 
 @app.api_route("/api/{full_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])

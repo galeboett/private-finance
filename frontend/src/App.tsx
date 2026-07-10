@@ -5,6 +5,7 @@ import {
   FileUp,
   Landmark,
   LayoutDashboard,
+  LogOut,
   ListChecks,
   Pencil,
   PiggyBank,
@@ -450,6 +451,7 @@ export function App() {
   const [password, setPassword] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
   const [categories, setCategories] = useState<BootstrapCategory[]>([]);
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
@@ -525,6 +527,14 @@ export function App() {
   useEffect(() => {
     void loadBootstrap();
   }, []);
+
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+    const timer = window.setTimeout(() => setToast(null), toast.tone === "error" ? 10000 : 5000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   useEffect(() => {
     if (transactionFiltersInitialized || transactions.length === 0) {
@@ -637,6 +647,7 @@ export function App() {
       setErrorMessage("Use at least 12 characters for your local password.");
       return;
     }
+    setBusyAction("auth");
     try {
       await api("/api/setup", { method: "POST", body: JSON.stringify({ password }) });
       setConfigured(true);
@@ -644,11 +655,14 @@ export function App() {
       showToast({ tone: "success", message: "Workspace initialized. Sign in with your new password." });
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Setup failed.");
+    } finally {
+      setBusyAction(null);
     }
   }
 
   async function handleLogin() {
     setErrorMessage("");
+    setBusyAction("auth");
     try {
       const result = await api<{ csrf_token: string }>("/api/login", { method: "POST", body: JSON.stringify({ password }) });
       setCsrf(result.csrf_token);
@@ -656,7 +670,20 @@ export function App() {
       await loadData();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Login failed.");
+    } finally {
+      setBusyAction(null);
     }
+  }
+
+  async function handleLogout() {
+    try {
+      await api("/api/logout", { method: "POST", headers: { "x-csrf-token": csrf } });
+    } catch {
+      // Even if the server call fails, drop local session state.
+    }
+    setCsrf("");
+    setPassword("");
+    showToast({ tone: "success", message: "Signed out." });
   }
 
   async function saveAccount() {
@@ -738,6 +765,9 @@ export function App() {
   }
 
   async function previewSelectedImport() {
+    if (busyAction) {
+      return;
+    }
     setToast(null);
     setImportPreview(null);
     if (!selectedAccountId) {
@@ -750,6 +780,7 @@ export function App() {
     }
     const form = new FormData();
     form.append("file", selectedFile);
+    setBusyAction("import");
     try {
       const response = await fetch(apiUrl(`/api/imports/preview?account_id=${selectedAccountId}`), {
         method: "POST",
@@ -764,6 +795,8 @@ export function App() {
       showToast({ tone: "success", message: `Preview ready: ${preview.rows.length} sample rows detected.` });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Preview failed." });
+    } finally {
+      setBusyAction(null);
     }
   }
 
@@ -775,6 +808,7 @@ export function App() {
     }
     const form = new FormData();
     form.append("file", selectedFile);
+    setBusyAction("import");
     try {
       const response = await fetch(apiUrl(`/api/imports/commit?account_id=${selectedAccountId}`), {
         method: "POST",
@@ -792,6 +826,8 @@ export function App() {
       showToast({ tone: "success", message: `Imported ${result.inserted} rows. Skipped ${result.skipped} duplicates.` });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Import failed." });
+    } finally {
+      setBusyAction(null);
     }
   }
 
@@ -973,6 +1009,7 @@ export function App() {
     const form = new FormData();
     form.append("file", appImportFile);
     form.append("confirm_text", "IMPORT");
+    setBusyAction("restore");
     try {
       const response = await fetch(apiUrl("/api/imports/app-data"), {
         method: "POST",
@@ -988,6 +1025,8 @@ export function App() {
       showToast({ tone: "success", message: "App data restored from export." });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Import failed." });
+    } finally {
+      setBusyAction(null);
     }
   }
 
@@ -1048,6 +1087,7 @@ export function App() {
     }
     const form = new FormData();
     form.append("file", categorizedHistoryFile);
+    setBusyAction("import");
     try {
       const response = await fetch(apiUrl("/api/imports/categorized-history"), {
         method: "POST",
@@ -1075,6 +1115,8 @@ export function App() {
       });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Categorized history import failed." });
+    } finally {
+      setBusyAction(null);
     }
   }
   async function detectTransfers() {
@@ -1472,12 +1514,35 @@ export function App() {
           <ShieldCheck size={28} />
           <h1>private-finance</h1>
           <p>Create the local password for this workspace.</p>
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Create password, 12+ characters" />
-          {errorMessage ? <p className="formError">{errorMessage}</p> : null}
-          <button className="primaryButton" onClick={() => void handleSetup()}>
-            <CheckCircle2 size={16} />
-            Initialize
-          </button>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleSetup();
+            }}
+          >
+            <label className="visuallyHidden" htmlFor="setup-password">
+              New password
+            </label>
+            <input
+              id="setup-password"
+              type="password"
+              autoComplete="new-password"
+              autoFocus
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Create password, 12+ characters"
+              aria-describedby={errorMessage ? "auth-error" : undefined}
+            />
+            {errorMessage ? (
+              <p className="formError" id="auth-error" role="alert">
+                {errorMessage}
+              </p>
+            ) : null}
+            <button className="primaryButton" type="submit" disabled={busyAction === "auth"}>
+              <CheckCircle2 size={16} />
+              Initialize
+            </button>
+          </form>
         </section>
       </div>
     );
@@ -1490,12 +1555,35 @@ export function App() {
           <ShieldCheck size={28} />
           <h1>Welcome back</h1>
           <p>Sign in locally to review imports, cash flow, and net worth.</p>
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password" />
-          {errorMessage ? <p className="formError">{errorMessage}</p> : null}
-          <button className="primaryButton" onClick={() => void handleLogin()}>
-            <ShieldCheck size={16} />
-            Sign in
-          </button>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleLogin();
+            }}
+          >
+            <label className="visuallyHidden" htmlFor="login-password">
+              Password
+            </label>
+            <input
+              id="login-password"
+              type="password"
+              autoComplete="current-password"
+              autoFocus
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Password"
+              aria-describedby={errorMessage ? "auth-error" : undefined}
+            />
+            {errorMessage ? (
+              <p className="formError" id="auth-error" role="alert">
+                {errorMessage}
+              </p>
+            ) : null}
+            <button className="primaryButton" type="submit" disabled={busyAction === "auth"}>
+              <ShieldCheck size={16} />
+              Sign in
+            </button>
+          </form>
         </section>
       </div>
     );
@@ -1808,15 +1896,24 @@ export function App() {
             </span>
             Add Account
           </button>
+          <button className="taxonomyToggleButton" onClick={() => void handleLogout()}>
+            <span className="sidebarActionIcon">
+              <LogOut size={11} />
+            </span>
+            <span>Sign out</span>
+          </button>
         </div>
         <button className="sidebarResizeHandle" aria-label="Resize sidebar" title="Drag to resize sidebar" onPointerDown={startSidebarResize} />
       </aside>
 
       <main className="workspace">
         {toast ? (
-          <div className={`toast ${toast.tone}`} style={{ margin: "16px 20px 0" }}>
+          <div className={`toast ${toast.tone}`} style={{ margin: "16px 20px 0" }} role="status" aria-live="polite">
             {toast.tone === "success" ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
             <span>{toast.message}</span>
+            <button className="toastClose" onClick={() => setToast(null)} aria-label="Dismiss notification">
+              <X size={14} />
+            </button>
           </div>
         ) : null}
 
@@ -1854,9 +1951,9 @@ export function App() {
             </header>
 
             <section className="metricsGrid overviewMetrics" aria-label="Financial summary">
-              <MetricTile label="Income" value={formatMoney(reportIncomeCents || totalIncomeCents)} tone="green" />
-              <MetricTile label="Expenses" value={formatMoney(reportExpenseCents || totalExpenseCents)} tone="red" />
-              <MetricTile label="Net" value={formatMoney(reportNetCents || netIncomeCents)} tone="neutral" />
+              <MetricTile label="Income" value={formatMoney(cashFlowRows.length > 0 ? reportIncomeCents : totalIncomeCents)} tone="green" />
+              <MetricTile label="Expenses" value={formatMoney(cashFlowRows.length > 0 ? reportExpenseCents : totalExpenseCents)} tone="red" />
+              <MetricTile label="Net" value={formatMoney(cashFlowRows.length > 0 ? reportNetCents : netIncomeCents)} tone="neutral" />
               <MetricTile label="Savings rate" value={`${savingsRate}%`} tone="neutral" />
             </section>
 
@@ -2172,7 +2269,7 @@ export function App() {
                   </div>
                   <div className="buttonRow">
                     <input type="file" accept=".csv,.xlsx,.xlsm" onChange={(event) => { setCategorizedHistoryFile(event.target.files?.[0] ?? null); setCategorizedHistoryRows([]); setCategorizedHistoryFilename(""); }} />
-                    <button className="primaryButton" onClick={() => void importCategorizedHistory()} disabled={!categorizedHistoryFile}>
+                    <button className="primaryButton" onClick={() => void importCategorizedHistory()} disabled={!categorizedHistoryFile || busyAction !== null}>
                       <ArrowDownToLine size={16} />
                       Import categorized history
                     </button>
@@ -2215,11 +2312,11 @@ export function App() {
                       <Sparkles size={16} />
                       Analyze CSV
                     </button>
-                    <button className="secondaryButton" onClick={() => void previewSelectedImport()} disabled={!selectedAccountId || !selectedFile}>
+                    <button className="secondaryButton" onClick={() => void previewSelectedImport()} disabled={!selectedAccountId || !selectedFile || busyAction !== null}>
                       <Search size={16} />
                       Preview
                     </button>
-                    <button className="primaryButton" onClick={() => void commitSelectedImport()} disabled={!importPreview}>
+                    <button className="primaryButton" onClick={() => void commitSelectedImport()} disabled={!importPreview || busyAction !== null}>
                       <ArrowDownToLine size={16} />
                       Commit
                     </button>
@@ -2961,7 +3058,7 @@ export function App() {
                 Export app data
               </button>
               <input type="file" accept="application/json,.json" onChange={(event) => setAppImportFile(event.target.files?.[0] ?? null)} />
-              <button className="dangerTextButton" onClick={() => void restoreAppExport()} disabled={!appImportFile}>
+              <button className="dangerTextButton" onClick={() => void restoreAppExport()} disabled={!appImportFile || busyAction !== null}>
                 Import backup
               </button>
             </div>
@@ -3007,10 +3104,10 @@ export function App() {
                     <button className="secondaryButton" onClick={() => void analyzeSelectedImport()} disabled={!selectedFile}>
                       Analyze
                     </button>
-                    <button className="secondaryButton" onClick={() => void previewSelectedImport()} disabled={!selectedAccountId || !selectedFile}>
+                    <button className="secondaryButton" onClick={() => void previewSelectedImport()} disabled={!selectedAccountId || !selectedFile || busyAction !== null}>
                       Preview
                     </button>
-                    <button className="primaryButton" onClick={() => void commitSelectedImport()} disabled={!selectedAccountId || !selectedFile || !importPreview}>
+                    <button className="primaryButton" onClick={() => void commitSelectedImport()} disabled={!selectedAccountId || !selectedFile || !importPreview || busyAction !== null}>
                       Commit import
                     </button>
                   </div>
