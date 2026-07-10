@@ -218,21 +218,34 @@ button:disabled {
 }
 
 .sidebarGroupHeader {
-  display: flex;
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
+  width: 100%;
   padding: 5px 12px 3px 26px;
+  border: 0;
+  background: transparent;
   color: rgba(245, 247, 255, 0.66);
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.02em;
+  text-align: left;
 }
 
-.sidebarGroupHeader span:first-child {
+.sidebarGroupHeader:hover {
+  color: rgba(245, 247, 255, 0.9);
+}
+
+.sidebarGroupHeader span:nth-child(2) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sidebarGroupToggle {
+  color: rgba(245, 247, 255, 0.42);
+  font-variant-numeric: tabular-nums;
 }
 
 .taxonomyToggleButton {
@@ -1222,6 +1235,7 @@ textarea {
 .suggestedAccountForm,
 .manualOverride,
 .historyImportPanel,
+.cleanupPanel,
 .appDataPanel {
   display: grid;
   gap: 10px;
@@ -1229,6 +1243,7 @@ textarea {
 
 .analysisPanel,
 .historyImportPanel,
+.cleanupPanel,
 .appDataPanel {
   margin-bottom: 12px;
   padding: 12px;
@@ -1240,6 +1255,7 @@ textarea {
 .analysisHeader,
 .matchedAccountCard,
 .historyImportPanel,
+.cleanupPanel,
 .appDataPanel {
   display: flex;
   align-items: center;
@@ -1250,6 +1266,7 @@ textarea {
 .analysisHeader div,
 .matchedAccountCard div,
 .historyImportPanel div:first-child,
+.cleanupPanel div:first-child,
 .appDataPanel div:first-child {
   min-width: 0;
   display: grid;
@@ -1260,6 +1277,7 @@ textarea {
 .matchedAccountCard span,
 .manualOverride label,
 .historyImportPanel span,
+.cleanupPanel span,
 .appDataPanel span {
   color: var(--muted);
   font-size: 12px;

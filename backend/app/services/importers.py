@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from ..audit import record_audit_event
 from ..models import Account, Category, CategoryRule, HoldingSnapshot, ImportBatch, ImportPreset, StagingRow, Transaction
 from ..money import parse_decimal_to_cents
+from .accounts import infer_account_characterization, upsert_institution_by_name
 
 
 CARD_REFERENCE_HEADER = "Posted Date,Reference Number,Payee,Address,Amount"
@@ -468,13 +469,21 @@ def _find_or_create_history_account(db: Session, account_name: str) -> tuple[Acc
     if not cleaned:
         raise ValueError("Categorized history rows must include an Account value")
     existing = db.scalar(select(Account).where(Account.display_name == cleaned))
+    if not existing:
+        existing = db.scalar(select(Account).where(Account.display_name.ilike(cleaned)))
     if existing:
         if existing.status != "active":
             existing.status = "active"
         return existing, False
-    lowered = cleaned.lower()
-    account_type = "credit_card" if any(token in lowered for token in ("card", "sapphire", "amex", "visa", "mastercard")) else "checking"
-    account = Account(display_name=cleaned, account_type=account_type, currency="USD", status="active")
+    characterization = infer_account_characterization(cleaned)
+    institution = upsert_institution_by_name(db, characterization.institution_name)
+    account = Account(
+        institution_id=institution.id if institution else None,
+        display_name=characterization.display_name or cleaned,
+        account_type=characterization.account_type,
+        currency="USD",
+        status="active",
+    )
     db.add(account)
     db.flush()
     return account, True

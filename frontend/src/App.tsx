@@ -163,6 +163,7 @@ type AppView = "overview" | "all-accounts" | "account" | "review" | "reports" | 
 type AccountTaxonomyOverrides = Record<string, string>;
 type TaxonomySection = { label: string; rows: AccountSummary[]; emptyText: string };
 type TaxonomyGroup = { label: string; rows: AccountSummary[]; totalCents: number };
+type CollapsedTaxonomyGroups = Record<string, boolean>;
 type DashboardWidgetKey = "taxonomy" | "review" | "spending" | "cashflow" | "imports";
 type DashboardWidgetConfig = Record<DashboardWidgetKey, boolean>;
 
@@ -194,6 +195,7 @@ const monthOptions: FilterOption[] = [
 const uncategorizedFilterValue = "__uncategorized__";
 const TRANSACTION_PAGE_SIZE = 100;
 const taxonomyStorageKey = "privateFinance.accountTaxonomy.v1";
+const collapsedTaxonomyStorageKey = "privateFinance.collapsedTaxonomy.v1";
 const dashboardWidgetStorageKey = "privateFinance.dashboardWidgets.v1";
 const defaultDashboardWidgets: DashboardWidgetConfig = {
   taxonomy: true,
@@ -486,6 +488,9 @@ export function App() {
   const [editingTransactionId, setEditingTransactionId] = useState<number | null>(null);
   const [reportPeriod, setReportPeriod] = useState<ReportPeriod>("this_year");
   const [taxonomyOverrides, setTaxonomyOverrides] = useState<AccountTaxonomyOverrides>(() => readStoredJson<AccountTaxonomyOverrides>(taxonomyStorageKey, {}));
+  const [collapsedTaxonomyGroups, setCollapsedTaxonomyGroups] = useState<CollapsedTaxonomyGroups>(() =>
+    readStoredJson<CollapsedTaxonomyGroups>(collapsedTaxonomyStorageKey, {}),
+  );
   const [taxonomyEditorOpen, setTaxonomyEditorOpen] = useState(false);
   const [taxonomyAccountId, setTaxonomyAccountId] = useState<number | "">("");
   const [taxonomyGroupDraft, setTaxonomyGroupDraft] = useState("");
@@ -833,6 +838,23 @@ export function App() {
       });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Bulk institution update failed." });
+    }
+  }
+
+  async function cleanupImportedAccounts() {
+    setToast(null);
+    try {
+      const result = await api<{ updated: number; merged: number; moved_transactions: number }>("/api/accounts/cleanup-imported", {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+      });
+      await loadData();
+      showToast({
+        tone: "success",
+        message: `Cleaned imported accounts: ${result.updated} updated, ${result.merged} merged, ${result.moved_transactions} transactions moved.`,
+      });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Imported account cleanup failed." });
     }
   }
 
@@ -1601,6 +1623,13 @@ export function App() {
     writeStoredJson(dashboardWidgetStorageKey, next);
   }
 
+  function toggleTaxonomyGroup(sectionLabel: string, groupLabel: string) {
+    const key = `${sectionLabel}::${groupLabel}`;
+    const next = { ...collapsedTaxonomyGroups, [key]: !collapsedTaxonomyGroups[key] };
+    setCollapsedTaxonomyGroups(next);
+    writeStoredJson(collapsedTaxonomyStorageKey, next);
+  }
+
   function scrollToUncategorized() {
     const firstMissing = filteredTransactions.find((transaction) => transaction.transaction_type === "expense" && !transaction.category_id);
     if (!firstMissing) {
@@ -1659,28 +1688,35 @@ export function App() {
               <span>{formatMoney(section.totalCents)}</span>
             </div>
             <div className="sidebarAccounts">
-              {section.groups.map((group) => (
-                <div className="sidebarTaxonomyGroup" key={`${section.label}-${group.label}`}>
-                  <div className="sidebarGroupHeader">
-                    <span>{group.label}</span>
-                    <span>{formatMoney(group.totalCents)}</span>
+              {section.groups.map((group) => {
+                const collapseKey = `${section.label}::${group.label}`;
+                const isCollapsed = Boolean(collapsedTaxonomyGroups[collapseKey]);
+                return (
+                  <div className="sidebarTaxonomyGroup" key={`${section.label}-${group.label}`}>
+                    <button className="sidebarGroupHeader" onClick={() => toggleTaxonomyGroup(section.label, group.label)} title={`${isCollapsed ? "Expand" : "Collapse"} ${group.label}`}>
+                      <span className="sidebarGroupToggle">{isCollapsed ? "+" : "-"}</span>
+                      <span>{group.label}</span>
+                      <span>{formatMoney(group.totalCents)}</span>
+                    </button>
+                    {isCollapsed
+                      ? null
+                      : group.rows.map((account) => {
+                          const missingCount = missingCategoryCountByAccount.get(account.id) ?? 0;
+                          const isActive = activeView === "account" && focusedAccountId === account.id;
+                          return (
+                            <button key={account.id} className={isActive ? "sidebarAccount active" : "sidebarAccount"} onClick={() => openAccountView(account.id)} title={account.display_name}>
+                              <span className={missingCount > 0 ? "attentionDot" : "attentionDot hidden"} />
+                              <span className="sidebarAccountName">
+                                {account.display_name}
+                                {account.last_four ? ` (${account.last_four})` : ""}
+                              </span>
+                              <span className="sidebarAccountBalance">{formatMoney(accountBalances.get(account.id) ?? 0)}</span>
+                            </button>
+                          );
+                        })}
                   </div>
-                  {group.rows.map((account) => {
-                    const missingCount = missingCategoryCountByAccount.get(account.id) ?? 0;
-                    const isActive = activeView === "account" && focusedAccountId === account.id;
-                    return (
-                      <button key={account.id} className={isActive ? "sidebarAccount active" : "sidebarAccount"} onClick={() => openAccountView(account.id)} title={account.display_name}>
-                        <span className={missingCount > 0 ? "attentionDot" : "attentionDot hidden"} />
-                        <span className="sidebarAccountName">
-                          {account.display_name}
-                          {account.last_four ? ` (${account.last_four})` : ""}
-                        </span>
-                        <span className="sidebarAccountBalance">{formatMoney(accountBalances.get(account.id) ?? 0)}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ))}
+                );
+              })}
               {section.rows.length === 0 ? <p className="emptyText" style={{ color: "rgba(245,247,255,0.55)", padding: "0 12px" }}>{section.emptyText}</p> : null}
             </div>
           </div>
@@ -2246,6 +2282,16 @@ export function App() {
                       </button>
                     ) : null}
                   </div>
+                </div>
+                <div className="cleanupPanel">
+                  <div>
+                    <strong>Clean imported account labels</strong>
+                    <span>Infer institutions and account types from names like BoA, Chase, Citi, Discover, AMEX, Target, and Venmo. Also merges exact casing duplicates like Checkings/checkings.</span>
+                  </div>
+                  <button className="secondaryButton" onClick={() => void cleanupImportedAccounts()}>
+                    <Sparkles size={16} />
+                    Clean imported accounts
+                  </button>
                 </div>
                 {accounts.length > 0 ? (
                   <div className="selectionToolbar">

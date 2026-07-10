@@ -23,6 +23,7 @@ from .models import Account, AppUser, Category, CategoryRule, HoldingSnapshot, I
 from .money import cents_to_decimal_string, escape_csv_formula
 from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, RuleApplyRequest, RuleCreate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, record_login_failure, require_csrf, set_session_cookie, verify_password
+from .services.accounts import cleanup_imported_accounts
 from .services.backups import create_backup, restore_backup
 from .services.importers import commit_categorized_history, commit_import, commit_reviewed_categorized_history, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
@@ -170,6 +171,12 @@ def list_accounts(session: SessionToken = Depends(current_session), db: Session 
         }
         for account in accounts
     ]
+
+
+@app.post("/api/accounts/cleanup-imported")
+def cleanup_accounts_from_import_labels(request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    return cleanup_imported_accounts(db)
 
 
 @app.patch("/api/accounts/{account_id}")
