@@ -421,6 +421,7 @@ export function App() {
   const [focusedTransactionId, setFocusedTransactionId] = useState<number | null>(null);
   const [editingTransactionId, setEditingTransactionId] = useState<number | null>(null);
   const [reportPeriod, setReportPeriod] = useState<ReportPeriod>("this_year");
+  const [bulkInstitutionName, setBulkInstitutionName] = useState("");
   const [accountForm, setAccountForm] = useState({
     institution_name: "",
     display_name: "",
@@ -455,6 +456,19 @@ export function App() {
     transactionSortKey,
     transactionSortDirection,
   ]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") {
+        return;
+      }
+      setEditingTransactionId(null);
+      setFocusedTransactionId(null);
+      setCategoryEditor(null);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
   async function loadBootstrap() {
     const data = await api<{ configured: boolean; categories: BootstrapCategory[] }>("/api/bootstrap");
     setConfigured(data.configured);
@@ -705,6 +719,48 @@ export function App() {
       }
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Transaction could not be updated." });
+    }
+  }
+
+  function exitTransactionEdit() {
+    setEditingTransactionId(null);
+    setFocusedTransactionId(null);
+    setCategoryEditor(null);
+  }
+
+  async function bulkUpdateInstitutionForSelected() {
+    const institutionName = bulkInstitutionName.trim();
+    if (!institutionName) {
+      showToast({ tone: "error", message: "Enter an institution name before applying bulk edit." });
+      return;
+    }
+    if (selectedRepositoryTransactionIds.length === 0) {
+      showToast({ tone: "error", message: "Select one or more transactions first." });
+      return;
+    }
+    const selectedRows = transactions.filter((transaction) => selectedRepositoryTransactionIds.includes(transaction.id));
+    const accountIdsToUpdate = Array.from(new Set(selectedRows.map((transaction) => transaction.account_id)));
+    try {
+      for (const accountId of accountIdsToUpdate) {
+        await api(`/api/accounts/${accountId}`, {
+          method: "PATCH",
+          headers: { "x-csrf-token": csrf },
+          body: JSON.stringify({ institution_name: institutionName }),
+        });
+      }
+      setAccounts((current) =>
+        current.map((account) => (accountIdsToUpdate.includes(account.id) ? { ...account, institution_name: institutionName } : account)),
+      );
+      setTransactions((current) =>
+        current.map((transaction) => (accountIdsToUpdate.includes(transaction.account_id) ? { ...transaction, institution_name: institutionName } : transaction)),
+      );
+      setBulkInstitutionName("");
+      showToast({
+        tone: "success",
+        message: `Updated institution to "${institutionName}" for ${accountIdsToUpdate.length} account${accountIdsToUpdate.length === 1 ? "" : "s"}.`,
+      });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Bulk institution update failed." });
     }
   }
 
@@ -1617,7 +1673,7 @@ export function App() {
         )}
 
         {activeView === "account" && focusedAccount ? (
-          <>
+          <div className="stickyAccountChrome">
             {focusedMissingCategoryCount > 0 ? (
               <div className="reviewNoticeBar">
                 <span>
@@ -1652,24 +1708,24 @@ export function App() {
                 </div>
               </div>
               <div className="accountActionBar">
-                <button className="primaryButton" onClick={() => openImportModal(focusedAccount.id)}>
-                  <FileUp size={16} />
+                <button className="primaryButton compactButton" onClick={() => openImportModal(focusedAccount.id)}>
+                  <FileUp size={14} />
                   File Import
                 </button>
-                <button className="secondaryButton" onClick={() => setActiveView("review")}>
-                  <ListChecks size={16} />
+                <button className="secondaryButton compactButton" onClick={() => setActiveView("review")}>
+                  <ListChecks size={14} />
                   Open Review
                 </button>
-                <button className="ghostButton" title="Refresh data" onClick={() => void loadData()}>
-                  <RefreshCw size={16} />
+                <button className="ghostButton compactIconButton" title="Refresh data" onClick={() => void loadData()}>
+                  <RefreshCw size={14} />
                 </button>
               </div>
             </header>
-          </>
+          </div>
         ) : null}
 
         {activeView === "all-accounts" ? (
-          <header className="accountLedgerHeader">
+          <header className="accountLedgerHeader stickyAccountChrome">
             <div>
               <h1>All Accounts</h1>
               <div className="accountMetaRow">
@@ -1678,12 +1734,12 @@ export function App() {
               </div>
             </div>
             <div className="accountActionBar">
-              <button className="primaryButton" onClick={() => openImportModal()}>
-                <FileUp size={16} />
+              <button className="primaryButton compactButton" onClick={() => openImportModal()}>
+                <FileUp size={14} />
                 File Import
               </button>
-              <button className="ghostButton" title="Refresh data" onClick={() => void loadData()}>
-                <RefreshCw size={16} />
+              <button className="ghostButton compactIconButton" title="Refresh data" onClick={() => void loadData()}>
+                <RefreshCw size={14} />
               </button>
             </div>
           </header>
@@ -2264,10 +2320,21 @@ export function App() {
                 {selectedRepositoryTransactionIds.length} selected / {pagedTransactions.length} shown
                 {filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}
               </span>
+              <div className="bulkInstitutionEdit">
+                <input
+                  value={bulkInstitutionName}
+                  onChange={(event) => setBulkInstitutionName(event.target.value)}
+                  placeholder="Institution"
+                  disabled={selectedRepositoryTransactionIds.length === 0}
+                />
+                <button className="secondaryButton compactButton" onClick={() => void bulkUpdateInstitutionForSelected()} disabled={selectedRepositoryTransactionIds.length === 0}>
+                  Apply institution
+                </button>
+              </div>
               <button className="dangerTextButton" onClick={() => requestBulkTransactionDelete(selectedRepositoryTransactionIds)} disabled={selectedRepositoryTransactionIds.length === 0}>
                 Delete selected
               </button>
-              <button className="secondaryButton" onClick={() => setSelectedTransactionIds((current) => current.filter((id) => !repositoryTransactionIds.includes(id)))}>
+              <button className="secondaryButton compactButton" onClick={() => setSelectedTransactionIds((current) => current.filter((id) => !repositoryTransactionIds.includes(id)))}>
                 Clear
               </button>
             </div>
@@ -2457,9 +2524,12 @@ export function App() {
                 </div>
                 {isEditing ? (
                   <div className="rowEditActions">
+                    <button type="button" className="secondaryButton compactButton" onClick={exitTransactionEdit}>
+                      Cancel
+                    </button>
                     <button
                       type="button"
-                      className="secondaryButton"
+                      className="primaryButton compactButton"
                       onClick={() => {
                         setEditingTransactionId(null);
                         setCategoryEditor(null);

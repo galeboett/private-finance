@@ -79,17 +79,20 @@ button:disabled {
 }
 
 .appFrame {
-  min-height: 100vh;
+  height: 100vh;
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 240px 1fr;
+  overflow: hidden;
 }
 
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  min-height: 100vh;
-  padding: 16px 12px 18px;
+  gap: 10px;
+  height: 100vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 10px 14px;
   background: linear-gradient(180deg, #1a1e3c 0%, #161a35 100%);
   color: #f5f7ff;
   border-right: 0;
@@ -234,6 +237,9 @@ button:disabled {
 
 .workspace {
   min-width: 0;
+  height: 100vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0 0 28px;
   background: var(--bg);
 }
@@ -280,17 +286,30 @@ button:disabled {
 .filterButton,
 .secondaryButton,
 .primaryButton {
-  min-height: 34px;
+  min-height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  border-radius: 6px;
+  gap: 6px;
+  border-radius: 999px;
   border: 1px solid var(--line);
   background: var(--surface);
   color: var(--ink);
-  padding: 8px 12px;
+  padding: 6px 11px;
+  font-size: 13px;
   font-weight: 700;
+}
+
+.compactButton {
+  min-height: 28px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.compactIconButton {
+  min-height: 28px;
+  min-width: 28px;
+  padding: 5px;
 }
 
 .primaryButton {
@@ -368,11 +387,12 @@ button:disabled {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin: 0 0 12px;
-  padding: 8px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
   border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #fbfcfb;
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 13px;
 }
 
 .reviewBulkToolbar select {
@@ -1350,37 +1370,40 @@ textarea {
 }
 
 .transactionFilters {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(170px, 1fr));
-  gap: 10px;
-  margin: 12px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
   position: relative;
   z-index: 3;
+  max-width: 720px;
 }
 
 .transactionFilters.accountFilters {
-  grid-template-columns: repeat(3, minmax(170px, 1fr));
+  max-width: 560px;
 }
 
 .multiFilter {
   position: relative;
-  min-width: 0;
+  min-width: 150px;
+  max-width: 180px;
+  flex: 0 1 180px;
 }
 
 .multiFilter summary {
-  min-height: 42px;
+  min-height: 34px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   list-style: none;
-  padding: 10px 12px;
+  padding: 7px 10px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: linear-gradient(135deg, #fbfcfe 0%, var(--blue-soft) 100%);
   color: var(--ink);
   cursor: pointer;
-  box-shadow: 0 4px 14px rgba(26, 30, 60, 0.05);
+  box-shadow: 0 3px 10px rgba(26, 30, 60, 0.04);
 }
 
 .multiFilter summary::-webkit-details-marker {
@@ -1771,30 +1794,31 @@ select.editableCell {
 
 .accountLedgerHeader {
   display: grid;
-  gap: 10px;
-  margin: 0 20px 14px;
-  padding: 18px 0 0;
+  gap: 8px;
+  margin: 0 20px 10px;
+  padding: 12px 0 0;
 }
 
 .accountLedgerHeader h1 {
   margin: 0;
-  font-size: 28px;
+  font-size: 22px;
   line-height: 1.15;
+  color: #1a1e3c;
 }
 
 .accountMetaRow {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px 16px;
+  gap: 8px 12px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .accountBalanceRow {
   display: flex;
   flex-wrap: wrap;
-  gap: 18px 28px;
-  padding: 12px 0;
+  gap: 16px 24px;
+  padding: 8px 0;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   font-variant-numeric: tabular-nums;
@@ -1802,19 +1826,55 @@ select.editableCell {
 
 .accountBalanceRow strong {
   display: block;
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .accountBalanceRow span {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .accountActionBar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+}
+
+.stickyAccountChrome {
+  position: sticky;
+  top: 0;
+  z-index: 25;
+  background: var(--bg);
+  padding: 10px 0 8px;
+  margin-bottom: 4px;
+  box-shadow: 0 8px 16px rgba(244, 245, 247, 0.92);
+}
+
+.stickyAccountChrome .reviewNoticeBar {
+  margin: 0 20px 8px;
+}
+
+.stickyAccountChrome .accountLedgerHeader {
+  margin-bottom: 0;
+  padding-top: 0;
+}
+
+.bulkInstitutionEdit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 220px;
+  min-width: 200px;
+}
+
+.bulkInstitutionEdit input {
+  min-height: 28px;
+  flex: 1 1 auto;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
 }
 
 .ledgerWorkspace {
@@ -1923,10 +1983,22 @@ select.editableCell {
 @media (max-width: 760px) {
   .appFrame {
     display: block;
+    height: auto;
+    overflow: visible;
   }
 
   .sidebar {
     display: none;
+  }
+
+  .workspace {
+    height: auto;
+    overflow: visible;
+  }
+
+  .stickyAccountChrome {
+    position: static;
+    box-shadow: none;
   }
 
   .workspace {
