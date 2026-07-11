@@ -21,7 +21,7 @@ import {
   X,
 } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type BootstrapCategory = { id: number; key: string; label: string };
 type DashboardSummary = {
@@ -60,7 +60,12 @@ type TransactionRow = {
   transaction_date: string;
   category_id: number | null;
   user_note: string | null;
+  monthly_allocation_count: number;
+  split_count: number;
 };
+
+type SplitDraft = { category_id: number | ""; amount: string; note: string };
+type MonthlyAllocationDraft = { transactionId: number; category_id: number | ""; start_month: string; end_month: string };
 
 type TransferTransaction = Pick<TransactionRow, "id" | "account_id" | "raw_description" | "amount_cents" | "transaction_type" | "review_status" | "transaction_date">;
 
@@ -237,6 +242,25 @@ const transactionTypes = [
 const formatMoney = (cents: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
 
+const centsToInput = (cents: number) => (cents / 100).toFixed(2);
+const moneyInputToCents = (value: string) => {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? Math.round(amount * 100) : null;
+};
+
+function addMonthsToMonth(month: string, offset: number): string {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const value = new Date(year, monthNumber - 1 + offset, 1);
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function inclusiveMonthCount(startMonth: string, endMonth: string): number {
+  const [startYear, startNumber] = startMonth.split("-").map(Number);
+  const [endYear, endNumber] = endMonth.split("-").map(Number);
+  if (![startYear, startNumber, endYear, endNumber].every(Number.isFinite)) return 0;
+  return (endYear - startYear) * 12 + endNumber - startNumber + 1;
+}
+
 const formatShortDate = (value: string | null | undefined) => {
   if (!value) return "-";
   const [datePart] = value.split("T");
@@ -391,6 +415,15 @@ function isMonthInReportPeriod(month: string, period: ReportPeriod, now = new Da
   return month >= startKey && month <= thisMonth;
 }
 
+function categoryTotalsPath(period: ReportPeriod, now = new Date()): string {
+  if (period === "all") return "/api/category-totals";
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const start = period === "this_month" ? new Date(year, month, 1) : period === "this_year" ? new Date(year, 0, 1) : new Date(year, month - 11, 1);
+  const formatDate = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+  return `/api/category-totals?start_date=${formatDate(start)}&end_date=${formatDate(now)}`;
+}
+
 function readStoredJson<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") {
     return fallback;
@@ -478,6 +511,8 @@ export function App() {
   const [newCategoryLabel, setNewCategoryLabel] = useState("");
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
   const [editingCategoryLabel, setEditingCategoryLabel] = useState("");
+  const [categoryReassignId, setCategoryReassignId] = useState<number | "">("");
+  const [editingRule, setEditingRule] = useState<RuleSummary | null>(null);
   const [lastSavedRule, setLastSavedRule] = useState<SavedRuleAction | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
@@ -501,8 +536,11 @@ export function App() {
   const [transactionSortKey, setTransactionSortKey] = useState<TransactionSortKey>("date");
   const [transactionSortDirection, setTransactionSortDirection] = useState<SortDirection>("desc");
   const [transactionPage, setTransactionPage] = useState(1);
+  const [transactionSearch, setTransactionSearch] = useState("");
   const [focusedTransactionId, setFocusedTransactionId] = useState<number | null>(null);
   const [editingTransactionId, setEditingTransactionId] = useState<number | null>(null);
+  const [splitEditor, setSplitEditor] = useState<{ transactionId: number; rows: SplitDraft[] } | null>(null);
+  const [monthlyAllocationEditor, setMonthlyAllocationEditor] = useState<MonthlyAllocationDraft | null>(null);
   const [reportPeriod, setReportPeriod] = useState<ReportPeriod>("this_year");
   const [taxonomyOverrides, setTaxonomyOverrides] = useState<AccountTaxonomyOverrides>(() => readStoredJson<AccountTaxonomyOverrides>(taxonomyStorageKey, {}));
   const [collapsedTaxonomyGroups, setCollapsedTaxonomyGroups] = useState<CollapsedTaxonomyGroups>(() =>
@@ -527,6 +565,15 @@ export function App() {
   useEffect(() => {
     void loadBootstrap();
   }, []);
+
+  useEffect(() => {
+    if (!csrf) {
+      return;
+    }
+    api<CategoryTotal[]>(categoryTotalsPath(reportPeriod))
+      .then(setCategoryTotals)
+      .catch(() => undefined);
+  }, [csrf, reportPeriod]);
 
   useEffect(() => {
     if (!toast) {
@@ -558,6 +605,7 @@ export function App() {
     selectedTransactionCategoryFilters,
     transactionSortKey,
     transactionSortDirection,
+    transactionSearch,
   ]);
 
   useEffect(() => {
@@ -594,7 +642,7 @@ export function App() {
       api<ReviewItem[]>("/api/review"),
       api<TransactionRow[]>("/api/transactions"),
       api<RuleSummary[]>("/api/rules"),
-      api<CategoryTotal[]>("/api/category-totals"),
+      api<CategoryTotal[]>(categoryTotalsPath(reportPeriod)),
       api<MonthlyCashFlow[]>("/api/cash-flow"),
       api<NetWorthAccount[]>("/api/net-worth/accounts"),
       api<AllocationRow[]>("/api/investments/allocation"),
@@ -851,10 +899,108 @@ export function App() {
     }
   }
 
+  async function deleteOrMergeCategory() {
+    if (!editingCategoryId) return;
+    const category = categories.find((item) => item.id === editingCategoryId);
+    const replacement = categories.find((item) => item.id === categoryReassignId);
+    try {
+      const suffix = replacement ? `?reassign_to=${replacement.id}` : "";
+      await api(`/api/categories/${editingCategoryId}${suffix}`, { method: "DELETE", headers: { "x-csrf-token": csrf } });
+      setCategories((current) => current.filter((item) => item.id !== editingCategoryId));
+      setEditingCategoryId(null);
+      setEditingCategoryLabel("");
+      setCategoryReassignId("");
+      await loadData();
+      showToast({ tone: "success", message: replacement ? `${category?.label ?? "Category"} merged into ${replacement.label}.` : "Unused category deleted." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Category could not be deleted." });
+    }
+  }
+
+  async function openSplitEditor(transaction: TransactionRow) {
+    try {
+      const existing = await api<Array<{ category_id: number; amount_cents: number; note: string | null }>>(`/api/transactions/${transaction.id}/splits`);
+      const rows = existing.length > 0
+        ? existing.map((split) => ({ category_id: split.category_id, amount: centsToInput(split.amount_cents), note: split.note ?? "" }))
+        : [{ category_id: transaction.category_id ?? categories[0]?.id ?? "", amount: centsToInput(transaction.amount_cents), note: "" }];
+      setMonthlyAllocationEditor(null);
+      setSplitEditor({ transactionId: transaction.id, rows });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Could not load splits." });
+    }
+  }
+
+  async function saveSplits(transaction: TransactionRow) {
+    if (!splitEditor || splitEditor.transactionId !== transaction.id) return;
+    const splits = splitEditor.rows.map((split) => ({
+      category_id: Number(split.category_id),
+      amount_cents: moneyInputToCents(split.amount),
+      note: split.note.trim() || null,
+    }));
+    if (splits.length < 2 || splits.some((split) => !split.category_id || split.amount_cents === null)) {
+      showToast({ tone: "error", message: "Add at least two categories and valid amounts." });
+      return;
+    }
+    if (splits.reduce((sum, split) => sum + (split.amount_cents ?? 0), 0) !== transaction.amount_cents) {
+      showToast({ tone: "error", message: `Split amounts must add up to ${formatMoney(transaction.amount_cents)}.` });
+      return;
+    }
+    setBusyAction(`split-${transaction.id}`);
+    try {
+      await api(`/api/transactions/${transaction.id}/splits`, { method: "POST", headers: { "x-csrf-token": csrf }, body: JSON.stringify({ splits }) });
+      setSplitEditor(null);
+      await loadData();
+      showToast({ tone: "success", message: "Transaction split saved." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Split could not be saved." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function saveMonthlyAllocation(transaction: TransactionRow) {
+    if (!monthlyAllocationEditor || monthlyAllocationEditor.transactionId !== transaction.id || !monthlyAllocationEditor.category_id) return;
+    const months = inclusiveMonthCount(monthlyAllocationEditor.start_month, monthlyAllocationEditor.end_month);
+    if (months < 2 || months > 120) {
+      showToast({ tone: "error", message: "Choose a range from 2 to 120 months." });
+      return;
+    }
+    setBusyAction(`allocation-${transaction.id}`);
+    try {
+      await api(`/api/transactions/${transaction.id}/monthly-allocation`, {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ category_id: monthlyAllocationEditor.category_id, months, allocation_start: `${monthlyAllocationEditor.start_month}-01` }),
+      });
+      setMonthlyAllocationEditor(null);
+      await loadData();
+      showToast({ tone: "success", message: `Expense spread evenly from ${monthlyAllocationEditor.start_month} through ${monthlyAllocationEditor.end_month}.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Monthly allocation could not be saved." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function removeMonthlyAllocation(transaction: TransactionRow) {
+    setBusyAction(`allocation-${transaction.id}`);
+    try {
+      await api(`/api/transactions/${transaction.id}/monthly-allocation`, { method: "DELETE", headers: { "x-csrf-token": csrf } });
+      await loadData();
+      showToast({ tone: "success", message: "Monthly spread removed; the expense is again counted on its charge date." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Monthly allocation could not be removed." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   function exitTransactionEdit() {
     setEditingTransactionId(null);
     setFocusedTransactionId(null);
     setCategoryEditor(null);
+    setSplitEditor(null);
+    setMonthlyAllocationEditor(null);
   }
 
   async function bulkUpdateInstitutionForSelected() {
@@ -1285,6 +1431,47 @@ export function App() {
     }
   }
 
+  async function previewRule(ruleId: number) {
+    try {
+      const result = await api<{ matched: number }>(`/api/rules/${ruleId}/preview?scope=unreviewed`);
+      showToast({ tone: "info", message: `This rule currently matches ${result.matched} unreviewed transaction${result.matched === 1 ? "" : "s"}.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule preview failed." });
+    }
+  }
+
+  async function saveRuleEdit() {
+    if (!editingRule || !editingRule.match_text.trim()) return;
+    try {
+      await api(`/api/rules/${editingRule.id}`, {
+        method: "PATCH",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({
+          category_id: editingRule.category_id,
+          match_text: editingRule.match_text.trim(),
+          suggested_transaction_type: editingRule.suggested_transaction_type,
+          priority: editingRule.priority,
+        }),
+      });
+      setEditingRule(null);
+      await loadData();
+      showToast({ tone: "success", message: "Rule updated." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be updated." });
+    }
+  }
+
+  async function deleteRule(rule: RuleSummary) {
+    try {
+      await api(`/api/rules/${rule.id}`, { method: "DELETE", headers: { "x-csrf-token": csrf } });
+      if (editingRule?.id === rule.id) setEditingRule(null);
+      await loadData();
+      showToast({ tone: "success", message: `Rule “${rule.match_text}” deleted.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be deleted." });
+    }
+  }
+
   async function updateHoldingDescription(symbol: string | null, userDescription: string) {
     if (!symbol) {
       showToast({ tone: "error", message: "This holding does not have a symbol to save a reusable description." });
@@ -1603,7 +1790,15 @@ export function App() {
   const focusedAccount = accounts.find((account) => account.id === focusedAccountId) ?? null;
   const analyzedAccount = accounts.find((account) => account.id === importAnalysis?.suggested_account_id);
   const previewRows = importPreview?.rows.slice(0, 6) ?? [];
-  const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status));
+  const normalizedTransactionSearch = transactionSearch.trim().toLowerCase();
+  const transactionMatchesSearch = (transaction: TransactionRow) => {
+    if (!normalizedTransactionSearch) return true;
+    const category = categories.find((item) => item.id === transaction.category_id)?.label ?? "";
+    return [transaction.raw_description, transaction.user_note, transaction.account_name, transaction.institution_name, transaction.transaction_type, category, formatMoney(transaction.amount_cents), transaction.transaction_date]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(normalizedTransactionSearch));
+  };
+  const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status) && transactionMatchesSearch(transaction));
   const visibleReviewTransactions = reviewTransactions.slice(0, 5);
   const bankAccounts = accounts.filter((account) => bankAccountTypes.has(account.account_type));
   const creditCardAccounts = accounts.filter((account) => creditCardAccountTypes.has(account.account_type));
@@ -1620,6 +1815,7 @@ export function App() {
       rows = rows.filter((transaction) => selectedTransactionAccountFilters.includes(transaction.account_id));
     }
     rows = rows
+      .filter(transactionMatchesSearch)
       .filter((transaction) => selectedTransactionMonthFilters.includes(transaction.transaction_date.slice(5, 7)))
       .filter((transaction) => selectedTransactionYearFilters.includes(transaction.transaction_date.slice(0, 4)))
       .filter((transaction) => selectedTransactionCategoryFilters.includes(transaction.category_id ? String(transaction.category_id) : uncategorizedFilterValue));
@@ -1647,22 +1843,7 @@ export function App() {
   const reportIncomeCents = periodCashFlowRows.reduce((sum, row) => sum + row.income_cents, 0);
   const reportExpenseCents = periodCashFlowRows.reduce((sum, row) => sum + row.expense_cents, 0);
   const reportNetCents = periodCashFlowRows.reduce((sum, row) => sum + row.net_cents, 0);
-  const periodCategoryTotals = (() => {
-    const totals = new Map<string, number>();
-    for (const transaction of transactions) {
-      if (transaction.transaction_type !== "expense" || !transaction.category_id) {
-        continue;
-      }
-      if (!isTransactionInReportPeriod(transaction.transaction_date, reportPeriod)) {
-        continue;
-      }
-      const label = categories.find((category) => category.id === transaction.category_id)?.label ?? "Uncategorized";
-      totals.set(label, (totals.get(label) ?? 0) + Math.abs(transaction.amount_cents));
-    }
-    return Array.from(totals.entries())
-      .map(([category, amount_cents]) => ({ category, amount_cents }))
-      .sort((left, right) => right.amount_cents - left.amount_cents);
-  })();
+  const periodCategoryTotals = categoryTotals;
   const netWorthCents = netWorthAccounts.reduce((sum, row) => sum + row.market_value_cents, 0);
   const taxonomySections: TaxonomySection[] = [
     { label: "Bank Accounts", rows: bankAccounts, emptyText: "No bank accounts yet." },
@@ -2161,6 +2342,7 @@ export function App() {
               </div>
             </header>
             <div className="transactionFilters accountFilters stickyFilters">
+              <label className="transactionSearchBox"><Search size={14} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search transactions" /></label>
               <MultiSelectFilter
                 label="Months"
                 options={monthOptions}
@@ -2210,6 +2392,7 @@ export function App() {
               </div>
             </header>
             <div className="transactionFilters stickyFilters">
+              <label className="transactionSearchBox"><Search size={14} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search transactions" /></label>
               <MultiSelectFilter
                 label="Accounts"
                 options={accounts.map((account) => ({ value: String(account.id), label: account.display_name }))}
@@ -2572,6 +2755,7 @@ export function App() {
 
           <section className="toolPanel reviewInboxPanel">
             <PanelTitle icon={ListChecks} title="Review Inbox" subtitle={`${reviewTransactions.length} items need a human decision.`} />
+            <label className="transactionSearchBox reviewSearch"><Search size={14} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search review transactions" /></label>
             {visibleReviewTransactions.length > 0 ? (
               <div className="selectionToolbar reviewBulkToolbar">
                 <span>{selectedVisibleReviewIds.length} selected</span>
@@ -2715,20 +2899,33 @@ export function App() {
             {rules.length > 0 ? (
               <div className="savedRulesPanel">
                 <strong>Saved rules</strong>
-                {rules.slice(0, 5).map((rule) => {
+                {rules.map((rule) => {
                   const category = categories.find((item) => item.id === rule.category_id);
                   return (
-                    <div className="savedRuleRow" key={rule.id}>
-                      <div>
-                        <span>{rule.match_text}</span>
-                        <small>{category?.label ?? "Unknown category"} / {readableAccountType(rule.suggested_transaction_type)}</small>
+                    <div className="savedRuleGroup" key={rule.id}>
+                      <div className="savedRuleRow">
+                        <div>
+                          <span>{rule.match_text}</span>
+                          <small>{category?.label ?? "Unknown category"} / {readableAccountType(rule.suggested_transaction_type)} / priority {rule.priority}</small>
+                        </div>
+                        <div className="savedRuleActions">
+                          <button className="secondaryButton" onClick={() => void previewRule(rule.id)}>Preview</button>
+                          <button className="secondaryButton" onClick={() => void applyRule(rule.id, "unreviewed")}>Apply unreviewed</button>
+                          <button className="secondaryButton" onClick={() => void applyRule(rule.id, "all")}>Apply previous</button>
+                          <button className="secondaryButton" onClick={() => setEditingRule({ ...rule })}>Edit</button>
+                          <button className="dangerTextButton" onClick={() => void deleteRule(rule)}>Delete</button>
+                        </div>
                       </div>
-                      <button className="secondaryButton" onClick={() => void applyRule(rule.id, "unreviewed")}>
-                        Apply to unreviewed
-                      </button>
-                      <button className="secondaryButton" onClick={() => void applyRule(rule.id, "all")}>
-                        Apply to previous
-                      </button>
+                      {editingRule?.id === rule.id ? (
+                        <div className="ruleEditRow">
+                          <label>Contains<input value={editingRule.match_text} onChange={(event) => setEditingRule({ ...editingRule, match_text: event.target.value })} /></label>
+                          <label>Category<select value={editingRule.category_id} onChange={(event) => setEditingRule({ ...editingRule, category_id: Number(event.target.value) })}>{categories.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+                          <label>Type<select value={editingRule.suggested_transaction_type} onChange={(event) => setEditingRule({ ...editingRule, suggested_transaction_type: event.target.value })}>{transactionTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
+                          <label>Priority<input type="number" value={editingRule.priority} onChange={(event) => setEditingRule({ ...editingRule, priority: Number(event.target.value) })} /></label>
+                          <button className="primaryButton" onClick={() => void saveRuleEdit()}>Save</button>
+                          <button className="ghostButton" onClick={() => setEditingRule(null)}>Cancel</button>
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -2750,20 +2947,20 @@ export function App() {
                 </button>
               </div>
               {editingCategoryId ? (
-                <div className="inlineEdit">
-                  <input value={editingCategoryLabel} onChange={(event) => setEditingCategoryLabel(event.target.value)} placeholder="Rename category" />
-                  <button className="secondaryButton" onClick={() => void updateCategory()}>
-                    Save rename
-                  </button>
-                  <button
-                    className="ghostButton"
-                    onClick={() => {
-                      setEditingCategoryId(null);
-                      setEditingCategoryLabel("");
-                    }}
-                  >
-                    Cancel
-                  </button>
+                <div className="categoryManagementEditor">
+                  <div className="inlineEdit">
+                    <input value={editingCategoryLabel} onChange={(event) => setEditingCategoryLabel(event.target.value)} placeholder="Rename category" />
+                    <button className="secondaryButton" onClick={() => void updateCategory()}>Save rename</button>
+                  </div>
+                  <div className="categoryMergeRow">
+                    <select value={categoryReassignId} onChange={(event) => setCategoryReassignId(event.target.value ? Number(event.target.value) : "")}>
+                      <option value="">No replacement (delete only if unused)</option>
+                      {categories.filter((category) => category.id !== editingCategoryId).map((category) => <option key={category.id} value={category.id}>Merge into {category.label}</option>)}
+                    </select>
+                    <button className="dangerButton" onClick={() => void deleteOrMergeCategory()}>{categoryReassignId ? "Merge and delete" : "Delete unused"}</button>
+                    <button className="ghostButton" onClick={() => { setEditingCategoryId(null); setEditingCategoryLabel(""); setCategoryReassignId(""); }}>Cancel</button>
+                  </div>
+                  <small>Deleting a category in use requires a replacement. Transactions, splits, monthly spreads, and rules will move to it.</small>
                 </div>
               ) : null}
             </div>
@@ -2775,6 +2972,7 @@ export function App() {
                   onClick={() => {
                     setEditingCategoryId(category.id);
                     setEditingCategoryLabel(category.label);
+                    setCategoryReassignId("");
                   }}
                 >
                   {category.label}
@@ -2879,24 +3077,32 @@ export function App() {
                   <span>{transaction.institution_name ?? "-"}</span>
                   <span>{transaction.account_name}</span>
                   <strong className="ledgerDescription">{transaction.raw_description}</strong>
-                  {isEditing ? (
-                    <textarea
-                      className="editableCell detailsCell"
-                      defaultValue={transaction.user_note ?? ""}
-                      onClick={(event) => event.stopPropagation()}
-                      onBlur={(event) => {
-                        const nextNote = event.currentTarget.value;
-                        if (nextNote !== (transaction.user_note ?? "")) {
-                          void updateTransaction(transaction.id, { user_note: nextNote }, false);
-                        }
-                      }}
-                      placeholder="Add details"
-                      rows={1}
-                      title="Add your own context, like what you actually bought."
-                    />
-                  ) : (
-                    <span className="ledgerReadonlyCell">{transaction.user_note || "Add details"}</span>
-                  )}
+                  <div className="transactionDetailsCell">
+                    {isEditing ? (
+                      <textarea
+                        className="editableCell detailsCell"
+                        defaultValue={transaction.user_note ?? ""}
+                        onClick={(event) => event.stopPropagation()}
+                        onBlur={(event) => {
+                          const nextNote = event.currentTarget.value;
+                          if (nextNote !== (transaction.user_note ?? "")) {
+                            void updateTransaction(transaction.id, { user_note: nextNote }, false);
+                          }
+                        }}
+                        placeholder="Add details"
+                        rows={1}
+                        title="Add your own context, like what you actually bought."
+                      />
+                    ) : (
+                      <span className="ledgerReadonlyCell">{transaction.user_note || "Add details"}</span>
+                    )}
+                    {transaction.split_count > 0 || transaction.monthly_allocation_count > 0 ? (
+                      <div className="transactionLabels">
+                        {transaction.split_count > 0 ? <span>Split into {transaction.split_count} categories</span> : null}
+                        {transaction.monthly_allocation_count > 0 ? <span>Spread across {transaction.monthly_allocation_count} months</span> : null}
+                      </div>
+                    ) : null}
+                  </div>
                   {isEditing ? (
                     <select
                       className="editableCell"
@@ -2999,6 +3205,28 @@ export function App() {
                 </div>
                 {isEditing ? (
                   <div className="rowEditActions">
+                    <button type="button" className="secondaryButton compactButton" onClick={() => void openSplitEditor(transaction)} disabled={transaction.monthly_allocation_count > 0}>
+                      Split categories
+                    </button>
+                    {transaction.transaction_type === "expense" ? (
+                      transaction.monthly_allocation_count > 0 ? (
+                        <button type="button" className="secondaryButton compactButton" onClick={() => void removeMonthlyAllocation(transaction)} disabled={busyAction === `allocation-${transaction.id}`}>
+                          Remove {transaction.monthly_allocation_count}-month spread
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="secondaryButton compactButton"
+                          onClick={() => {
+                            setSplitEditor(null);
+                            const startMonth = transaction.transaction_date.slice(0, 7);
+                            setMonthlyAllocationEditor({ transactionId: transaction.id, category_id: transaction.category_id ?? categories[0]?.id ?? "", start_month: startMonth, end_month: addMonthsToMonth(startMonth, 5) });
+                          }}
+                        >
+                          Spread across months
+                        </button>
+                      )
+                    ) : null}
                     <button type="button" className="secondaryButton compactButton" onClick={exitTransactionEdit}>
                       Cancel
                     </button>
@@ -3008,11 +3236,55 @@ export function App() {
                       onClick={() => {
                         setEditingTransactionId(null);
                         setCategoryEditor(null);
+                        setSplitEditor(null);
+                        setMonthlyAllocationEditor(null);
                       }}
                     >
                       Done
                     </button>
                   </div>
+                ) : null}
+                {splitEditor?.transactionId === transaction.id ? (
+                  <section className="transactionAllocationEditor" onClick={(event) => event.stopPropagation()}>
+                    <div>
+                      <strong>Split this charge by category</strong>
+                      <span>Amounts must add up exactly to {formatMoney(transaction.amount_cents)}.</span>
+                    </div>
+                    {splitEditor.rows.map((split, index) => (
+                      <div className="splitDraftRow" key={index}>
+                        <select value={split.category_id} onChange={(event) => setSplitEditor((current) => current ? { ...current, rows: current.rows.map((row, rowIndex) => rowIndex === index ? { ...row, category_id: event.target.value ? Number(event.target.value) : "" } : row) } : current)}>
+                          <option value="">Choose category</option>
+                          {categories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}
+                        </select>
+                        <input inputMode="decimal" value={split.amount} onChange={(event) => setSplitEditor((current) => current ? { ...current, rows: current.rows.map((row, rowIndex) => rowIndex === index ? { ...row, amount: event.target.value } : row) } : current)} aria-label={`Split ${index + 1} amount`} />
+                        <input value={split.note} onChange={(event) => setSplitEditor((current) => current ? { ...current, rows: current.rows.map((row, rowIndex) => rowIndex === index ? { ...row, note: event.target.value } : row) } : current)} placeholder="Optional note" aria-label={`Split ${index + 1} note`} />
+                        <button type="button" className="dangerTextButton" onClick={() => setSplitEditor((current) => current ? { ...current, rows: current.rows.filter((_, rowIndex) => rowIndex !== index) } : current)} disabled={splitEditor.rows.length <= 2}>Remove</button>
+                      </div>
+                    ))}
+                    <div className="buttonRow">
+                      <button type="button" className="secondaryButton compactButton" onClick={() => setSplitEditor((current) => current ? { ...current, rows: [...current.rows, { category_id: "", amount: "0.00", note: "" }] } : current)}>Add category</button>
+                      <button type="button" className="primaryButton compactButton" onClick={() => void saveSplits(transaction)} disabled={busyAction === `split-${transaction.id}`}>Save split</button>
+                      <button type="button" className="ghostButton compactButton" onClick={() => setSplitEditor(null)}>Cancel</button>
+                    </div>
+                  </section>
+                ) : null}
+                {monthlyAllocationEditor?.transactionId === transaction.id ? (
+                  <section className="transactionAllocationEditor" onClick={(event) => event.stopPropagation()}>
+                    <div>
+                      <strong>Spread this charge across months</strong>
+                      <span>The bank charge stays on {formatShortDate(transaction.transaction_date)}; only Spending is divided evenly by month.</span>
+                    </div>
+                    <div className="monthlyAllocationFields">
+                      <label>Category<select value={monthlyAllocationEditor.category_id} onChange={(event) => setMonthlyAllocationEditor((current) => current ? { ...current, category_id: event.target.value ? Number(event.target.value) : "" } : current)}><option value="">Choose category</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select></label>
+                      <label>First month<input type="month" value={monthlyAllocationEditor.start_month} onChange={(event) => setMonthlyAllocationEditor((current) => current ? { ...current, start_month: event.target.value } : current)} /></label>
+                      <label>Last month<input type="month" value={monthlyAllocationEditor.end_month} onChange={(event) => setMonthlyAllocationEditor((current) => current ? { ...current, end_month: event.target.value } : current)} /></label>
+                      <span className="allocationPreview">{inclusiveMonthCount(monthlyAllocationEditor.start_month, monthlyAllocationEditor.end_month) > 0 ? `${inclusiveMonthCount(monthlyAllocationEditor.start_month, monthlyAllocationEditor.end_month)} months · about ${formatMoney(transaction.amount_cents / inclusiveMonthCount(monthlyAllocationEditor.start_month, monthlyAllocationEditor.end_month))} per month` : "Choose a valid month range"}</span>
+                    </div>
+                    <div className="buttonRow">
+                      <button type="button" className="primaryButton compactButton" onClick={() => void saveMonthlyAllocation(transaction)} disabled={!monthlyAllocationEditor.category_id || inclusiveMonthCount(monthlyAllocationEditor.start_month, monthlyAllocationEditor.end_month) < 2 || inclusiveMonthCount(monthlyAllocationEditor.start_month, monthlyAllocationEditor.end_month) > 120 || busyAction === `allocation-${transaction.id}`}>Save monthly spread</button>
+                      <button type="button" className="ghostButton compactButton" onClick={() => setMonthlyAllocationEditor(null)}>Cancel</button>
+                    </div>
+                  </section>
                 ) : null}
                 {deleteTarget?.kind === "transaction" && deleteTarget.id === transaction.id ? (
                   <DeleteConfirmInline
@@ -3179,11 +3451,22 @@ function MultiSelectFilter({
   onSelectAll: () => void;
   onDeselectAll: () => void;
 }) {
+  const detailsRef = useRef<HTMLDetailsElement>(null);
   const selectedCount = selectedValues.length;
   const summary = selectedCount === options.length ? "All" : selectedCount === 0 ? "None" : `${selectedCount} selected`;
 
+  useEffect(() => {
+    function closeOnOutsideClick(event: PointerEvent) {
+      if (detailsRef.current?.open && !detailsRef.current.contains(event.target as Node)) {
+        detailsRef.current.open = false;
+      }
+    }
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
+  }, []);
+
   return (
-    <details className="multiFilter">
+    <details className="multiFilter" ref={detailsRef}>
       <summary>
         <span>{label}</span>
         <strong>{summary}</strong>

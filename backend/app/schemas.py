@@ -1,8 +1,42 @@
 from __future__ import annotations
 
 from datetime import date
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
+
+
+class TransactionType(StrEnum):
+    EXPENSE = "expense"
+    INCOME = "income"
+    TRANSFER = "transfer"
+    CREDIT_CARD_PAYMENT = "credit_card_payment"
+    REFUND = "refund"
+    INVESTMENT_FLOW = "investment_flow"
+    ADJUSTMENT = "adjustment"
+
+
+class ReviewStatus(StrEnum):
+    NEEDS_REVIEW = "needs_review"
+    SUGGESTED = "suggested"
+    POSSIBLE_DUPLICATE = "possible_duplicate"
+    CONFIRMED = "confirmed"
+
+
+class AccountType(StrEnum):
+    CHECKING = "checking"
+    SAVINGS = "savings"
+    CREDIT_CARD = "credit_card"
+    CASH = "cash"
+    OTHER = "other"
+    LOAN = "loan"
+    BROKERAGE = "brokerage"
+    RETIREMENT = "retirement"
+
+
+class AccountStatus(StrEnum):
+    ACTIVE = "active"
+    ARCHIVED = "archived"
 
 
 class SetupRequest(BaseModel):
@@ -21,14 +55,14 @@ class PasswordChangeRequest(BaseModel):
 class RuleUpdate(BaseModel):
     category_id: int | None = None
     match_text: str | None = None
-    suggested_transaction_type: str | None = None
+    suggested_transaction_type: TransactionType | None = None
     priority: int | None = None
 
 
 class AccountCreate(BaseModel):
     institution_name: str | None = None
     display_name: str
-    account_type: str
+    account_type: AccountType
     currency: str = "USD"
     last_four: str | None = None
 
@@ -36,10 +70,10 @@ class AccountCreate(BaseModel):
 class AccountUpdate(BaseModel):
     institution_name: str | None = None
     display_name: str | None = None
-    account_type: str | None = None
+    account_type: AccountType | None = None
     currency: str | None = None
     last_four: str | None = None
-    status: str | None = None
+    status: AccountStatus | None = None
 
 
 class CategoryCreate(BaseModel):
@@ -60,8 +94,8 @@ class ImportPresetCreate(BaseModel):
 
 class TransactionReviewUpdate(BaseModel):
     category_id: int | None = None
-    transaction_type: str | None = None
-    review_status: str | None = None
+    transaction_type: TransactionType | None = None
+    review_status: ReviewStatus | None = None
     user_note: str | None = None
 
 
@@ -69,7 +103,7 @@ class RuleCreate(BaseModel):
     category_id: int
     field_name: str
     match_text: str
-    suggested_transaction_type: str = "expense"
+    suggested_transaction_type: TransactionType = TransactionType.EXPENSE
     priority: int = 100
 
 
@@ -85,6 +119,12 @@ class SplitCreate(BaseModel):
 
 class SplitSetRequest(BaseModel):
     splits: list[SplitCreate]
+
+
+class MonthlyAllocationRequest(BaseModel):
+    category_id: int
+    months: int = Field(ge=2, le=120)
+    allocation_start: date
 
 
 class TransferLinkCreate(BaseModel):
@@ -110,8 +150,8 @@ class BulkDeleteRequest(BaseModel):
 
 class TransactionFilter(BaseModel):
     account_id: int | None = None
-    review_status: str | None = None
+    review_status: ReviewStatus | None = None
     category_id: int | None = None
-    transaction_type: str | None = None
+    transaction_type: TransactionType | None = None
     start_date: date | None = None
     end_date: date | None = None

@@ -1497,7 +1497,7 @@ textarea {
 
 .savedRuleRow {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   padding: 8px;
@@ -1804,6 +1804,155 @@ select.editableCell {
   justify-content: flex-end;
   gap: 8px;
   margin: -4px 0 10px;
+}
+
+.savedRuleGroup {
+  display: grid;
+  gap: 6px;
+}
+
+.savedRuleActions {
+  display: flex !important;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px !important;
+}
+
+.ruleEditRow {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(140px, 1fr) 150px 90px auto auto;
+  align-items: end;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--blue-soft);
+}
+
+.ruleEditRow label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.categoryManagementEditor {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfb;
+}
+
+.categoryMergeRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.categoryManagementEditor small {
+  color: var(--muted);
+}
+
+.transactionSearchBox {
+  min-width: 220px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.transactionSearchBox input {
+  width: 100%;
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  outline: none;
+}
+
+.reviewSearch {
+  width: min(420px, 100%);
+  margin: 10px 0;
+}
+
+.transactionDetailsCell {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.transactionLabels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.transactionLabels span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--yellow-soft);
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.transactionAllocationEditor {
+  display: grid;
+  gap: 10px;
+  margin: -2px 0 12px;
+  padding: 14px;
+  border: 1px solid rgba(59, 106, 232, 0.28);
+  border-radius: 8px;
+  background: var(--blue-soft);
+}
+
+.transactionAllocationEditor > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.transactionAllocationEditor span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.splitDraftRow {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 110px minmax(150px, 1fr) auto;
+  gap: 8px;
+}
+
+.monthlyAllocationFields {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.monthlyAllocationFields label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.monthlyAllocationFields select,
+.monthlyAllocationFields input,
+.splitDraftRow select,
+.splitDraftRow input {
+  min-height: 34px;
+}
+
+.allocationPreview {
+  padding-bottom: 8px;
 }
 
 .paginationBar {

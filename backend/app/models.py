@@ -150,6 +150,18 @@ class TransactionSplit(TimestampMixin, Base):
     note: Mapped[str | None] = mapped_column(String(255))
 
 
+class ExpenseAllocation(TimestampMixin, Base):
+    """A reporting-only monthly allocation of one real expense transaction."""
+
+    __tablename__ = "expense_allocations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), nullable=False)
+    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"), nullable=False)
+    allocation_date: Mapped[date] = mapped_column(Date, nullable=False)
+    amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class TransferLink(TimestampMixin, Base):
     __tablename__ = "transfer_links"
 

@@ -11,7 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from .audit import record_audit_event
@@ -19,9 +19,9 @@ from .bootstrap import initialize_database
 from .config import settings
 from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
-from .models import Account, AppUser, Category, CategoryRule, HoldingSnapshot, ImportBatch, ImportPreset, Institution, SecurityMetadata, SecurityPrice, SessionToken, StagingRow, Transaction, TransactionSplit, TransferLink
+from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingSnapshot, ImportBatch, ImportPreset, Institution, SecurityMetadata, SecurityPrice, SessionToken, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, PasswordChangeRequest, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, PasswordChangeRequest, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
@@ -242,6 +242,7 @@ def _delete_transaction_row(db: Session, transaction: Transaction) -> None:
     db.execute(update(Transaction).where(Transaction.linked_transaction_id == transaction.id).values(linked_transaction_id=None))
     db.execute(update(Transaction).where(Transaction.duplicate_of_transaction_id == transaction.id).values(duplicate_of_transaction_id=None))
     db.execute(delete(TransactionSplit).where(TransactionSplit.transaction_id == transaction.id))
+    db.execute(delete(ExpenseAllocation).where(ExpenseAllocation.transaction_id == transaction.id))
     db.execute(delete(TransferLink).where((TransferLink.from_transaction_id == transaction.id) | (TransferLink.to_transaction_id == transaction.id)))
     record_audit_event(
         db,
@@ -466,6 +467,8 @@ def list_transactions(account_id: int | None = None, review_status: str | None =
         query = query.where(Transaction.review_status == review_status)
     rows = db.scalars(query).all()
     accounts = {account.id: account for account in db.scalars(select(Account)).all()}
+    allocation_counts = dict(db.execute(select(ExpenseAllocation.transaction_id, func.count(ExpenseAllocation.id)).group_by(ExpenseAllocation.transaction_id)).all())
+    split_counts = dict(db.execute(select(TransactionSplit.transaction_id, func.count(TransactionSplit.id)).group_by(TransactionSplit.transaction_id)).all())
     return [
         {
             "id": row.id,
@@ -481,6 +484,8 @@ def list_transactions(account_id: int | None = None, review_status: str | None =
             "review_status": row.review_status,
             "category_id": row.category_id,
             "duplicate_of_transaction_id": row.duplicate_of_transaction_id,
+            "monthly_allocation_count": allocation_counts.get(row.id, 0),
+            "split_count": split_counts.get(row.id, 0),
         }
         for row in rows
     ]
@@ -493,6 +498,8 @@ def update_transaction(transaction_id: int, payload: TransactionReviewUpdate, re
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
     updates = payload.model_dump(exclude_unset=True)
+    if "category_id" in updates and updates["category_id"] is not None and not db.get(Category, updates["category_id"]):
+        raise HTTPException(status_code=400, detail="Category not found")
     for key, value in updates.items():
         setattr(transaction, key, value)
     record_audit_event(db, "transaction_update", "local-user", "transaction", str(transaction.id), updates)
@@ -533,10 +540,104 @@ def set_splits(transaction_id: int, payload: SplitSetRequest, request: Request, 
     split_total = sum(split.amount_cents for split in payload.splits)
     if split_total != transaction.amount_cents:
         raise HTTPException(status_code=400, detail="Split amounts must sum exactly to the transaction amount")
+    if db.scalar(select(ExpenseAllocation.id).where(ExpenseAllocation.transaction_id == transaction_id)):
+        raise HTTPException(status_code=400, detail="Remove the monthly allocation before creating category splits")
+    category_ids = {split.category_id for split in payload.splits}
+    if len(db.scalars(select(Category.id).where(Category.id.in_(category_ids))).all()) != len(category_ids):
+        raise HTTPException(status_code=400, detail="One or more split categories do not exist")
     db.execute(delete(TransactionSplit).where(TransactionSplit.transaction_id == transaction_id))
     for split in payload.splits:
         db.add(TransactionSplit(transaction_id=transaction_id, category_id=split.category_id, amount_cents=split.amount_cents, note=split.note))
     record_audit_event(db, "transaction_split", "local-user", "transaction", str(transaction.id), {"split_count": len(payload.splits)})
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/categories/{category_id}")
+def delete_category(category_id: int, request: Request, reassign_to: int | None = None, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    category = db.get(Category, category_id)
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    if reassign_to == category_id:
+        raise HTTPException(status_code=400, detail="Choose a different replacement category")
+    replacement = db.get(Category, reassign_to) if reassign_to is not None else None
+    if reassign_to is not None and not replacement:
+        raise HTTPException(status_code=400, detail="Replacement category not found")
+
+    reference_counts = {
+        "transactions": db.scalar(select(func.count(Transaction.id)).where(Transaction.category_id == category_id)) or 0,
+        "splits": db.scalar(select(func.count(TransactionSplit.id)).where(TransactionSplit.category_id == category_id)) or 0,
+        "allocations": db.scalar(select(func.count(ExpenseAllocation.id)).where(ExpenseAllocation.category_id == category_id)) or 0,
+        "rules": db.scalar(select(func.count(CategoryRule.id)).where(CategoryRule.category_id == category_id)) or 0,
+    }
+    if sum(reference_counts.values()) and replacement is None:
+        raise HTTPException(status_code=400, detail="This category is in use. Choose a replacement category to merge it safely.")
+    if replacement:
+        db.execute(update(Transaction).where(Transaction.category_id == category_id).values(category_id=replacement.id))
+        db.execute(update(TransactionSplit).where(TransactionSplit.category_id == category_id).values(category_id=replacement.id))
+        db.execute(update(ExpenseAllocation).where(ExpenseAllocation.category_id == category_id).values(category_id=replacement.id))
+        db.execute(update(CategoryRule).where(CategoryRule.category_id == category_id).values(category_id=replacement.id))
+        db.execute(update(Category).where(Category.parent_id == category_id).values(parent_id=replacement.id))
+    else:
+        db.execute(update(Category).where(Category.parent_id == category_id).values(parent_id=None))
+    record_audit_event(db, "category_delete", "local-user", "category", str(category.id), {"label": category.label, "reassigned_to": replacement.id if replacement else None, **reference_counts})
+    db.delete(category)
+    db.commit()
+    return {"ok": True, "reassigned": sum(reference_counts.values())}
+
+
+@app.get("/api/transactions/{transaction_id}/splits")
+def get_splits(transaction_id: int, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    transaction = db.get(Transaction, transaction_id)
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return [
+        {"category_id": split.category_id, "amount_cents": split.amount_cents, "note": split.note}
+        for split in db.scalars(select(TransactionSplit).where(TransactionSplit.transaction_id == transaction_id).order_by(TransactionSplit.id.asc())).all()
+    ]
+
+
+def _month_start(value: date, offset: int) -> date:
+    month_index = value.year * 12 + value.month - 1 + offset
+    return date(month_index // 12, month_index % 12 + 1, 1)
+
+
+@app.post("/api/transactions/{transaction_id}/monthly-allocation")
+def set_monthly_allocation(transaction_id: int, payload: MonthlyAllocationRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    transaction = db.get(Transaction, transaction_id)
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if transaction.status != "active" or transaction.transaction_type != "expense":
+        raise HTTPException(status_code=400, detail="Only active expense transactions can be spread across months")
+    if not db.get(Category, payload.category_id):
+        raise HTTPException(status_code=400, detail="Category not found")
+    if db.scalar(select(TransactionSplit.id).where(TransactionSplit.transaction_id == transaction_id)):
+        raise HTTPException(status_code=400, detail="A split transaction cannot also be spread across months")
+    db.execute(delete(ExpenseAllocation).where(ExpenseAllocation.transaction_id == transaction_id))
+    amount, remainder = divmod(abs(transaction.amount_cents), payload.months)
+    sign = -1 if transaction.amount_cents < 0 else 1
+    for offset in range(payload.months):
+        db.add(ExpenseAllocation(
+            transaction_id=transaction.id,
+            category_id=payload.category_id,
+            allocation_date=_month_start(payload.allocation_start, offset),
+            amount_cents=sign * (amount + (1 if offset < remainder else 0)),
+        ))
+    record_audit_event(db, "transaction_monthly_allocation", "local-user", "transaction", str(transaction.id), {"months": payload.months, "category_id": payload.category_id, "allocation_start": payload.allocation_start.isoformat()})
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/transactions/{transaction_id}/monthly-allocation")
+def delete_monthly_allocation(transaction_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    transaction = db.get(Transaction, transaction_id)
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    db.execute(delete(ExpenseAllocation).where(ExpenseAllocation.transaction_id == transaction_id))
+    record_audit_event(db, "transaction_monthly_allocation_delete", "local-user", "transaction", str(transaction.id), {})
     db.commit()
     return {"ok": True}
 
@@ -566,6 +667,8 @@ def review_inbox(session: SessionToken = Depends(current_session), db: Session =
 @app.post("/api/rules")
 def create_rule(payload: RuleCreate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
+    if not db.get(Category, payload.category_id):
+        raise HTTPException(status_code=400, detail="Category not found")
     rule = CategoryRule(**payload.model_dump())
     db.add(rule)
     db.flush()
@@ -599,6 +702,20 @@ def apply_rule(rule_id: int, payload: RuleApplyRequest, request: Request, sessio
     record_audit_event(db, "rule_apply", "local-user", "category_rule", str(rule.id), {"scope": payload.scope, "matched": matched, "updated": updated})
     db.commit()
     return {"matched": matched, "updated": updated}
+
+
+@app.get("/api/rules/{rule_id}/preview")
+def preview_rule(rule_id: int, scope: str = "unreviewed", session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    if scope not in {"unreviewed", "all"}:
+        raise HTTPException(status_code=400, detail="Rule scope must be unreviewed or all")
+    rule = db.get(CategoryRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    query = select(Transaction).where(Transaction.status == "active")
+    if scope == "unreviewed":
+        query = query.where(Transaction.review_status.in_(["needs_review", "suggested", "possible_duplicate"]))
+    matched = sum(1 for transaction in db.scalars(query).all() if rule_matches_transaction(rule, transaction))
+    return {"matched": matched, "scope": scope}
 
 
 @app.patch("/api/rules/{rule_id}")
@@ -724,8 +841,13 @@ def get_cash_flow(session: SessionToken = Depends(current_session), db: Session 
 
 
 @app.get("/api/category-totals")
-def get_category_totals(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
-    return category_totals(db)
+def get_category_totals(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    session: SessionToken = Depends(current_session),
+    db: Session = Depends(get_db),
+):
+    return category_totals(db, start_date=start_date, end_date=end_date)
 
 
 @app.get("/api/net-worth/timeseries")

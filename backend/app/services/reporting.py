@@ -6,7 +6,7 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import Account, Category, HoldingSnapshot, Transaction, TransactionSplit
+from ..models import Account, Category, ExpenseAllocation, HoldingSnapshot, Transaction, TransactionSplit
 
 
 def dashboard_summary(db: Session) -> dict:
@@ -42,20 +42,42 @@ def dashboard_summary(db: Session) -> dict:
     }
 
 
-def category_totals(db: Session) -> list[dict]:
+def category_totals(db: Session, start_date: date | None = None, end_date: date | None = None) -> list[dict]:
+    """Return active expense totals, respecting splits and an optional date range."""
+    filters = [Transaction.status == "active", Transaction.transaction_type == "expense"]
+    if start_date:
+        filters.append(Transaction.transaction_date >= start_date)
+    if end_date:
+        filters.append(Transaction.transaction_date <= end_date)
+    allocation_exists = select(ExpenseAllocation.id).where(ExpenseAllocation.transaction_id == Transaction.id).exists()
+
     split_rows = db.execute(
         select(Category.label, func.sum(TransactionSplit.amount_cents))
         .join(Category, Category.id == TransactionSplit.category_id)
+        .join(Transaction, Transaction.id == TransactionSplit.transaction_id)
+        .where(*filters, ~allocation_exists)
         .group_by(Category.label)
     ).all()
     unsplit_rows = db.execute(
         select(Category.label, func.sum(Transaction.amount_cents))
         .join(Category, Category.id == Transaction.category_id)
-        .where(~Transaction.id.in_(select(TransactionSplit.transaction_id)), Transaction.transaction_type == "expense", Transaction.status == "active")
+        .where(~Transaction.id.in_(select(TransactionSplit.transaction_id)), ~allocation_exists, *filters)
+        .group_by(Category.label)
+    ).all()
+    allocation_filters = [Transaction.status == "active", Transaction.transaction_type == "expense"]
+    if start_date:
+        allocation_filters.append(ExpenseAllocation.allocation_date >= start_date)
+    if end_date:
+        allocation_filters.append(ExpenseAllocation.allocation_date <= end_date)
+    allocation_rows = db.execute(
+        select(Category.label, func.sum(ExpenseAllocation.amount_cents))
+        .join(Category, Category.id == ExpenseAllocation.category_id)
+        .join(Transaction, Transaction.id == ExpenseAllocation.transaction_id)
+        .where(*allocation_filters)
         .group_by(Category.label)
     ).all()
     totals = defaultdict(int)
-    for label, value in list(split_rows) + list(unsplit_rows):
+    for label, value in list(split_rows) + list(unsplit_rows) + list(allocation_rows):
         totals[label] += abs(value or 0)
     return [{"category": label, "amount_cents": amount} for label, amount in sorted(totals.items())]
 
