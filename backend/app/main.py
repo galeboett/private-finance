@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .audit import record_audit_event
@@ -21,7 +22,7 @@ from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
 from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingSnapshot, ImportBatch, ImportPreset, Institution, SecurityMetadata, SecurityPrice, SessionToken, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, PasswordChangeRequest, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransferLinkCreate
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, PasswordChangeRequest, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransactionType, TransferLinkCreate
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
@@ -489,6 +490,71 @@ def list_transactions(account_id: int | None = None, review_status: str | None =
         }
         for row in rows
     ]
+
+
+@app.patch("/api/transactions/bulk-update")
+def bulk_update_transactions(payload: BulkTransactionUpdateRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    transactions = db.scalars(select(Transaction).where(Transaction.id.in_(payload.ids), Transaction.status == "active")).all()
+    if len(transactions) != len(set(payload.ids)):
+        raise HTTPException(status_code=404, detail="One or more transactions were not found")
+
+    field = payload.field.value
+    value = payload.value
+    affected_accounts = 0
+    if field == "institution":
+        name = str(value or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Institution name is required")
+        institution = upsert_institution(db, name)
+        account_ids = {transaction.account_id for transaction in transactions}
+        accounts = db.scalars(select(Account).where(Account.id.in_(account_ids))).all()
+        for account in accounts:
+            account.institution_id = institution.id if institution else None
+        affected_accounts = len(accounts)
+    elif field == "account":
+        try:
+            account_id = int(value)
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail="Choose a valid account") from error
+        if not db.get(Account, account_id):
+            raise HTTPException(status_code=400, detail="Account not found")
+        for transaction in transactions:
+            transaction.account_id = account_id
+    elif field == "description":
+        description = str(value or "").strip()
+        if not description:
+            raise HTTPException(status_code=400, detail="Description is required")
+        for transaction in transactions:
+            transaction.raw_description = description
+    elif field == "details":
+        details = str(value or "").strip() or None
+        for transaction in transactions:
+            transaction.user_note = details
+    elif field == "type":
+        try:
+            transaction_type = TransactionType(str(value))
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="Choose a valid transaction type") from error
+        for transaction in transactions:
+            transaction.transaction_type = transaction_type.value
+    elif field == "category":
+        try:
+            category_id = int(value)
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail="Choose a valid category") from error
+        if not db.get(Category, category_id):
+            raise HTTPException(status_code=400, detail="Category not found")
+        for transaction in transactions:
+            transaction.category_id = category_id
+
+    record_audit_event(db, "transaction_bulk_update", "local-user", "transactions", f"bulk:{len(transactions)}", {"field": field, "value": value, "count": len(transactions), "affected_accounts": affected_accounts, "transaction_ids": [transaction.id for transaction in transactions[:50]]})
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="This change would create duplicate transactions in the target account") from error
+    return {"ok": True, "updated": len(transactions), "affected_accounts": affected_accounts}
 
 
 @app.patch("/api/transactions/{transaction_id}")

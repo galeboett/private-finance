@@ -146,6 +146,7 @@ type NetWorthAccount = { account_id: number; account: string; account_type: stri
 type AllocationRow = { asset_class: string; market_value_cents: number };
 type TransactionSortKey = "date" | "amount";
 type SortDirection = "asc" | "desc";
+type BulkTransactionField = "institution" | "account" | "description" | "details" | "type" | "category";
 type ReportPeriod = "this_month" | "this_year" | "last_12_months" | "all";
 type FilterOption = { value: string; label: string };
 type HoldingRow = {
@@ -237,6 +238,15 @@ const transactionTypes = [
   { value: "refund", label: "Refund" },
   { value: "investment_flow", label: "Investment flow" },
   { value: "adjustment", label: "Adjustment" },
+];
+
+const bulkTransactionFields: Array<{ value: BulkTransactionField; label: string }> = [
+  { value: "institution", label: "Institution" },
+  { value: "account", label: "Account" },
+  { value: "description", label: "Description" },
+  { value: "details", label: "Details" },
+  { value: "type", label: "Type" },
+  { value: "category", label: "Category" },
 ];
 
 const formatMoney = (cents: number) =>
@@ -555,7 +565,9 @@ export function App() {
     readStoredJson<DashboardWidgetConfig>(dashboardWidgetStorageKey, defaultDashboardWidgets),
   );
   const [sidebarWidth, setSidebarWidth] = useState(() => readStoredNumber(sidebarWidthStorageKey, 244, minSidebarWidth, maxSidebarWidth));
-  const [bulkInstitutionName, setBulkInstitutionName] = useState("");
+  const [bulkEditorOpen, setBulkEditorOpen] = useState(false);
+  const [bulkEditField, setBulkEditField] = useState<BulkTransactionField>("category");
+  const [bulkEditValue, setBulkEditValue] = useState("");
   const [accountForm, setAccountForm] = useState({
     institution_name: "",
     display_name: "",
@@ -1004,39 +1016,30 @@ export function App() {
     setMonthlyAllocationEditor(null);
   }
 
-  async function bulkUpdateInstitutionForSelected() {
-    const institutionName = bulkInstitutionName.trim();
-    if (!institutionName) {
-      showToast({ tone: "error", message: "Enter an institution name before applying bulk edit." });
-      return;
-    }
+  async function bulkUpdateSelectedTransactions() {
     if (selectedRepositoryTransactionIds.length === 0) {
       showToast({ tone: "error", message: "Select one or more transactions first." });
       return;
     }
-    const selectedRows = transactions.filter((transaction) => selectedRepositoryTransactionIds.includes(transaction.id));
-    const accountIdsToUpdate = Array.from(new Set(selectedRows.map((transaction) => transaction.account_id)));
+    if (!bulkEditValue.trim()) {
+      showToast({ tone: "error", message: "Choose or enter the new value first." });
+      return;
+    }
     try {
-      for (const accountId of accountIdsToUpdate) {
-        await api(`/api/accounts/${accountId}`, {
-          method: "PATCH",
-          headers: { "x-csrf-token": csrf },
-          body: JSON.stringify({ institution_name: institutionName }),
-        });
-      }
-      setAccounts((current) =>
-        current.map((account) => (accountIdsToUpdate.includes(account.id) ? { ...account, institution_name: institutionName } : account)),
-      );
-      setTransactions((current) =>
-        current.map((transaction) => (accountIdsToUpdate.includes(transaction.account_id) ? { ...transaction, institution_name: institutionName } : transaction)),
-      );
-      setBulkInstitutionName("");
-      showToast({
-        tone: "success",
-        message: `Updated institution to "${institutionName}" for ${accountIdsToUpdate.length} account${accountIdsToUpdate.length === 1 ? "" : "s"}.`,
+      const result = await api<{ updated: number; affected_accounts: number }>("/api/transactions/bulk-update", {
+        method: "PATCH",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ ids: selectedRepositoryTransactionIds, field: bulkEditField, value: bulkEditValue }),
       });
+      await loadData();
+      setBulkEditValue("");
+      setBulkEditorOpen(false);
+      setSelectedTransactionIds((current) => current.filter((id) => !selectedRepositoryTransactionIds.includes(id)));
+      const accountNote = result.affected_accounts ? ` This changed ${result.affected_accounts} account record${result.affected_accounts === 1 ? "" : "s"}.` : "";
+      const fieldLabel = bulkTransactionFields.find((field) => field.value === bulkEditField)?.label.toLowerCase() ?? "value";
+      showToast({ tone: "success", message: `Updated ${fieldLabel} for ${result.updated} transaction${result.updated === 1 ? "" : "s"}.${accountNote}` });
     } catch (error) {
-      showToast({ tone: "error", message: error instanceof Error ? error.message : "Bulk institution update failed." });
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Bulk transaction update failed." });
     }
   }
 
@@ -1519,7 +1522,9 @@ export function App() {
         const end = visibleIds.indexOf(transactionId);
         if (start >= 0 && end >= 0) {
           const [from, to] = start < end ? [start, end] : [end, start];
-          visibleIds.slice(from, to + 1).forEach((id) => next.add(id));
+          const range = visibleIds.slice(from, to + 1);
+          const rangeIsSelected = range.every((id) => next.has(id));
+          range.forEach((id) => rangeIsSelected ? next.delete(id) : next.add(id));
           return Array.from(next);
         }
       }
@@ -1795,7 +1800,9 @@ export function App() {
   const transactionMatchesSearch = (transaction: TransactionRow) => {
     if (!normalizedTransactionSearch) return true;
     const category = categories.find((item) => item.id === transaction.category_id)?.label ?? "";
-    return [transaction.raw_description, transaction.user_note, transaction.account_name, transaction.institution_name, transaction.transaction_type, category, formatMoney(transaction.amount_cents), transaction.transaction_date]
+    const splitLabel = transaction.split_count > 0 ? `split split categories split into ${transaction.split_count} categories` : "";
+    const allocationLabel = transaction.monthly_allocation_count > 0 ? `spread spread across months spread across ${transaction.monthly_allocation_count} months monthly allocation` : "";
+    return [transaction.raw_description, transaction.user_note, transaction.account_name, transaction.institution_name, transaction.transaction_type, category, splitLabel, allocationLabel, formatMoney(transaction.amount_cents), transaction.transaction_date]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(normalizedTransactionSearch));
   };
@@ -2342,8 +2349,9 @@ export function App() {
                 </button>
               </div>
             </header>
-            <div className="transactionFilters accountFilters stickyFilters">
-              <label className="transactionSearchBox"><Search size={14} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search transactions" /></label>
+            <div className="transactionDiscovery stickyFilters">
+              <label className="transactionSearchBox"><Search size={16} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search institution, account, description, details, or labels" /></label>
+              <div className="transactionFilterRow">
               <MultiSelectFilter
                 label="Months"
                 options={monthOptions}
@@ -2368,6 +2376,7 @@ export function App() {
                 onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
                 onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
               />
+              </div>
             </div>
           </div>
         ) : null}
@@ -2392,8 +2401,9 @@ export function App() {
                 </button>
               </div>
             </header>
-            <div className="transactionFilters stickyFilters">
-              <label className="transactionSearchBox"><Search size={14} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search transactions" /></label>
+            <div className="transactionDiscovery stickyFilters">
+              <label className="transactionSearchBox"><Search size={16} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search institution, account, description, details, or labels" /></label>
+              <div className="transactionFilterRow">
               <MultiSelectFilter
                 label="Accounts"
                 options={accounts.map((account) => ({ value: String(account.id), label: account.display_name }))}
@@ -2426,6 +2436,7 @@ export function App() {
                 onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
                 onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
               />
+              </div>
             </div>
           </div>
         ) : null}
@@ -2993,29 +3004,38 @@ export function App() {
         {(activeView === "account" || activeView === "all-accounts") && (
         <section className="ledgerPanel ledgerWorkspace">
           <PanelTitle icon={ReceiptText} title={activeView === "account" ? "Account Transactions" : "All Transactions"} subtitle={activeView === "account" ? "Transactions for the selected account." : "A searchable repository for every imported transaction."} />
-          {filteredTransactions.length > 0 ? (
-            <div className="selectionToolbar">
-              <span>
-                {selectedRepositoryTransactionIds.length} selected / {pagedTransactions.length} shown
-                {filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}
-              </span>
-              <div className="bulkInstitutionEdit">
-                <input
-                  value={bulkInstitutionName}
-                  onChange={(event) => setBulkInstitutionName(event.target.value)}
-                  placeholder="Institution"
-                  disabled={selectedRepositoryTransactionIds.length === 0}
-                />
-                <button className="secondaryButton compactButton" onClick={() => void bulkUpdateInstitutionForSelected()} disabled={selectedRepositoryTransactionIds.length === 0}>
-                  Apply institution
-                </button>
+          {selectedRepositoryTransactionIds.length > 0 ? (
+            <div className="bulkSelectionBar">
+              <strong>{selectedRepositoryTransactionIds.length} selected</strong>
+              <span>{pagedTransactions.length} shown{filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}</span>
+              <button className="secondaryButton compactButton" onClick={() => setBulkEditorOpen((current) => !current)}>Bulk edit</button>
+              <button className="dangerTextButton" onClick={() => requestBulkTransactionDelete(selectedRepositoryTransactionIds)}>Delete selected</button>
+              <button className="ghostButton compactButton" onClick={() => { setSelectedTransactionIds((current) => current.filter((id) => !repositoryTransactionIds.includes(id))); setBulkEditorOpen(false); }}>Clear</button>
+            </div>
+          ) : null}
+          {bulkEditorOpen && selectedRepositoryTransactionIds.length > 0 ? (
+            <div className="bulkEditPanel">
+              <div>
+                <strong>Edit {selectedRepositoryTransactionIds.length} transactions</strong>
+                <span>Choose a field, then provide its new value.</span>
               </div>
-              <button className="dangerTextButton" onClick={() => requestBulkTransactionDelete(selectedRepositoryTransactionIds)} disabled={selectedRepositoryTransactionIds.length === 0}>
-                Delete selected
-              </button>
-              <button className="secondaryButton compactButton" onClick={() => setSelectedTransactionIds((current) => current.filter((id) => !repositoryTransactionIds.includes(id)))}>
-                Clear
-              </button>
+              <label>Field<select value={bulkEditField} onChange={(event) => { setBulkEditField(event.target.value as BulkTransactionField); setBulkEditValue(""); }}>{bulkTransactionFields.map((field) => <option key={field.value} value={field.value}>{field.label}</option>)}</select></label>
+              <label>New value
+                {bulkEditField === "account" ? (
+                  <select value={bulkEditValue} onChange={(event) => setBulkEditValue(event.target.value)}><option value="">Choose account</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.display_name}</option>)}</select>
+                ) : bulkEditField === "type" ? (
+                  <select value={bulkEditValue} onChange={(event) => setBulkEditValue(event.target.value)}><option value="">Choose type</option>{transactionTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}</select>
+                ) : bulkEditField === "category" ? (
+                  <select value={bulkEditValue} onChange={(event) => setBulkEditValue(event.target.value)}><option value="">Choose category</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select>
+                ) : (
+                  <input value={bulkEditValue} onChange={(event) => setBulkEditValue(event.target.value)} placeholder={`New ${bulkTransactionFields.find((field) => field.value === bulkEditField)?.label.toLowerCase()}`} />
+                )}
+              </label>
+              <div className="bulkEditActions">
+                <button className="primaryButton" onClick={() => void bulkUpdateSelectedTransactions()} disabled={!bulkEditValue.trim()}>Apply change</button>
+                <button className="ghostButton" onClick={() => { setBulkEditorOpen(false); setBulkEditValue(""); }}>Cancel</button>
+              </div>
+              {bulkEditField === "institution" ? <small>Institution changes apply to the account records associated with the selected transactions.</small> : null}
             </div>
           ) : null}
           {deleteTarget?.kind === "transaction_bulk" ? (

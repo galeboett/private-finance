@@ -148,6 +148,21 @@ class BulkDeleteRequest(BaseModel):
     confirm_text: str
 
 
+class BulkTransactionField(StrEnum):
+    INSTITUTION = "institution"
+    ACCOUNT = "account"
+    DESCRIPTION = "description"
+    DETAILS = "details"
+    TYPE = "type"
+    CATEGORY = "category"
+
+
+class BulkTransactionUpdateRequest(BaseModel):
+    ids: list[int] = Field(min_length=1)
+    field: BulkTransactionField
+    value: str | int | None
+
+
 class TransactionFilter(BaseModel):
     account_id: int | None = None
     review_status: ReviewStatus | None = None

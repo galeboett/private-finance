@@ -1989,7 +1989,8 @@ select.editableCell {
 }
 
 .transactionSearchBox {
-  min-width: 220px;
+  width: 100%;
+  min-width: 280px;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -1998,6 +1999,31 @@ select.editableCell {
   border-radius: 999px;
   background: var(--surface);
   color: var(--muted);
+}
+
+.transactionDiscovery {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  gap: 8px;
+}
+
+.transactionDiscovery .transactionSearchBox {
+  min-height: 40px;
+  padding: 0 13px;
+  border-radius: 8px;
+  box-shadow: var(--shadow-soft);
+}
+
+.transactionDiscovery .transactionSearchBox input {
+  min-height: 38px;
+}
+
+.transactionFilterRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .transactionSearchBox input {
@@ -2012,6 +2038,59 @@ select.editableCell {
 .reviewSearch {
   width: min(420px, 100%);
   margin: 10px 0;
+}
+
+.bulkSelectionBar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 7px 10px;
+  border: 1px solid #b9c9f4;
+  border-radius: 8px;
+  background: var(--blue-soft);
+}
+
+.bulkSelectionBar span {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.bulkEditPanel {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(150px, 0.65fr) minmax(220px, 1.2fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid #b9c9f4;
+  border-radius: 8px;
+  background: #f5f8ff;
+}
+
+.bulkEditPanel > div:first-child,
+.bulkEditPanel label {
+  display: grid;
+  gap: 4px;
+}
+
+.bulkEditPanel span,
+.bulkEditPanel label,
+.bulkEditPanel small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.bulkEditActions {
+  display: flex;
+  gap: 6px;
+}
+
+.bulkEditPanel > small {
+  grid-column: 1 / -1;
 }
 
 .transactionDetailsCell {
@@ -2590,6 +2669,10 @@ select.editableCell {
     max-height: none;
   }
 
+  .bulkEditPanel {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .dashboardCustomizer {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2671,6 +2754,14 @@ select.editableCell {
 
   .transactionFilters {
     grid-template-columns: 1fr;
+  }
+
+  .bulkEditPanel {
+    grid-template-columns: 1fr;
+  }
+
+  .bulkEditPanel > small {
+    grid-column: auto;
   }
 
   .importWorkspace {
