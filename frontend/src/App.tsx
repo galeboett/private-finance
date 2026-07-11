@@ -513,6 +513,7 @@ export function App() {
   const [editingCategoryLabel, setEditingCategoryLabel] = useState("");
   const [categoryReassignId, setCategoryReassignId] = useState<number | "">("");
   const [editingRule, setEditingRule] = useState<RuleSummary | null>(null);
+  const [ruleFeedback, setRuleFeedback] = useState<{ ruleId: number; message: string } | null>(null);
   const [lastSavedRule, setLastSavedRule] = useState<SavedRuleAction | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
@@ -1434,9 +1435,9 @@ export function App() {
   async function previewRule(ruleId: number) {
     try {
       const result = await api<{ matched: number }>(`/api/rules/${ruleId}/preview?scope=unreviewed`);
-      showToast({ tone: "info", message: `This rule currently matches ${result.matched} unreviewed transaction${result.matched === 1 ? "" : "s"}.` });
+      setRuleFeedback({ ruleId, message: `Matches ${result.matched} unreviewed transaction${result.matched === 1 ? "" : "s"}.` });
     } catch (error) {
-      showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule preview failed." });
+      setRuleFeedback({ ruleId, message: error instanceof Error ? error.message : "Rule preview failed." });
     }
   }
 
@@ -2430,7 +2431,7 @@ export function App() {
         ) : null}
 
         {(activeView === "review" || activeView === "settings") && (
-        <section className="workGrid viewSection">
+        <section className={activeView === "review" ? "workGrid viewSection reviewWorkspace" : "workGrid viewSection"}>
           {activeView === "settings" ? (
           <section className="toolPanel importWorkspace">
             <PanelTitle icon={FileUp} title="Import & Accounts" subtitle="Start with a CSV. The app will match an account or prefill one for your review." />
@@ -2698,7 +2699,12 @@ export function App() {
 
           {activeView === "review" ? (
           <>
-          <section className="toolPanel">
+          <nav className="reviewWorkspaceNav" aria-label="Review workspace sections">
+            <a href="#transfer-review">Transfers <span>{transferCandidates.length}</span></a>
+            <a href="#review-inbox">Inbox <span>{reviewTransactions.length}</span></a>
+            <a href="#saved-rules">Rules <span>{rules.length}</span></a>
+          </nav>
+          <section className="toolPanel transferReviewPanel" id="transfer-review">
             <PanelTitle icon={WalletCards} title="Transfer Review" subtitle="Find bank transfers and credit card payments so reports do not count them as spending." />
             <div className="transferIntro">
               <div>
@@ -2753,7 +2759,7 @@ export function App() {
             </div>
           </section>
 
-          <section className="toolPanel reviewInboxPanel">
+          <section className="toolPanel reviewInboxPanel" id="review-inbox">
             <PanelTitle icon={ListChecks} title="Review Inbox" subtitle={`${reviewTransactions.length} items need a human decision.`} />
             <label className="transactionSearchBox reviewSearch"><Search size={14} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search review transactions" /></label>
             {visibleReviewTransactions.length > 0 ? (
@@ -2799,22 +2805,6 @@ export function App() {
                   setDeleteConfirmText("");
                 }}
               />
-            ) : null}
-            {lastSavedRule ? (
-              <div className="ruleApplyPanel">
-                <div>
-                  <strong>Rule saved for "{lastSavedRule.matchText}"</strong>
-                  <span>Apply it now to categorize and confirm matching transactions.</span>
-                </div>
-                <div className="buttonRow">
-                  <button className="secondaryButton" onClick={() => void applySavedRule("unreviewed")}>
-                    Apply to unreviewed
-                  </button>
-                  <button className="secondaryButton" onClick={() => void applySavedRule("all")}>
-                    Apply to previous
-                  </button>
-                </div>
-              </div>
             ) : null}
             <div className="reviewEditor">
               {visibleReviewTransactions.map((transaction) => (
@@ -2896,9 +2886,24 @@ export function App() {
               ))}
               {reviewTransactions.length === 0 ? <p className="emptyText">No items waiting for review. New imports will appear here before reports rely on them.</p> : null}
             </div>
+          </section>
+
+          <aside className="toolPanel rulesPanel" id="saved-rules">
+            <PanelTitle icon={Sparkles} title="Saved Rules" subtitle="Preview, edit, and apply automatic categorization." />
+            {lastSavedRule ? (
+              <div className="ruleApplyPanel">
+                <div>
+                  <strong>Rule saved for "{lastSavedRule.matchText}"</strong>
+                  <span>Apply it now to categorize and confirm matching transactions.</span>
+                </div>
+                <div className="buttonRow">
+                  <button className="secondaryButton" onClick={() => void applySavedRule("unreviewed")}>Apply unreviewed</button>
+                  <button className="secondaryButton" onClick={() => void applySavedRule("all")}>Apply previous</button>
+                </div>
+              </div>
+            ) : null}
             {rules.length > 0 ? (
               <div className="savedRulesPanel">
-                <strong>Saved rules</strong>
                 {rules.map((rule) => {
                   const category = categories.find((item) => item.id === rule.category_id);
                   return (
@@ -2916,12 +2921,13 @@ export function App() {
                           <button className="dangerTextButton" onClick={() => void deleteRule(rule)}>Delete</button>
                         </div>
                       </div>
+                      {ruleFeedback?.ruleId === rule.id ? <div className="ruleInlineFeedback" role="status">{ruleFeedback.message}</div> : null}
                       {editingRule?.id === rule.id ? (
                         <div className="ruleEditRow">
                           <label>Contains<input value={editingRule.match_text} onChange={(event) => setEditingRule({ ...editingRule, match_text: event.target.value })} /></label>
                           <label>Category<select value={editingRule.category_id} onChange={(event) => setEditingRule({ ...editingRule, category_id: Number(event.target.value) })}>{categories.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
                           <label>Type<select value={editingRule.suggested_transaction_type} onChange={(event) => setEditingRule({ ...editingRule, suggested_transaction_type: event.target.value })}>{transactionTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
-                          <label>Priority<input type="number" value={editingRule.priority} onChange={(event) => setEditingRule({ ...editingRule, priority: Number(event.target.value) })} /></label>
+                          <label>Priority<input type="number" value={editingRule.priority} onChange={(event) => setEditingRule({ ...editingRule, priority: Number(event.target.value) })} /><small>Smaller numbers run first.</small></label>
                           <button className="primaryButton" onClick={() => void saveRuleEdit()}>Save</button>
                           <button className="ghostButton" onClick={() => setEditingRule(null)}>Cancel</button>
                         </div>
@@ -2930,8 +2936,8 @@ export function App() {
                   );
                 })}
               </div>
-            ) : null}
-          </section>
+            ) : <div className="rulesEmptyState"><strong>No saved rules yet</strong><span>Choose a category on an inbox item, then select Save rule.</span></div>}
+          </aside>
           </>
           ) : null}
 

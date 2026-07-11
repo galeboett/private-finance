@@ -598,6 +598,11 @@ button:disabled {
 }
 
 .toast {
+  position: fixed;
+  top: 14px;
+  right: 20px;
+  z-index: 80;
+  width: min(520px, calc(100vw - 40px));
   display: flex;
   align-items: center;
   gap: 8px;
@@ -607,6 +612,7 @@ button:disabled {
   border: 1px solid var(--line);
   background: var(--surface);
   font-weight: 700;
+  box-shadow: var(--shadow);
 }
 
 .toast.success {
@@ -1130,6 +1136,83 @@ button:disabled {
   grid-column: span 2;
 }
 
+.reviewWorkspace {
+  grid-template-columns: minmax(250px, 0.72fr) minmax(620px, 2fr) minmax(330px, 0.95fr);
+  align-items: start;
+  padding-bottom: 20px;
+}
+
+.reviewWorkspace .reviewInboxPanel {
+  min-width: 0;
+  grid-column: auto;
+}
+
+.reviewWorkspaceNav {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.reviewWorkspaceNav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 11px;
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.reviewWorkspaceNav a:hover {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.reviewWorkspaceNav span {
+  min-width: 20px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  text-align: center;
+}
+
+.transferReviewPanel,
+.rulesPanel {
+  min-width: 0;
+  min-height: 0;
+  align-self: start;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+
+.transferReviewPanel .transferIntro {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.transferReviewPanel .transferPair {
+  grid-template-columns: 1fr;
+}
+
+.reviewInboxPanel .reviewCard {
+  gap: 8px;
+  padding: 9px;
+}
+
+.reviewInboxPanel .reviewCard textarea {
+  min-height: 52px;
+}
+
 .workspaceTabs {
   display: inline-flex;
   gap: 4px;
@@ -1495,6 +1578,49 @@ textarea {
   border-top: 1px solid var(--line);
 }
 
+.rulesPanel .savedRulesPanel {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.rulesPanel .savedRuleRow {
+  grid-template-columns: 1fr;
+}
+
+.rulesPanel .savedRuleActions {
+  justify-content: flex-start;
+}
+
+.rulesPanel .ruleEditRow {
+  grid-template-columns: 1fr 1fr;
+}
+
+.ruleInlineFeedback {
+  padding: 8px 10px;
+  border: 1px solid #b9c9f4;
+  border-radius: 6px;
+  background: var(--blue-soft);
+  color: #284caa;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.rulesEmptyState {
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #fbfcfb;
+}
+
+.rulesEmptyState span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .savedRuleRow {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1835,6 +1961,12 @@ select.editableCell {
   color: var(--muted);
   font-size: 11px;
   font-weight: 800;
+}
+
+.ruleEditRow small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .categoryManagementEditor {
@@ -2448,6 +2580,16 @@ select.editableCell {
     grid-template-columns: 1fr 1fr;
   }
 
+  .reviewWorkspace {
+    grid-template-columns: minmax(220px, 0.7fr) minmax(0, 2fr);
+  }
+
+  .reviewWorkspace .rulesPanel {
+    grid-column: 1 / -1;
+    position: static;
+    max-height: none;
+  }
+
   .dashboardCustomizer {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2502,6 +2644,20 @@ select.editableCell {
   .dashboardCustomizer,
   .workGrid {
     grid-template-columns: 1fr;
+  }
+
+  .reviewWorkspace {
+    grid-template-columns: 1fr;
+  }
+
+  .reviewWorkspaceNav {
+    overflow-x: auto;
+  }
+
+  .transferReviewPanel,
+  .rulesPanel {
+    position: static;
+    max-height: none;
   }
 
   .dashboardWidget.wide {
