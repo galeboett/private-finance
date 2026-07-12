@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { readAppRoute, routeUrl, type RouteView, type TxnFilter } from "./lib/filters";
 
 type BootstrapCategory = { id: number; key: string; label: string };
 type DashboardSummary = {
@@ -172,7 +173,7 @@ type HoldingRow = {
   asset_class: string | null;
 };
 
-type AppView = "overview" | "all-accounts" | "account" | "review" | "reports" | "settings";
+type AppView = RouteView;
 type AccountTaxonomyOverrides = Record<string, string>;
 type TaxonomySection = { label: string; rows: AccountSummary[]; emptyText: string };
 type TaxonomyGroup = { label: string; rows: AccountSummary[]; totalCents: number };
@@ -256,6 +257,15 @@ const bulkTransactionFields: Array<{ value: BulkTransactionField; label: string 
 
 const formatMoney = (cents: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
+
+const sameFilterValues = (left: Array<string | number>, right: Array<string | number>) =>
+  left.length === right.length && new Set(left.map(String)).size === new Set([...left, ...right].map(String)).size;
+
+const selectionSummary = (label: string, selected: string[], options: FilterOption[]) => {
+  if (selected.length === 0) return `${label}: none`;
+  if (selected.length === 1) return `${label}: ${options.find((option) => option.value === selected[0])?.label ?? selected[0]}`;
+  return `${label}: ${selected.length} selected`;
+};
 
 const accountOptionLabel = (account: AccountSummary) => {
   const name = account.display_name.trim();
@@ -510,6 +520,7 @@ function buildTaxonomyGroups(rows: AccountSummary[], accountBalances: Map<number
 }
 
 export function App() {
+  const initialRoute = useRef(readAppRoute(window.location));
   const [configured, setConfigured] = useState(false);
   const [csrf, setCsrf] = useState("");
   const [password, setPassword] = useState("");
@@ -534,8 +545,8 @@ export function App() {
   const [importAnalysis, setImportAnalysis] = useState<ImportAnalysis | null>(null);
   const [importWorkspaceTab, setImportWorkspaceTab] = useState<"smart" | "manual">("smart");
   const [activeTab, setActiveTab] = useState("Cash Flow");
-  const [activeView, setActiveView] = useState<AppView>("overview");
-  const [focusedAccountId, setFocusedAccountId] = useState<number | null>(null);
+  const [activeView, setActiveView] = useState<AppView>(initialRoute.current.view);
+  const [focusedAccountId, setFocusedAccountId] = useState<number | null>(initialRoute.current.accountId);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [categoryEditor, setCategoryEditor] = useState<{ transactionId: number; query: string } | null>(null);
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
@@ -560,15 +571,20 @@ export function App() {
   const [categorizedHistoryRows, setCategorizedHistoryRows] = useState<CategorizedHistoryRow[]>([]);
   const [bulkReviewCategoryId, setBulkReviewCategoryId] = useState<number | "">("");
   const [bulkReviewType, setBulkReviewType] = useState("expense");
-  const [selectedTransactionAccountFilters, setSelectedTransactionAccountFilters] = useState<number[]>([]);
-  const [selectedTransactionMonthFilters, setSelectedTransactionMonthFilters] = useState<string[]>([]);
-  const [selectedTransactionYearFilters, setSelectedTransactionYearFilters] = useState<string[]>([]);
-  const [selectedTransactionCategoryFilters, setSelectedTransactionCategoryFilters] = useState<string[]>([]);
+  const [selectedTransactionAccountFilters, setSelectedTransactionAccountFilters] = useState<number[]>(() => (initialRoute.current.filters.accounts ?? []).map(Number).filter(Number.isFinite));
+  const [selectedTransactionMonthFilters, setSelectedTransactionMonthFilters] = useState<string[]>(() => initialRoute.current.filters.months ?? []);
+  const [selectedTransactionYearFilters, setSelectedTransactionYearFilters] = useState<string[]>(() => initialRoute.current.filters.years ?? []);
+  const [selectedTransactionCategoryFilters, setSelectedTransactionCategoryFilters] = useState<string[]>(() => initialRoute.current.filters.categories ?? []);
+  const [transactionDateFrom, setTransactionDateFrom] = useState(initialRoute.current.filters.dateFrom ?? "");
+  const [transactionDateTo, setTransactionDateTo] = useState(initialRoute.current.filters.dateTo ?? "");
+  const [transactionAmountMin, setTransactionAmountMin] = useState<number | undefined>(initialRoute.current.filters.amountMin);
+  const [transactionAmountMax, setTransactionAmountMax] = useState<number | undefined>(initialRoute.current.filters.amountMax);
+  const [transactionDirection, setTransactionDirection] = useState<TxnFilter["direction"]>(initialRoute.current.filters.direction);
   const [transactionFiltersInitialized, setTransactionFiltersInitialized] = useState(false);
-  const [transactionSortKey, setTransactionSortKey] = useState<TransactionSortKey>("date");
-  const [transactionSortDirection, setTransactionSortDirection] = useState<SortDirection>("desc");
+  const [transactionSortKey, setTransactionSortKey] = useState<TransactionSortKey>(initialRoute.current.filters.sort ?? "date");
+  const [transactionSortDirection, setTransactionSortDirection] = useState<SortDirection>(initialRoute.current.filters.sortDirection ?? "desc");
   const [transactionPage, setTransactionPage] = useState(1);
-  const [transactionSearch, setTransactionSearch] = useState("");
+  const [transactionSearch, setTransactionSearch] = useState(initialRoute.current.filters.search ?? "");
   const [focusedTransactionId, setFocusedTransactionId] = useState<number | null>(null);
   const [editingTransactionId, setEditingTransactionId] = useState<number | null>(null);
   const [splitEditor, setSplitEditor] = useState<{ transactionId: number; rows: SplitDraft[] } | null>(null);
@@ -621,12 +637,79 @@ export function App() {
     if (transactionFiltersInitialized || transactions.length === 0) {
       return;
     }
-    setSelectedTransactionAccountFilters(accounts.map((account) => account.id));
-    setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value));
-    setSelectedTransactionYearFilters(Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))));
-    setSelectedTransactionCategoryFilters([...categories.map((category) => String(category.id)), uncategorizedFilterValue]);
+    const routeFilters = initialRoute.current.filters;
+    setSelectedTransactionAccountFilters(routeFilters.accounts === undefined ? accounts.map((account) => account.id) : routeFilters.accounts.map(Number).filter(Number.isFinite));
+    setSelectedTransactionMonthFilters(routeFilters.months === undefined ? monthOptions.map((month) => month.value) : routeFilters.months);
+    setSelectedTransactionYearFilters(routeFilters.years === undefined ? Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))) : routeFilters.years);
+    setSelectedTransactionCategoryFilters(routeFilters.categories === undefined ? [...categories.map((category) => String(category.id)), uncategorizedFilterValue] : routeFilters.categories);
     setTransactionFiltersInitialized(true);
   }, [accounts, categories, transactions, transactionFiltersInitialized]);
+
+  useEffect(() => {
+    function onPopState() {
+      const route = readAppRoute(window.location);
+      setActiveView(route.view);
+      setFocusedAccountId(route.accountId);
+      setSelectedTransactionAccountFilters(route.filters.accounts === undefined ? accounts.map((account) => account.id) : route.filters.accounts.map(Number).filter(Number.isFinite));
+      setSelectedTransactionMonthFilters(route.filters.months === undefined ? monthOptions.map((month) => month.value) : route.filters.months);
+      setSelectedTransactionYearFilters(route.filters.years === undefined ? Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))) : route.filters.years);
+      setSelectedTransactionCategoryFilters(route.filters.categories === undefined ? [...categories.map((category) => String(category.id)), uncategorizedFilterValue] : route.filters.categories);
+      setTransactionDateFrom(route.filters.dateFrom ?? "");
+      setTransactionDateTo(route.filters.dateTo ?? "");
+      setTransactionAmountMin(route.filters.amountMin);
+      setTransactionAmountMax(route.filters.amountMax);
+      setTransactionDirection(route.filters.direction);
+      setTransactionSearch(route.filters.search ?? "");
+      setTransactionSortKey(route.filters.sort ?? "date");
+      setTransactionSortDirection(route.filters.sortDirection ?? "desc");
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [accounts, categories, transactions]);
+
+  useEffect(() => {
+    if (!transactionFiltersInitialized) return;
+    const allAccountIds = accounts.map((account) => account.id);
+    const allMonths = monthOptions.map((month) => month.value);
+    const allYears = Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean)));
+    const allCategories = [...categories.map((category) => String(category.id)), uncategorizedFilterValue];
+    const filters: TxnFilter = {
+      accounts: sameFilterValues(selectedTransactionAccountFilters, allAccountIds) ? undefined : selectedTransactionAccountFilters.map(String),
+      months: sameFilterValues(selectedTransactionMonthFilters, allMonths) ? undefined : selectedTransactionMonthFilters,
+      years: sameFilterValues(selectedTransactionYearFilters, allYears) ? undefined : selectedTransactionYearFilters,
+      categories: sameFilterValues(selectedTransactionCategoryFilters, allCategories) ? undefined : selectedTransactionCategoryFilters,
+      dateFrom: transactionDateFrom || undefined,
+      dateTo: transactionDateTo || undefined,
+      amountMin: transactionAmountMin,
+      amountMax: transactionAmountMax,
+      direction: transactionDirection,
+      search: transactionSearch || undefined,
+      sort: transactionSortKey,
+      sortDirection: transactionSortDirection,
+    };
+    const nextUrl = routeUrl(activeView, focusedAccountId, filters);
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    if (nextUrl !== currentUrl) window.history.replaceState({}, "", nextUrl);
+  }, [
+    accounts,
+    activeView,
+    categories,
+    focusedAccountId,
+    selectedTransactionAccountFilters,
+    selectedTransactionCategoryFilters,
+    selectedTransactionMonthFilters,
+    selectedTransactionYearFilters,
+    transactionAmountMax,
+    transactionAmountMin,
+    transactionDateFrom,
+    transactionDateTo,
+    transactionDirection,
+    transactionFiltersInitialized,
+    transactionSearch,
+    transactionSortDirection,
+    transactionSortKey,
+    transactions,
+  ]);
 
   useEffect(() => {
     setTransactionPage(1);
@@ -637,6 +720,11 @@ export function App() {
     selectedTransactionMonthFilters,
     selectedTransactionYearFilters,
     selectedTransactionCategoryFilters,
+    transactionAmountMax,
+    transactionAmountMin,
+    transactionDateFrom,
+    transactionDateTo,
+    transactionDirection,
     transactionSortKey,
     transactionSortDirection,
     transactionSearch,
@@ -811,8 +899,7 @@ export function App() {
         body: JSON.stringify({ status }),
       });
       if (status === "archived" && focusedAccountId === account.id) {
-        setFocusedAccountId(null);
-        setActiveView("all-accounts");
+        navigateToView("all-accounts");
       }
       await loadData();
       showToast({ tone: "success", message: status === "archived" ? `${account.display_name} moved to Archived Accounts.` : `${account.display_name} restored.` });
@@ -1867,7 +1954,12 @@ export function App() {
       .filter(transactionMatchesSearch)
       .filter((transaction) => selectedTransactionMonthFilters.includes(transaction.transaction_date.slice(5, 7)))
       .filter((transaction) => selectedTransactionYearFilters.includes(transaction.transaction_date.slice(0, 4)))
-      .filter((transaction) => selectedTransactionCategoryFilters.includes(transaction.category_id ? String(transaction.category_id) : uncategorizedFilterValue));
+      .filter((transaction) => selectedTransactionCategoryFilters.includes(transaction.category_id ? String(transaction.category_id) : uncategorizedFilterValue))
+      .filter((transaction) => !transactionDateFrom || transaction.transaction_date >= transactionDateFrom)
+      .filter((transaction) => !transactionDateTo || transaction.transaction_date <= transactionDateTo)
+      .filter((transaction) => transactionAmountMin === undefined || Math.abs(transaction.amount_cents) >= transactionAmountMin)
+      .filter((transaction) => transactionAmountMax === undefined || Math.abs(transaction.amount_cents) <= transactionAmountMax)
+      .filter((transaction) => transactionDirection === undefined || (transactionDirection === "inflow" ? transaction.amount_cents > 0 : transaction.amount_cents < 0));
     return [...rows].sort((left, right) => {
       const direction = transactionSortDirection === "asc" ? 1 : -1;
       if (transactionSortKey === "amount") {
@@ -1917,6 +2009,21 @@ export function App() {
   const latestCashFlowRows = periodCashFlowRows.slice(-4).reverse();
   const reviewCount = reviewTransactions.length;
   const accountNeedingTaxonomy = accounts.find((account) => !taxonomyOverrides[String(account.id)] && !account.institution_name);
+  const transactionFilterChips: Array<{ key: string; label: string; onRemove: () => void }> = [];
+  if (activeView === "account" && focusedAccount) {
+    transactionFilterChips.push({ key: "account-route", label: `Account: ${accountOptionLabel(focusedAccount)}`, onRemove: () => navigateToView("all-accounts") });
+  } else if (activeView === "all-accounts" && !sameFilterValues(selectedTransactionAccountFilters, accounts.map((account) => account.id))) {
+    transactionFilterChips.push({ key: "accounts", label: selectionSummary("Accounts", selectedTransactionAccountFilters.map(String), accounts.map((account) => ({ value: String(account.id), label: accountOptionLabel(account) }))), onRemove: () => setSelectedTransactionAccountFilters(accounts.map((account) => account.id)) });
+  }
+  if (transactionSearch.trim()) transactionFilterChips.push({ key: "search", label: `Search: ${transactionSearch.trim()}`, onRemove: () => setTransactionSearch("") });
+  if (!sameFilterValues(selectedTransactionMonthFilters, monthOptions.map((month) => month.value))) transactionFilterChips.push({ key: "months", label: selectionSummary("Months", selectedTransactionMonthFilters, monthOptions), onRemove: () => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value)) });
+  if (!sameFilterValues(selectedTransactionYearFilters, transactionYears)) transactionFilterChips.push({ key: "years", label: selectionSummary("Years", selectedTransactionYearFilters, transactionYears.map((year) => ({ value: year, label: year }))), onRemove: () => setSelectedTransactionYearFilters(transactionYears) });
+  if (!sameFilterValues(selectedTransactionCategoryFilters, transactionCategoryOptions.map((option) => option.value))) transactionFilterChips.push({ key: "categories", label: selectionSummary("Categories", selectedTransactionCategoryFilters, transactionCategoryOptions), onRemove: () => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value)) });
+  if (transactionDateFrom) transactionFilterChips.push({ key: "date-from", label: `From: ${formatShortDate(transactionDateFrom)}`, onRemove: () => setTransactionDateFrom("") });
+  if (transactionDateTo) transactionFilterChips.push({ key: "date-to", label: `Through: ${formatShortDate(transactionDateTo)}`, onRemove: () => setTransactionDateTo("") });
+  if (transactionAmountMin !== undefined) transactionFilterChips.push({ key: "amount-min", label: `Minimum: ${formatMoney(transactionAmountMin)}`, onRemove: () => setTransactionAmountMin(undefined) });
+  if (transactionAmountMax !== undefined) transactionFilterChips.push({ key: "amount-max", label: `Maximum: ${formatMoney(transactionAmountMax)}`, onRemove: () => setTransactionAmountMax(undefined) });
+  if (transactionDirection) transactionFilterChips.push({ key: "direction", label: transactionDirection === "inflow" ? "Inflows" : "Outflows", onRemove: () => setTransactionDirection(undefined) });
 
   function startSidebarResize(event: ReactPointerEvent<HTMLButtonElement>) {
     event.preventDefault();
@@ -1943,12 +2050,19 @@ export function App() {
   }
 
   function openAccountView(accountId: number) {
-    setFocusedAccountId(accountId);
     setSelectedAccountId(accountId);
-    setActiveView("account");
+    navigateToView("account", accountId);
     setCategoryEditor(null);
     setFocusedTransactionId(null);
     setEditingTransactionId(null);
+  }
+
+  function navigateToView(view: AppView, accountId: number | null = null) {
+    const nextAccountId = view === "account" ? accountId : null;
+    window.history.pushState({}, "", routeUrl(view, nextAccountId, readAppRoute(window.location).filters));
+    setActiveView(view);
+    setFocusedAccountId(nextAccountId);
+    setCategoryEditor(null);
   }
 
   function openImportModal(accountId?: number) {
@@ -2047,11 +2161,7 @@ export function App() {
                 key={item.id}
                 title={item.label}
                 onClick={() => {
-                  setActiveView(item.id);
-                  if (item.id !== "account") {
-                    setFocusedAccountId(null);
-                  }
-                  setCategoryEditor(null);
+                  navigateToView(item.id);
                 }}
               >
                 <Icon size={16} />
@@ -2276,7 +2386,7 @@ export function App() {
                     <strong>{reviewCount}</strong>
                   </div>
                   <p>{reviewCount === 0 ? "No transactions are waiting for review." : "Categorize, confirm, or resolve these before trusting reports."}</p>
-                  <button className="secondaryButton compactButton" onClick={() => setActiveView("review")}>
+                  <button className="secondaryButton compactButton" onClick={() => navigateToView("review")}>
                     Open Review
                   </button>
                 </article>
@@ -2417,7 +2527,7 @@ export function App() {
                   <FileUp size={14} />
                   File Import
                 </button>
-                <button className="secondaryButton compactButton" onClick={() => setActiveView("review")}>
+                <button className="secondaryButton compactButton" onClick={() => navigateToView("review")}>
                   <ListChecks size={14} />
                   Open Review
                 </button>
@@ -3117,6 +3227,35 @@ export function App() {
         {(activeView === "account" || activeView === "all-accounts") && (
         <section className="ledgerPanel ledgerWorkspace">
           <PanelTitle icon={ReceiptText} title={activeView === "account" ? "Account Transactions" : "All Transactions"} subtitle={activeView === "account" ? "Transactions for the selected account." : "A searchable repository for every imported transaction."} />
+          {transactionFilterChips.length > 0 ? (
+            <div className="transactionFilterChips" aria-label="Active transaction filters">
+              {transactionFilterChips.map((chip) => (
+                <button type="button" key={chip.key} onClick={chip.onRemove} title={`Remove ${chip.label} filter`}>
+                  <span>{chip.label}</span>
+                  <X size={12} />
+                </button>
+              ))}
+              <button
+                type="button"
+                className="clearFilterChips"
+                onClick={() => {
+                  if (activeView === "account") navigateToView("all-accounts");
+                  setSelectedTransactionAccountFilters(accounts.map((account) => account.id));
+                  setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value));
+                  setSelectedTransactionYearFilters(transactionYears);
+                  setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value));
+                  setTransactionDateFrom("");
+                  setTransactionDateTo("");
+                  setTransactionAmountMin(undefined);
+                  setTransactionAmountMax(undefined);
+                  setTransactionDirection(undefined);
+                  setTransactionSearch("");
+                }}
+              >
+                Clear filters
+              </button>
+            </div>
+          ) : null}
           <div className="ledgerListToolbar">
             <div className="ledgerSummaryGroup">
               <div className="ledgerSummaryText">

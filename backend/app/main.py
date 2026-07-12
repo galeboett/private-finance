@@ -5,8 +5,9 @@ import io
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,13 +23,14 @@ from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
 from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingSnapshot, ImportBatch, ImportPreset, Institution, SecurityMetadata, SecurityPrice, SessionToken, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, PasswordChangeRequest, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionReviewUpdate, TransactionType, TransferLinkCreate
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, PasswordChangeRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
 from .services.importers import commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
 from .services.mutation_log import MutationChange, changed_values, journal_mutation
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
+from .services.transaction_filters import parse_csv_ints, parse_csv_values, transaction_filter_conditions
 from .services.transaction_queries import get_live_transaction, live_transaction_filters, live_transaction_select
 from .services.transfers import confirm_transfer_link, create_transfer_suggestions, list_unconfirmed_transfers, reject_transfer_link
 
@@ -587,12 +589,41 @@ def import_report(batch_id: int, session: SessionToken = Depends(current_session
 
 
 @app.get("/api/transactions")
-def list_transactions(account_id: int | None = None, review_status: str | None = None, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
-    query = live_transaction_select().order_by(Transaction.transaction_date.desc(), Transaction.id.desc())
-    if account_id:
-        query = query.where(Transaction.account_id == account_id)
-    if review_status:
-        query = query.where(Transaction.review_status == review_status)
+def list_transactions(
+    account_id: int | None = None,
+    review_status: ReviewStatus | None = None,
+    accounts: str | None = None,
+    categories: str | None = None,
+    months: str | None = None,
+    years: str | None = None,
+    date_from: date | None = Query(default=None, alias="dateFrom"),
+    date_to: date | None = Query(default=None, alias="dateTo"),
+    amount_min: int | None = Query(default=None, alias="amountMin", ge=0),
+    amount_max: int | None = Query(default=None, alias="amountMax", ge=0),
+    direction: Literal["inflow", "outflow"] | None = None,
+    search: str | None = None,
+    view: Literal["live", "trash"] = "live",
+    session: SessionToken = Depends(current_session),
+    db: Session = Depends(get_db),
+):
+    account_filters = parse_csv_ints(accounts)
+    if account_id is not None and account_id not in account_filters:
+        account_filters.append(account_id)
+    filters = TransactionFilter(
+        accounts=account_filters,
+        categories=parse_csv_values(categories),
+        months=parse_csv_values(months),
+        years=parse_csv_values(years),
+        date_from=date_from,
+        date_to=date_to,
+        amount_min=amount_min,
+        amount_max=amount_max,
+        direction=direction,
+        search=search,
+        view=view,
+        review_status=review_status,
+    )
+    query = select(Transaction).where(*transaction_filter_conditions(filters)).order_by(Transaction.transaction_date.desc(), Transaction.id.desc())
     rows = db.scalars(query).all()
     accounts = {account.id: account for account in db.scalars(select(Account)).all()}
     allocation_counts = dict(db.execute(select(ExpenseAllocation.transaction_id, func.count(ExpenseAllocation.id)).group_by(ExpenseAllocation.transaction_id)).all())

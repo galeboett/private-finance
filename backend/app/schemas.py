@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -165,9 +166,15 @@ class BulkTransactionUpdateRequest(BaseModel):
 
 
 class TransactionFilter(BaseModel):
-    account_id: int | None = None
+    accounts: list[int] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)
+    months: list[str] = Field(default_factory=list)
+    years: list[str] = Field(default_factory=list)
+    date_from: date | None = None
+    date_to: date | None = None
+    amount_min: int | None = None
+    amount_max: int | None = None
+    direction: Literal["inflow", "outflow"] | None = None
+    search: str | None = None
+    view: Literal["live", "trash"] = "live"
     review_status: ReviewStatus | None = None
-    category_id: int | None = None
-    transaction_type: TransactionType | None = None
-    start_date: date | None = None
-    end_date: date | None = None

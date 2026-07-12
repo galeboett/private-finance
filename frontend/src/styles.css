@@ -2152,6 +2152,40 @@ select.editableCell {
   margin-right: auto;
 }
 
+.transactionFilterChips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.transactionFilterChips button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid #b9c9f4;
+  border-radius: 999px;
+  background: var(--blue-soft);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.transactionFilterChips button:hover,
+.transactionFilterChips button:focus-visible {
+  border-color: var(--blue);
+  background: #e7efff;
+}
+
+.transactionFilterChips .clearFilterChips {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
 .bulkSelectionContext > div {
   display: flex;
   align-items: baseline;

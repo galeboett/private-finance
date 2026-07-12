@@ -22,6 +22,7 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Added
 
+- Problem C foundation: a canonical transaction-filter contract shared by the backend query builder and frontend URL codec, real app paths with browser back/forward support, bookmarkable transaction filters, and removable active-filter chips.
 - Problem B foundation: operation and row-change journal tables, atomic before/after mutation recording for transaction edits, bulk edits, voids, and deletes, plus recoverable transaction soft deletion and one shared live-transaction query predicate.
 - `POST /api/password` — change the local password (requires the current password; revokes all other sessions). **SEC-02 partial**
 - `PATCH /api/rules/{id}` and `DELETE /api/rules/{id}` — rules are no longer permanent. **ARCH-07 partial**
