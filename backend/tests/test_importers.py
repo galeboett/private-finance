@@ -262,3 +262,118 @@ def test_commit_reviewed_categorized_history_imports_edited_rows():
 
         assert result["inserted"] == 2
         assert session.query(Transaction).count() == 2
+
+
+def test_detects_filename_aware_citi_formats():
+    content = "Status,Date,Description,Debit,Credit\nCleared,06-01-2026,Purchase,10.00,\n"
+
+    assert detect_preset_from_content(content, "CHK_4160_CURRENT_VIEW.csv") == "citi_checking"
+    assert detect_preset_from_content(content, "Statement closed Jul 01, 2026.CSV") == "citi_card_activity"
+
+
+def test_preview_citi_checking_normalizes_debits_and_credits():
+    content = (
+        b"Status,Date,Description,Debit,Credit\n"
+        b"Cleared,05-05-2026,Debit Card Purchase,118.08,\n"
+        b"Cleared,06-01-2026,ATM Fee Refund,,0.71\n"
+    )
+
+    preview = preview_import(content, "citi_checking")
+
+    assert [row["amount"] for row in preview.rows] == ["-118.08", "0.71"]
+    assert [row["transaction_date"] for row in preview.rows] == ["05-05-2026", "06-01-2026"]
+
+
+def test_preview_citi_card_normalizes_purchases_and_credits():
+    content = (
+        b"Status,Date,Description,Debit,Credit\n"
+        b"Cleared,06/17/2026,NEWEGG INC.,10.00,\n"
+        b"Cleared,06/25/2026,AUTOPAY AUTO-PMT,,-17.70\n"
+    )
+
+    preview = preview_import(content, "citi_card_activity")
+
+    assert [row["amount"] for row in preview.rows] == ["-10.00", "17.70"]
+
+
+def test_preview_amex_normalizes_charge_credit_signs():
+    content = (
+        b"Date,Description,Amount\n"
+        b"07/07/2026,INKD DAYGLOW,4.00\n"
+        b"07/04/2026,AUTOPAY PAYMENT - THANK YOU,-1493.35\n"
+    )
+
+    preview = preview_import(content, "amex_activity")
+
+    assert [row["amount"] for row in preview.rows] == ["-4.00", "1493.35"]
+
+
+def test_preview_jpm_positions_uses_holding_fields_and_ignores_footer():
+    content = (
+        b"Asset Class,Asset Strategy,Asset Strategy Detail,Description,Ticker,CUSIP,Quantity,Price,Value,As of\n"
+        b"Equity,US Large Cap,,VANGUARD S&P 500 ETF,VOO,922908363,320,693.86,\"222,035.2\",07/11/2026\n"
+        b"FOOTNOTES,,,,,,,,,\n"
+        b"P,This order is pending settlement.,,,,,,,,\n"
+    )
+
+    preview = preview_import(content, "jpm_brokerage_positions")
+
+    assert len(preview.rows) == 1
+    assert preview.rows[0]["symbol"] == "VOO"
+    assert preview.rows[0]["market_value"] == "222,035.2"
+    assert preview.rows[0]["snapshot_date"] == "07/11/2026"
+
+
+def test_new_formats_propose_expected_accounts_without_treating_year_as_last_four():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        citi_checking = suggest_account_for_import(
+            session,
+            "CHK_4160_CURRENT_VIEW.csv",
+            b"Status,Date,Description,Debit,Credit\nCleared,06-01-2026,Purchase,10.00,\n",
+        )
+        citi_card = suggest_account_for_import(
+            session,
+            "Statement closed Jul 01, 2026.CSV",
+            b"Status,Date,Description,Debit,Credit\nCleared,06/17/2026,Purchase,10.00,\n",
+        )
+        amex = suggest_account_for_import(
+            session,
+            "activity (2).csv",
+            b"Date,Description,Amount\n07/07/2026,Purchase,4.00\n",
+        )
+
+    assert citi_checking.proposed_account["institution_name"] == "Citi"
+    assert citi_checking.proposed_account["account_type"] == "checking"
+    assert citi_checking.proposed_account["last_four"] == "4160"
+    assert citi_card.proposed_account["institution_name"] == "Citi"
+    assert citi_card.proposed_account["account_type"] == "credit_card"
+    assert citi_card.proposed_account["last_four"] is None
+    assert amex.proposed_account["institution_name"] == "American Express"
+    assert amex.proposed_account["account_type"] == "credit_card"
+
+
+def test_jpm_positions_match_a_unique_existing_brokerage_by_name():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        account = Account(display_name="JPM Investments", account_type="brokerage")
+        session.add(account)
+        session.commit()
+        content = (
+            b"Asset Class,Asset Strategy,Asset Strategy Detail,Description,Ticker,CUSIP,Quantity,Price,Value,As of\n"
+            b"Equity,US Large Cap,,VANGUARD S&P 500 ETF,VOO,922908363,320,693.86,\"222,035.2\",07/11/2026\n"
+        )
+
+        suggestion = suggest_account_for_import(session, "positions.csv", content)
+
+    assert suggestion.suggested_account_id == account.id
+    assert suggestion.match_confidence == 75
+    assert suggestion.proposed_account == {
+        "institution_name": "Chase",
+        "display_name": "Chase J.P. Morgan Brokerage",
+        "account_type": "brokerage",
+        "currency": "USD",
+        "last_four": None,
+    }

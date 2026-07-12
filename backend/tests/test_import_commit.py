@@ -194,3 +194,29 @@ def test_decode_text_rejects_non_utf8():
 def test_history_transaction_type_matrix(label, amount_cents, account_type, expected):
     """Regression for BUG-05: deposits into cash accounts must not be typed as expenses."""
     assert _history_transaction_type(label, amount_cents, account_type) == expected
+
+
+def test_commit_jpm_positions_uses_as_of_date_and_ignores_footnotes():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        account = Account(display_name="J.P. Morgan Brokerage", account_type="brokerage")
+        session.add(account)
+        session.commit()
+        content = (
+            b"Asset Class,Asset Strategy,Asset Strategy Detail,Description,Ticker,CUSIP,Quantity,Price,Value,As of\n"
+            b"Equity,US Large Cap,,VANGUARD S&P 500 ETF,VOO,922908363,320,693.86,\"222,035.2\",07/11/2026\n"
+            b"Cash & Money Market Funds,Money Market Funds,,CHASE DEPOSIT SWEEP,QACDS,,1228.9,1,1228.9,07/11/2026\n"
+            b"FOOTNOTES,,,,,,,,,\n"
+        )
+
+        result = commit_import(session, account, None, "positions.csv", content)
+        session.commit()
+
+        holdings = session.query(HoldingSnapshot).order_by(HoldingSnapshot.symbol).all()
+
+    assert result["inserted"] == 2
+    assert result["warnings"] == []
+    assert [holding.symbol for holding in holdings] == ["QACDS", "VOO"]
+    assert {holding.snapshot_date for holding in holdings} == {date(2026, 7, 11)}
+    assert sum(holding.market_value_cents for holding in holdings) == 22326410

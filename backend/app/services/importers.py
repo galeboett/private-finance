@@ -26,6 +26,9 @@ CHASE_ACTIVITY_HEADER = "Transaction Date,Post Date,Description,Category,Type,Am
 CHECKING_HEADER = "Date,Description,Amount,Running Bal."
 FIDELITY_HEADER = "Account Number,Account Name,Symbol,Description,Quantity,Last Price,Last Price Change,Current Value"
 VENMO_HEADER = ",ID,Datetime,Type,Status,Note,From,To,Amount (total),Amount (tip),Amount (tax),Amount (fee),Tax Rate,Tax Exempt,Funding Source,Destination,Beginning Balance,Ending Balance,Statement Period Venmo Fees,Terminal Location,Year to Date Venmo Fees,Disclaimer"
+CITI_ACTIVITY_HEADER = "Status,Date,Description,Debit,Credit"
+AMEX_ACTIVITY_HEADER = "Date,Description,Amount"
+JPM_POSITIONS_HEADER = "Asset Class,Asset Strategy,Asset Strategy Detail,Description,Ticker,CUSIP,Quantity"
 
 
 @dataclass
@@ -52,13 +55,18 @@ def decode_text(content: bytes) -> str:
         raise ValueError("This file is not UTF-8 text. Re-export it as a UTF-8 CSV and try again.") from exc
 
 
-def detect_preset_from_content(text: str) -> str | None:
+def detect_preset_from_content(text: str, filename: str = "") -> str | None:
+    if CITI_ACTIVITY_HEADER in text:
+        normalized_filename = filename.lower()
+        return "citi_checking" if normalized_filename.startswith("chk_") or "checking" in normalized_filename else "citi_card_activity"
     for marker, preset in (
+        (JPM_POSITIONS_HEADER, "jpm_brokerage_positions"),
         (CARD_REFERENCE_HEADER, "card_reference"),
         (CHASE_ACTIVITY_HEADER, "card_activity"),
         (CHECKING_HEADER, "checking_running_balance"),
         (FIDELITY_HEADER, "brokerage_positions"),
         (VENMO_HEADER, "venmo_activity"),
+        (AMEX_ACTIVITY_HEADER, "amex_activity"),
     ):
         if marker in text:
             return preset
@@ -67,7 +75,7 @@ def detect_preset_from_content(text: str) -> str | None:
 
 def suggest_account_for_import(db: Session, filename: str, content: bytes) -> AccountImportSuggestion:
     text = decode_text(content)
-    preset_type = detect_preset_from_content(text)
+    preset_type = detect_preset_from_content(text, filename)
     if not preset_type:
         raise ValueError("Could not detect import preset")
     preview = preview_import(content, preset_type)
@@ -82,6 +90,17 @@ def suggest_account_for_import(db: Session, filename: str, content: bytes) -> Ac
             best_account = account
             best_score = score
             best_reason = reason
+    if best_score < 70:
+        exact_candidates = [
+            account
+            for account in accounts
+            if account.account_type == proposed.get("account_type")
+            and _account_institution_name(account) == (proposed.get("institution_name") or "").casefold()
+        ]
+        if len(exact_candidates) == 1:
+            best_account = exact_candidates[0]
+            best_score = 75
+            best_reason = "only active account with matching institution and account type"
     if best_score < 70:
         best_account = None
     return AccountImportSuggestion(
@@ -126,7 +145,16 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
             )
         return PreviewResult(rows=rows, warnings=warnings, detected_preset=preset_type)
 
-    header_index = next((i for i, row in enumerate(reader) if ",".join(row).startswith(CARD_REFERENCE_HEADER) or ",".join(row).startswith(CHASE_ACTIVITY_HEADER) or ",".join(row).startswith(FIDELITY_HEADER) or ",".join(row).startswith(VENMO_HEADER)), 0)
+    header_markers = (
+        CARD_REFERENCE_HEADER,
+        CHASE_ACTIVITY_HEADER,
+        FIDELITY_HEADER,
+        VENMO_HEADER,
+        CITI_ACTIVITY_HEADER,
+        AMEX_ACTIVITY_HEADER,
+        JPM_POSITIONS_HEADER,
+    )
+    header_index = next((i for i, row in enumerate(reader) if any(",".join(row).startswith(marker) for marker in header_markers)), 0)
     data_text = "\n".join(",".join(_csv_escape_cell(cell) for cell in row) for row in reader[header_index:])
     dict_reader = csv.DictReader(io.StringIO(data_text))
     rows = []
@@ -160,6 +188,27 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
                     "account_name": row.get("Account Name"),
                 }
             )
+        elif preset_type == "jpm_brokerage_positions":
+            description = (row.get("Description") or "").strip()
+            symbol = (row.get("Ticker") or "").strip()
+            market_value = (row.get("Value") or "").strip()
+            if not (description or symbol) or not market_value or not (row.get("Asset Class") or "").strip():
+                continue
+            rows.append(
+                {
+                    "row_index": idx,
+                    "row_kind": "position",
+                    "snapshot_date": (row.get("As of") or "").strip() or None,
+                    "account_number": None,
+                    "symbol": symbol,
+                    "description": description,
+                    "quantity": row.get("Quantity"),
+                    "price": row.get("Price"),
+                    "market_value": market_value,
+                    "asset_class": row.get("Asset Class"),
+                    "account_name": "J.P. Morgan Brokerage",
+                }
+            )
         elif preset_type == "card_activity":
             rows.append(
                 {
@@ -171,6 +220,26 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
                     "amount": row.get("Amount"),
                     "source_reference": row.get("Memo"),
                     "bank_category": row.get("Category"),
+                }
+            )
+        elif preset_type in {"citi_checking", "citi_card_activity"}:
+            rows.append(
+                {
+                    "row_index": idx,
+                    "row_kind": row_kind,
+                    "transaction_date": row.get("Date"),
+                    "raw_description": row.get("Description"),
+                    "amount": _debit_credit_amount(row.get("Debit"), row.get("Credit")),
+                }
+            )
+        elif preset_type == "amex_activity":
+            rows.append(
+                {
+                    "row_index": idx,
+                    "row_kind": row_kind,
+                    "transaction_date": row.get("Date"),
+                    "raw_description": row.get("Description"),
+                    "amount": _negate_import_amount(row.get("Amount")),
                 }
             )
         elif preset_type == "venmo_activity":
@@ -353,12 +422,44 @@ def _normalize_transaction_type(description: str, amount_cents: int, account_typ
     return "expense"
 
 
+def _debit_credit_amount(debit: str | None, credit: str | None) -> str | None:
+    debit_value = _normalize_import_amount(debit)
+    credit_value = _normalize_import_amount(credit)
+    if debit_value:
+        return _signed_absolute_amount(debit_value, negative=True)
+    if credit_value:
+        return _signed_absolute_amount(credit_value, negative=False)
+    return None
+
+
+def _negate_import_amount(value: str | None) -> str | None:
+    normalized = _normalize_import_amount(value)
+    if not normalized:
+        return None
+    try:
+        return format(-Decimal(normalized), "f")
+    except InvalidOperation as exc:
+        raise ValueError(f"Invalid transaction amount: {value}") from exc
+
+
+def _signed_absolute_amount(value: str, *, negative: bool) -> str:
+    try:
+        amount = abs(Decimal(value))
+    except InvalidOperation as exc:
+        raise ValueError(f"Invalid transaction amount: {value}") from exc
+    return format(-amount if negative else amount, "f")
+
+
 def _proposed_account_from_import(filename: str, preset_type: str, preview: PreviewResult) -> dict:
     account_type = {
         "card_reference": "credit_card",
         "card_activity": "credit_card",
         "checking_running_balance": "checking",
         "brokerage_positions": "brokerage",
+        "jpm_brokerage_positions": "brokerage",
+        "citi_checking": "checking",
+        "citi_card_activity": "credit_card",
+        "amex_activity": "credit_card",
         "venmo_activity": "checking",
     }.get(preset_type, "checking")
     institution = _institution_from_filename(filename, preset_type)
@@ -399,10 +500,30 @@ def _score_account_match(account: Account, proposed: dict, filename: str) -> tup
     return min(score, 100), ", ".join(reasons) or "weak filename/type similarity"
 
 
+
+def _account_institution_name(account: Account) -> str:
+    if account.institution:
+        return account.institution.name.casefold()
+    display_name = account.display_name.casefold()
+    if "american express" in display_name or "amex" in display_name:
+        return "american express"
+    if "chase" in display_name or "jpm" in display_name or "j.p. morgan" in display_name:
+        return "chase"
+    if "citi" in display_name:
+        return "citi"
+    return ""
+
+
 def _institution_from_filename(filename: str, preset_type: str) -> str | None:
     text = filename.lower()
+    if preset_type == "jpm_brokerage_positions":
+        return "Chase"
     if preset_type == "brokerage_positions" or "fidelity" in text or "portfolio_positions" in text or "individual-positions" in text:
         return "Fidelity"
+    if preset_type in {"citi_checking", "citi_card_activity"}:
+        return "Citi"
+    if preset_type == "amex_activity":
+        return "American Express"
     if "chase" in text:
         return "Chase"
     if "boa" in text or "bankofamerica" in text or "bank_of_america" in text:
@@ -421,9 +542,9 @@ def _last_four_from_import(filename: str, preview: PreviewResult) -> str | None:
     for token in filename_digits:
         if len(token) == 8 and token.startswith(("19", "20")):
             continue
+        if len(token) == 4 and 1900 <= int(token) <= 2099:
+            continue
         return token[-4:]
-    if filename_digits:
-        return filename_digits[0][-4:]
     return None
 
 
@@ -739,7 +860,7 @@ def preview_import(content: bytes, preset_type: str) -> PreviewResult:
 
 
 def commit_import(db: Session, account, preset: ImportPreset | None, filename: str, content: bytes, actor: str = "local-user", snapshot_date: date | None = None) -> dict:
-    detected = preset.preset_type if preset else detect_preset_from_content(decode_text(content))
+    detected = preset.preset_type if preset else detect_preset_from_content(decode_text(content), filename)
     if not detected:
         raise ValueError("Unable to detect preset type")
     preview = preview_import(content, detected)
@@ -756,8 +877,8 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
 
     resolved_snapshot_date: date | None = None
     cleared_snapshot_scopes: set[tuple[int, str]] = set()
-    if detected == "brokerage_positions":
-        resolved_snapshot_date = snapshot_date or _extract_snapshot_date(filename)
+    if _is_brokerage_preset(detected):
+        resolved_snapshot_date = snapshot_date or _snapshot_date_from_preview(preview) or _extract_snapshot_date(filename)
         if resolved_snapshot_date is None:
             resolved_snapshot_date = date.today()
             warnings.append(
@@ -766,7 +887,7 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
 
     for row in preview.rows:
         target_account = account
-        if detected == "brokerage_positions":
+        if _is_brokerage_preset(detected):
             target_account, routing_warning = _resolve_brokerage_account(db, account, row)
             if routing_warning and routing_warning not in warnings:
                 warnings.append(routing_warning)
@@ -780,7 +901,7 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
                 normalized_json=json.dumps(row, default=str),
             )
         )
-        if detected == "brokerage_positions":
+        if _is_brokerage_preset(detected):
             if row["row_kind"] == "ignore":
                 continue
             market_value_cents = parse_decimal_to_cents(row.get("market_value"))
@@ -904,6 +1025,18 @@ def _resolve_brokerage_account(db: Session, selected_account: Account, row: dict
 def _normalize_account_name(value: str) -> str:
     return "".join(char.lower() for char in value if char.isalnum())
 
+def _is_brokerage_preset(preset_type: str) -> bool:
+    return preset_type in {"brokerage_positions", "jpm_brokerage_positions"}
+
+
+def _snapshot_date_from_preview(preview: PreviewResult) -> date | None:
+    for row in preview.rows:
+        value = row.get("snapshot_date")
+        if value:
+            return _parse_import_date(value)
+    return None
+
+
 
 def _parse_decimal_to_basis_points(value: str | int | float | None) -> int | None:
     if value is None or value == "":
@@ -918,7 +1051,7 @@ def _parse_decimal_to_basis_points(value: str | int | float | None) -> int | Non
 def _parse_import_date(value: str | None) -> date:
     if not value:
         raise ValueError("Import row is missing a transaction date")
-    for date_format in ("%m/%d/%Y", "%Y-%m-%d"):
+    for date_format in ("%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(value, date_format).date()
         except ValueError:

@@ -383,7 +383,7 @@ async def imports_preview(account_id: int, file: UploadFile = File(...), session
     if len(content) > settings.import_file_size_limit_mb * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File too large")
     try:
-        preset_type = detect_preset_from_content(decode_text(content))
+        preset_type = detect_preset_from_content(decode_text(content), file.filename or "import.csv")
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     if not preset_type:
