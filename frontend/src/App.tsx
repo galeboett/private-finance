@@ -1016,6 +1016,14 @@ export function App() {
     setMonthlyAllocationEditor(null);
   }
 
+  async function confirmTransactionEdit(transaction: TransactionRow, noteValue?: string) {
+    if (noteValue !== undefined && noteValue !== (transaction.user_note ?? "")) {
+      await updateTransaction(transaction.id, { user_note: noteValue }, false);
+    }
+    exitTransactionEdit();
+    showToast({ tone: "success", message: "Transaction changes saved." });
+  }
+
   async function bulkUpdateSelectedTransactions() {
     if (selectedRepositoryTransactionIds.length === 0) {
       showToast({ tone: "error", message: "Select one or more transactions first." });
@@ -1843,6 +1851,7 @@ export function App() {
   const selectedVisibleReviewIds = visibleIdsFilter(visibleReviewIds, selectedTransactionIds);
   const selectedVisibleReviewTransactions = visibleReviewTransactions.filter((transaction) => selectedVisibleReviewIds.includes(transaction.id));
   const selectedRepositoryTransactionIds = repositoryTransactionIds.filter((id) => selectedTransactionIds.includes(id));
+  const allRepositoryTransactionsSelected = repositoryTransactionIds.length > 0 && selectedRepositoryTransactionIds.length === repositoryTransactionIds.length;
   const accountIds = accounts.map((account) => account.id);
   const selectedVisibleAccountIds = accountIds.filter((id) => selectedAccountIds.includes(id));
   const visibleHoldingIds = holdingRows.slice(0, 12).map((row) => row.id);
@@ -1960,16 +1969,12 @@ export function App() {
     if (editingTransactionId === transactionId) {
       return;
     }
-    if (focusedTransactionId === transactionId) {
-      openTransactionEditor(transactionId);
-      return;
-    }
     setFocusedTransactionId(transactionId);
     setEditingTransactionId(null);
     setCategoryEditor(null);
   }
 
-  function openTransactionEditor(transactionId: number) {
+  function beginTransactionEdit(transactionId: number) {
     setFocusedTransactionId(transactionId);
     setEditingTransactionId(transactionId);
     setCategoryEditor(null);
@@ -3012,6 +3017,38 @@ export function App() {
         {(activeView === "account" || activeView === "all-accounts") && (
         <section className="ledgerPanel ledgerWorkspace">
           <PanelTitle icon={ReceiptText} title={activeView === "account" ? "Account Transactions" : "All Transactions"} subtitle={activeView === "account" ? "Transactions for the selected account." : "A searchable repository for every imported transaction."} />
+          <div className="ledgerListToolbar">
+            <div>
+              <strong>{filteredTransactions.length} transaction{filteredTransactions.length === 1 ? "" : "s"}</strong>
+              <span>Showing {pagedTransactions.length}{filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}</span>
+            </div>
+            <button
+              type="button"
+              className="secondaryButton compactButton"
+              disabled={repositoryTransactionIds.length === 0}
+              onClick={() => {
+                setSelectedTransactionIds((current) => {
+                  const repositoryIds = new Set(repositoryTransactionIds);
+                  if (allRepositoryTransactionsSelected) {
+                    return current.filter((id) => !repositoryIds.has(id));
+                  }
+                  return Array.from(new Set([...current, ...repositoryTransactionIds]));
+                });
+              }}
+            >
+              {allRepositoryTransactionsSelected ? "Clear all" : `Select all ${repositoryTransactionIds.length}`}
+            </button>
+            {pagedTransactions.length < filteredTransactions.length ? (
+              <>
+                <button type="button" className="secondaryButton compactButton" onClick={() => setTransactionPage((current) => Math.min(transactionPageCount, current + 1))}>
+                  Show next {Math.min(TRANSACTION_PAGE_SIZE, filteredTransactions.length - pagedTransactions.length)}
+                </button>
+                <button type="button" className="ghostButton compactButton" onClick={() => setTransactionPage(transactionPageCount)}>
+                  Show all
+                </button>
+              </>
+            ) : null}
+          </div>
           {selectedRepositoryTransactionIds.length > 0 ? (
             <div className="bulkSelectionBar">
               <strong>{selectedRepositoryTransactionIds.length} selected</strong>
@@ -3022,7 +3059,15 @@ export function App() {
             </div>
           ) : null}
           {bulkEditorOpen && selectedRepositoryTransactionIds.length > 0 ? (
-            <div className="bulkEditPanel">
+            <div
+              className="bulkEditPanel"
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && bulkEditValue.trim() && !(event.target instanceof HTMLButtonElement)) {
+                  event.preventDefault();
+                  void bulkUpdateSelectedTransactions();
+                }
+              }}
+            >
               <div>
                 <strong>Edit {selectedRepositoryTransactionIds.length} transactions</strong>
                 <span>Choose a field, then provide its new value.</span>
@@ -3060,7 +3105,7 @@ export function App() {
           ) : null}
           <div className="ledgerTable">
             <div className="ledgerHeader">
-              <span>Select</span>
+              <span>Selected</span>
               <span>
                 <button type="button" className="sortableHeader" onClick={() => toggleTransactionSort("date")}>
                   Date{sortIndicator("date")}
@@ -3099,7 +3144,14 @@ export function App() {
                     .filter(Boolean)
                     .join(" ")}
                   onClick={() => handleTransactionRowClick(transaction.id)}
-                  onDoubleClick={() => openTransactionEditor(transaction.id)}
+                  onKeyDown={(event) => {
+                    if (!isEditing || event.key !== "Enter" || event.shiftKey) return;
+                    const target = event.target as HTMLElement;
+                    if (target.closest(".categoryPopup") || target instanceof HTMLButtonElement) return;
+                    event.preventDefault();
+                    const noteValue = target instanceof HTMLTextAreaElement ? target.value : undefined;
+                    void confirmTransactionEdit(transaction, noteValue);
+                  }}
                 >
                   <input
                     type="checkbox"
@@ -3175,6 +3227,10 @@ export function App() {
                               onKeyDown={(event) => {
                                 if (event.key === "Escape") {
                                   setCategoryEditor(null);
+                                } else if (event.key === "Enter" && categorySuggestions[0]) {
+                                  event.preventDefault();
+                                  void updateTransaction(transaction.id, { category_id: categorySuggestions[0].id }, false);
+                                  setCategoryEditor(null);
                                 }
                               }}
                             />
@@ -3228,18 +3284,39 @@ export function App() {
                     )}
                   </div>
                   <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
-                  <button
-                    className="dangerTextButton"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description });
-                    }}
-                  >
-                    Delete
-                  </button>
+                  <div className="ledgerRowActions">
+                    <button
+                      type="button"
+                      className={isEditing ? "primaryButton compactButton" : "secondaryButton compactButton"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (isEditing) {
+                          void confirmTransactionEdit(transaction);
+                        } else {
+                          beginTransactionEdit(transaction.id);
+                        }
+                      }}
+                      title={isEditing ? "Save and finish editing" : "Edit transaction"}
+                    >
+                      {isEditing ? "Done" : <><Pencil size={14} /> Edit</>}
+                    </button>
+                    <button
+                      className="dangerTextButton"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description });
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
                 {isEditing ? (
                   <div className="rowEditActions">
+                    <div className="rowEditPrompt">
+                      <strong><Pencil size={14} /> Editing transaction</strong>
+                      <span>Update the highlighted fields. Press Enter or choose Done to confirm.</span>
+                    </div>
                     <button type="button" className="secondaryButton compactButton" onClick={() => void openSplitEditor(transaction)} disabled={transaction.monthly_allocation_count > 0}>
                       Split categories
                     </button>
@@ -3268,12 +3345,7 @@ export function App() {
                     <button
                       type="button"
                       className="primaryButton compactButton"
-                      onClick={() => {
-                        setEditingTransactionId(null);
-                        setCategoryEditor(null);
-                        setSplitEditor(null);
-                        setMonthlyAllocationEditor(null);
-                      }}
+                      onClick={() => void confirmTransactionEdit(transaction)}
                     >
                       Done
                     </button>
@@ -3338,16 +3410,6 @@ export function App() {
             })}
             {filteredTransactions.length === 0 ? <p className="emptyText">No transactions match those filters.</p> : null}
           </div>
-          {pagedTransactions.length < filteredTransactions.length ? (
-            <div className="paginationBar">
-              <span>
-                Showing {pagedTransactions.length} of {filteredTransactions.length}
-              </span>
-              <button className="secondaryButton" onClick={() => setTransactionPage((current) => Math.min(transactionPageCount, current + 1))}>
-                Load more
-              </button>
-            </div>
-          ) : null}
         </section>
         )}
 

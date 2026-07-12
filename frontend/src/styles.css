@@ -1830,7 +1830,7 @@ textarea {
 .ledgerRow {
   min-width: 1420px;
   display: grid;
-  grid-template-columns: 64px 104px 140px 150px minmax(260px, 1.4fr) minmax(190px, 0.9fr) 132px 150px 116px 86px;
+  grid-template-columns: 64px 104px 140px 150px minmax(260px, 1.4fr) minmax(190px, 0.9fr) 132px 150px 116px 156px;
   gap: 10px;
   align-items: center;
   padding: 9px 0;
@@ -1927,9 +1927,47 @@ select.editableCell {
 
 .rowEditActions {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
-  margin: -4px 0 10px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid #b9c9f4;
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: #f5f8ff;
+}
+
+.rowEditPrompt {
+  display: grid;
+  gap: 2px;
+  margin-right: auto;
+}
+
+.rowEditPrompt strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--blue);
+}
+
+.rowEditPrompt span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ledgerRowActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ledgerRowActions .secondaryButton,
+.ledgerRowActions .primaryButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .savedRuleGroup {
@@ -2054,6 +2092,29 @@ select.editableCell {
 
 .bulkSelectionBar span {
   margin-right: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ledgerListToolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafbfe;
+}
+
+.ledgerListToolbar > div {
+  display: grid;
+  gap: 1px;
+  margin-right: auto;
+}
+
+.ledgerListToolbar span {
   color: var(--muted);
   font-size: 12px;
 }
