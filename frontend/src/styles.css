@@ -634,6 +634,223 @@ button:disabled {
   background: var(--red-soft);
 }
 
+.toastAction {
+  padding: 4px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.activityWorkspace {
+  display: grid;
+  gap: 14px;
+}
+
+.activityIntro,
+.activityCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.activityIntro > div {
+  display: grid;
+  gap: 3px;
+}
+
+.activityIntro span,
+.activitySummary small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.activityList,
+.activityDiffs {
+  display: grid;
+  gap: 9px;
+}
+
+.activityCard {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.activityCard.undone {
+  background: var(--surface-2);
+}
+
+.activityCardHeader {
+  padding: 11px 12px;
+}
+
+.activitySummary {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.activitySummary > span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.activityActions,
+.trashRowActions,
+.trashViewToggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.activityDiffs {
+  padding: 0 12px 12px 35px;
+}
+
+.activityDiff {
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+
+.activityDiff > div {
+  display: grid;
+  grid-template-columns: 130px minmax(100px, 1fr) 20px minmax(100px, 1fr);
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.activityDiff code {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trashViewToggle {
+  width: fit-content;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.trashViewToggle button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.trashViewToggle button.active {
+  background: var(--surface);
+  color: var(--blue);
+  box-shadow: 0 1px 4px rgba(18, 30, 60, 0.12);
+}
+
+.trashRowActions {
+  flex-wrap: wrap;
+}
+
+.peekBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  background: rgba(18, 25, 48, 0.28);
+}
+
+.peekDrawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: min(480px, 94vw);
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 18px;
+  background: var(--surface);
+  box-shadow: -12px 0 35px rgba(18, 25, 48, 0.22);
+}
+
+.peekDrawer header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.peekDrawer header h2,
+.peekDrawer header p {
+  margin: 3px 0 0;
+}
+
+.peekDrawer header p,
+.peekRow small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.peekRows {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  overflow-y: auto;
+}
+
+.peekRow {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.peekRow > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.peekRow > div strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.peekDrawer footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .metricsGrid {
   display: grid;
   grid-template-columns: repeat(4, minmax(150px, 1fr));
@@ -3212,6 +3429,24 @@ select.editableCell {
 
   .netWorthSelectionStats {
     align-items: flex-start;
+  }
+
+  .activityIntro,
+  .activityCardHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .activityActions {
+    justify-content: flex-end;
+  }
+
+  .activityDiffs {
+    padding-left: 12px;
+  }
+
+  .activityDiff > div {
+    grid-template-columns: 1fr;
   }
 
   .importWorkspace {

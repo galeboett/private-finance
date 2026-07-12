@@ -49,6 +49,16 @@ The app builds a full personal finance picture by turning account exports into a
 - Select **Clear** or press Escape to remove the range selection.
 - Imported running balances and brokerage positions create durable snapshots. Between known balances, the app reconstructs checking and savings history from ledger movements and forward-fills investment values.
 
+## Fixing Mistakes and Reviewing Changes
+
+- After a bulk edit, import, delete, restore, or other journaled change, the success message includes **Undo** for 10 seconds.
+- Open **Activity** in the sidebar to review recent operations. Expand an item to see each changed field's before and after values.
+- Select **Undo** on an Activity item to reverse it. Undo actions are also recorded, so selecting **Redo** restores the change.
+- If a row was edited again after the selected operation, the app protects the newer work. It offers to undo only rows that have no later conflicts.
+- Deleted transactions move to **All Accounts → Trash**. From there, restore one or several transactions, or permanently delete them after typing `DELETE`.
+- Permanent deletion cannot be undone. Ordinary deletion and restoration remain recoverable through Activity and the undo message.
+- In the Net Worth range statistics, select **Peek transactions** for a quick side drawer. Select **Open full view** when you want the complete date-filtered ledger.
+
 ## Automated vs Manual
 
 Automated:

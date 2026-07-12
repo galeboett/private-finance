@@ -23,13 +23,14 @@ from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
 from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingSnapshot, ImportBatch, ImportPreset, Institution, SecurityMetadata, SecurityPrice, SessionToken, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, PasswordChangeRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkIdsRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, PasswordChangeRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
 from .services.importers import commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
 from .services.import_inbox import confirm_pending_import, discard_pending_import, inbox_directory, pending_import_batches, scan_import_inbox
 from .services.mutation_log import MutationChange, changed_values, journal_mutation
+from .services.operation_history import OperationConflict, list_operations, operation_detail, undo_operation
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
 from .services.snapshots import net_worth_series, net_worth_stats
 from .services.transaction_filters import parse_csv_ints, parse_csv_values, transaction_filter_conditions
@@ -86,6 +87,52 @@ if frontend_assets.exists():
 @app.get("/api/health")
 def health(db: Session = Depends(get_db)):
     return {"ok": True, "configured": ensure_setup_state(db)}
+
+
+@app.get("/api/operations")
+def get_operations(
+    limit: int = Query(default=50, ge=1, le=200),
+    entity_type: str | None = None,
+    actor: str | None = None,
+    session: SessionToken = Depends(current_session),
+    db: Session = Depends(get_db),
+):
+    return list_operations(db, limit=limit, entity_type=entity_type, actor=actor)
+
+
+@app.get("/api/operations/{operation_id}")
+def get_operation(operation_id: str, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    result = operation_detail(db, operation_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Operation not found")
+    return result
+
+
+@app.post("/api/operations/{operation_id}/undo")
+def undo_logged_operation(
+    operation_id: str,
+    payload: UndoOperationRequest,
+    request: Request,
+    session: SessionToken = Depends(current_session),
+    db: Session = Depends(get_db),
+):
+    require_csrf(request, session)
+    try:
+        result = undo_operation(
+            db,
+            operation_id=operation_id,
+            actor=actor_for_session(session),
+            unconflicted_only=payload.unconflicted_only,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except OperationConflict as error:
+        raise HTTPException(status_code=409, detail={"message": str(error), "conflicts": error.entity_ids}) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    record_audit_event(db, "operation_undo", actor_for_session(session), "operation", operation_id, result)
+    db.commit()
+    return result
 
 
 @app.post("/api/setup")
@@ -342,25 +389,58 @@ def _delete_transaction_row(db: Session, transaction: Transaction) -> None:
 
 
 def _soft_delete_transaction(db: Session, transaction: Transaction, actor: str) -> str:
-    before = changed_values(transaction, ["deleted_at"])
-    transaction.deleted_at = datetime.now(UTC).replace(tzinfo=None)
+    return _soft_delete_transactions(db, [transaction], actor)
+
+
+def _soft_delete_transactions(db: Session, transactions: list[Transaction], actor: str) -> str:
+    deleted_at = datetime.now(UTC).replace(tzinfo=None)
+    changes: list[MutationChange] = []
+    for transaction in transactions:
+        before = changed_values(transaction, ["deleted_at"])
+        transaction.deleted_at = deleted_at
+        changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["deleted_at"])))
     operation_id = journal_mutation(
         db,
         kind="delete",
         entity_type="transaction",
         actor=actor,
-        description=f'Deleted transaction "{transaction.raw_description}"',
-        changes=[MutationChange(transaction.id, before, None)],
+        description=(
+            f'Deleted transaction "{transactions[0].raw_description}"'
+            if len(transactions) == 1
+            else f"Deleted {len(transactions)} transactions"
+        ),
+        changes=changes,
     )
-    record_audit_event(
-        db,
-        "transaction_delete",
-        actor,
-        "transaction",
-        str(transaction.id),
-        {"description": transaction.raw_description, "operation_id": operation_id},
-    )
+    for transaction in transactions:
+        record_audit_event(
+            db,
+            "transaction_delete",
+            actor,
+            "transaction",
+            str(transaction.id),
+            {"description": transaction.raw_description, "operation_id": operation_id},
+        )
     return operation_id
+
+
+def _restore_transactions(db: Session, transactions: list[Transaction], actor: str) -> str:
+    changes: list[MutationChange] = []
+    for transaction in transactions:
+        before = changed_values(transaction, ["deleted_at"])
+        transaction.deleted_at = None
+        changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["deleted_at"])))
+    return journal_mutation(
+        db,
+        kind="restore",
+        entity_type="transaction",
+        actor=actor,
+        description=(
+            f'Restored transaction "{transactions[0].raw_description}"'
+            if len(transactions) == 1
+            else f"Restored {len(transactions)} transactions"
+        ),
+        changes=changes,
+    )
 
 
 def _delete_account_tree(db: Session, account: Account) -> None:
@@ -783,6 +863,68 @@ def bulk_update_transactions(payload: BulkTransactionUpdateRequest, request: Req
         db.rollback()
         raise HTTPException(status_code=400, detail="This change would create duplicate transactions in the target account") from error
     return {"ok": True, "updated": len(transactions), "affected_accounts": affected_accounts, "operation_id": operation_id}
+
+
+@app.delete("/api/transactions/bulk-delete")
+def bulk_delete_transactions(payload: BulkDeleteRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    _require_delete_confirmation(payload.confirm_text)
+    transactions = db.scalars(live_transaction_select(Transaction.id.in_(payload.ids))).all()
+    if len(transactions) != len(set(payload.ids)):
+        raise HTTPException(status_code=404, detail="One or more transactions were not found")
+    operation_id = _soft_delete_transactions(db, transactions, actor_for_session(session))
+    db.commit()
+    return {"ok": True, "deleted": len(transactions), "operation_id": operation_id}
+
+
+@app.post("/api/transactions/{transaction_id}/restore")
+def restore_transaction(transaction_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    transaction = db.get(Transaction, transaction_id)
+    if not transaction or transaction.deleted_at is None:
+        raise HTTPException(status_code=404, detail="Deleted transaction not found")
+    actor = actor_for_session(session)
+    operation_id = _restore_transactions(db, [transaction], actor)
+    record_audit_event(db, "transaction_restore", actor, "transaction", str(transaction.id), {"operation_id": operation_id})
+    db.commit()
+    return {"ok": True, "operation_id": operation_id}
+
+
+@app.post("/api/transactions/bulk-restore")
+def restore_transactions(payload: BulkIdsRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    transactions = db.scalars(select(Transaction).where(Transaction.id.in_(payload.ids), Transaction.deleted_at.is_not(None))).all()
+    if len(transactions) != len(set(payload.ids)):
+        raise HTTPException(status_code=404, detail="One or more deleted transactions were not found")
+    actor = actor_for_session(session)
+    operation_id = _restore_transactions(db, transactions, actor)
+    db.commit()
+    return {"ok": True, "restored": len(transactions), "operation_id": operation_id}
+
+
+@app.delete("/api/transactions/bulk-permanent-delete")
+def permanently_delete_transactions(payload: BulkDeleteRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    _require_delete_confirmation(payload.confirm_text)
+    transactions = db.scalars(select(Transaction).where(Transaction.id.in_(payload.ids), Transaction.deleted_at.is_not(None))).all()
+    if len(transactions) != len(set(payload.ids)):
+        raise HTTPException(status_code=404, detail="One or more deleted transactions were not found")
+    for transaction in transactions:
+        _delete_transaction_row(db, transaction)
+    db.commit()
+    return {"ok": True, "deleted": len(transactions)}
+
+
+@app.delete("/api/transactions/{transaction_id}/permanent")
+def permanently_delete_transaction(transaction_id: int, payload: DeleteConfirmRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    _require_delete_confirmation(payload.confirm_text)
+    transaction = db.get(Transaction, transaction_id)
+    if not transaction or transaction.deleted_at is None:
+        raise HTTPException(status_code=404, detail="Deleted transaction not found")
+    _delete_transaction_row(db, transaction)
+    db.commit()
+    return {"ok": True}
 
 
 @app.patch("/api/transactions/{transaction_id}")

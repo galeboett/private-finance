@@ -108,4 +108,5 @@ def test_soft_delete_keeps_row_but_removes_it_from_live_queries():
         change = db.scalar(select(OperationChange).where(OperationChange.operation_id == operation_id))
         assert operation.kind == "delete"
         assert json.loads(change.before_json) == {"deleted_at": None, "id": transaction_id}
-        assert change.after_json is None
+        assert json.loads(change.after_json)["id"] == transaction_id
+        assert json.loads(change.after_json)["deleted_at"] == deleted.deleted_at.isoformat()

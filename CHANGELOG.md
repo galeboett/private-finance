@@ -6,6 +6,7 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Fixed
 
+- Deleted-transaction Activity details now show a readable Active → Moved to Trash timestamp instead of blank `deleted_at` values; new deletions also journal the exact deletion timestamp.
 - **BUG-01** — Re-importing a CSV that overlaps an earlier import crashed with a 500 (`NameError` in `commit_import`) and rolled the whole import back. Duplicates are now skipped and counted correctly. Regression test: `tests/test_import_commit.py::test_commit_import_skips_duplicates_on_reupload`.
 - **BUG-02** — Re-importing a brokerage positions file double-counted net worth. Importing positions for an account/date now replaces that snapshot instead of appending to it.
 - **BUG-03** — Brokerage snapshot dates were always recorded as "today". Dates are now parsed from the filename (Fidelity `Jul-04-2026` style, ISO, `MM-DD-YYYY`, `YYYYMMDD`); an explicit `snapshot_date` query parameter on `/api/imports/commit` overrides the filename; when neither is available the import warns and uses today.
@@ -22,6 +23,7 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Added
 
+- Problem B/C/D recovery and drill-down polish: conflict-aware operation undo/redo APIs, row-level Activity details, 10-second undo actions for bulk edits/imports/deletes/restores, a recoverable transaction Trash with explicit delete-forever confirmation, and a net-worth transaction peek drawer that preserves dashboard context.
 - Problem D foundation: durable per-account net-worth snapshots populated from imported running balances and brokerage positions, startup backfill for existing data, forward/backward balance reconstruction, day/week/month series and range-stat APIs, and an interactive net-worth chart with period controls, hover details, drag-to-compare statistics, and transaction drill-through.
 - Problem E Tier 1 foundation: a configurable private Import Inbox with manual scanning, exact and semantic SHA-256 deduplication (independent of filename suffixes and harmless CSV formatting), account/preset matching, staged previews, confirm/discard review, unchanged source files, and one mutation-journal operation per confirmed import.
 - Problem C foundation: a canonical transaction-filter contract shared by the backend query builder and frontend URL codec, real app paths with browser back/forward support, bookmarkable transaction filters, and removable active-filter chips.

@@ -150,6 +150,14 @@ class BulkDeleteRequest(BaseModel):
     confirm_text: str
 
 
+class BulkIdsRequest(BaseModel):
+    ids: list[int] = Field(min_length=1)
+
+
+class UndoOperationRequest(BaseModel):
+    unconflicted_only: bool = False
+
+
 class BulkTransactionField(StrEnum):
     INSTITUTION = "institution"
     ACCOUNT = "account"

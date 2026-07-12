@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   FileUp,
+  History,
   Landmark,
   LayoutDashboard,
   LogOut,
@@ -14,11 +15,13 @@ import {
   Plus,
   ReceiptText,
   RefreshCw,
+  RotateCcw,
   Search,
   Settings,
   ShieldCheck,
   Sparkles,
   TrendingUp,
+  Trash2,
   WalletCards,
   X,
 } from "lucide-react";
@@ -122,11 +125,15 @@ type CategorizedHistoryImportResponse =
 type ToastState = {
   tone: "success" | "error" | "info";
   message: string;
+  operationId?: string;
+  unconflictedOnly?: boolean;
 };
 
 type DeleteTarget =
   | { kind: "transaction"; id: number; label: string }
   | { kind: "transaction_bulk"; ids: number[]; label: string }
+  | { kind: "transaction_permanent"; id: number; label: string }
+  | { kind: "transaction_bulk_permanent"; ids: number[]; label: string }
   | { kind: "account"; id: number; label: string }
   | { kind: "account_bulk"; ids: number[]; label: string }
   | { kind: "holding"; id: number; label: string }
@@ -165,6 +172,30 @@ type NetWorthStats = {
   best_day: { date: string; delta_cents: number };
   worst_day: { date: string; delta_cents: number };
 };
+
+type OperationSummary = {
+  id: string;
+  kind: string;
+  entity_type: string;
+  actor: string;
+  description: string;
+  created_at: string;
+  change_count: number;
+  undone_by: string | null;
+  undo_of: string | null;
+  can_undo: boolean;
+};
+
+type OperationDetail = OperationSummary & {
+  changes: Array<{ id: number; entity_id: string; before: Record<string, unknown> | null; after: Record<string, unknown> | null }>;
+};
+
+type PeekDrawerState = {
+  title: string;
+  from: string;
+  to: string;
+  rows: TransactionRow[];
+};
 type AllocationRow = { asset_class: string; market_value_cents: number };
 type TransactionSortKey = "date" | "amount";
 type SortDirection = "asc" | "desc";
@@ -202,6 +233,7 @@ const primaryNavItems: Array<{ id: AppView; label: string; icon: typeof LayoutDa
   { id: "reports", label: "Reports", icon: TrendingUp },
   { id: "all-accounts", label: "All Accounts", icon: Landmark },
   { id: "review", label: "Review", icon: ListChecks },
+  { id: "history", label: "Activity", icon: History },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -572,6 +604,10 @@ export function App() {
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [review, setReview] = useState<ReviewItem[]>([]);
   const [transactions, setTransactions] = useState<TransactionRow[]>([]);
+  const [operations, setOperations] = useState<OperationSummary[]>([]);
+  const [expandedOperationId, setExpandedOperationId] = useState<string | null>(null);
+  const [expandedOperation, setExpandedOperation] = useState<OperationDetail | null>(null);
+  const [peekDrawer, setPeekDrawer] = useState<PeekDrawerState | null>(null);
   const [rules, setRules] = useState<RuleSummary[]>([]);
   const [categoryTotals, setCategoryTotals] = useState<CategoryTotal[]>([]);
   const [cashFlowRows, setCashFlowRows] = useState<MonthlyCashFlow[]>([]);
@@ -622,6 +658,7 @@ export function App() {
   const [transactionAmountMin, setTransactionAmountMin] = useState<number | undefined>(initialRoute.current.filters.amountMin);
   const [transactionAmountMax, setTransactionAmountMax] = useState<number | undefined>(initialRoute.current.filters.amountMax);
   const [transactionDirection, setTransactionDirection] = useState<TxnFilter["direction"]>(initialRoute.current.filters.direction);
+  const [transactionView, setTransactionView] = useState<TxnFilter["view"]>(() => ["account", "all-accounts"].includes(initialRoute.current.view) ? initialRoute.current.filters.view ?? "live" : "live");
   const [transactionFiltersInitialized, setTransactionFiltersInitialized] = useState(false);
   const [transactionSortKey, setTransactionSortKey] = useState<TransactionSortKey>(initialRoute.current.filters.sort ?? "date");
   const [transactionSortDirection, setTransactionSortDirection] = useState<SortDirection>(initialRoute.current.filters.sortDirection ?? "desc");
@@ -671,7 +708,7 @@ export function App() {
     if (!toast) {
       return;
     }
-    const timer = window.setTimeout(() => setToast(null), toast.tone === "error" ? 10000 : 5000);
+    const timer = window.setTimeout(() => setToast(null), toast.operationId || toast.tone === "error" ? 10000 : 5000);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
@@ -701,6 +738,7 @@ export function App() {
       setTransactionAmountMin(route.filters.amountMin);
       setTransactionAmountMax(route.filters.amountMax);
       setTransactionDirection(route.filters.direction);
+      setTransactionView(["account", "all-accounts"].includes(route.view) ? route.filters.view ?? "live" : "live");
       setTransactionSearch(route.filters.search ?? "");
       setTransactionSortKey(route.filters.sort ?? "date");
       setTransactionSortDirection(route.filters.sortDirection ?? "desc");
@@ -725,6 +763,7 @@ export function App() {
       amountMin: transactionAmountMin,
       amountMax: transactionAmountMax,
       direction: transactionDirection,
+      view: transactionView,
       search: transactionSearch || undefined,
       sort: transactionSortKey,
       sortDirection: transactionSortDirection,
@@ -747,6 +786,7 @@ export function App() {
     transactionDateFrom,
     transactionDateTo,
     transactionDirection,
+    transactionView,
     transactionFiltersInitialized,
     transactionSearch,
     transactionSortDirection,
@@ -771,7 +811,20 @@ export function App() {
     transactionSortKey,
     transactionSortDirection,
     transactionSearch,
+    transactionView,
   ]);
+
+  useEffect(() => {
+    if (!csrf) return;
+    api<TransactionRow[]>(`/api/transactions?view=${transactionView}`)
+      .then((rows) => {
+        setTransactions(rows);
+        setSelectedTransactionIds([]);
+        setFocusedTransactionId(null);
+        setEditingTransactionId(null);
+      })
+      .catch(() => undefined);
+  }, [csrf, transactionView]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -801,11 +854,11 @@ export function App() {
   }
 
   async function loadData() {
-    const [dashboardData, accountsData, reviewData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData, transferData, inboxData] = await Promise.all([
+    const [dashboardData, accountsData, reviewData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData, transferData, inboxData, operationData] = await Promise.all([
       api<DashboardSummary>("/api/dashboard/summary"),
       api<AccountSummary[]>("/api/accounts"),
       api<ReviewItem[]>("/api/review"),
-      api<TransactionRow[]>("/api/transactions"),
+      api<TransactionRow[]>(`/api/transactions?view=${transactionView}`),
       api<RuleSummary[]>("/api/rules"),
       api<CategoryTotal[]>(categoryTotalsPath(reportPeriod)),
       api<MonthlyCashFlow[]>("/api/cash-flow"),
@@ -814,6 +867,7 @@ export function App() {
       api<HoldingRow[]>("/api/investments/holdings"),
       api<TransferCandidate[]>("/api/transfers/unconfirmed"),
       api<ImportInboxState>("/api/imports/inbox"),
+      api<OperationSummary[]>("/api/operations?limit=100"),
     ]);
     setDashboard(dashboardData);
     setAccounts(accountsData);
@@ -827,10 +881,84 @@ export function App() {
     setHoldingRows(holdingsData);
     setTransferCandidates(transferData);
     setImportInbox(inboxData);
+    setOperations(operationData);
   }
 
   function showToast(nextToast: ToastState) {
     setToast(nextToast);
+  }
+
+  async function undoLoggedOperation(operationId: string, unconflictedOnly = false) {
+    setBusyAction(`undo-${operationId}`);
+    try {
+      const response = await fetch(apiUrl(`/api/operations/${operationId}/undo`), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "x-csrf-token": csrf },
+        body: JSON.stringify({ unconflicted_only: unconflictedOnly }),
+      });
+      if (response.status === 409) {
+        const payload = await response.json() as { detail?: { conflicts?: string[] } };
+        const count = payload.detail?.conflicts?.length ?? 0;
+        showToast({ tone: "info", message: `${count} row${count === 1 ? " was" : "s were"} changed later. You can undo only the unaffected rows.`, operationId, unconflictedOnly: true });
+        return;
+      }
+      if (!response.ok) throw new Error(await readableApiError(response, `/api/operations/${operationId}/undo`));
+      const result = await parseApiJson<{ operation_id: string; undone: number }>(response, `/api/operations/${operationId}/undo`);
+      await loadData();
+      setExpandedOperationId(null);
+      setExpandedOperation(null);
+      showToast({ tone: "success", message: `Reverted ${result.undone} row${result.undone === 1 ? "" : "s"}.`, operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "This change could not be undone." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function toggleOperationDetail(operationId: string) {
+    if (expandedOperationId === operationId) {
+      setExpandedOperationId(null);
+      setExpandedOperation(null);
+      return;
+    }
+    try {
+      const detail = await api<OperationDetail>(`/api/operations/${operationId}`);
+      setExpandedOperationId(operationId);
+      setExpandedOperation(detail);
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Activity details could not be loaded." });
+    }
+  }
+
+  async function restoreDeletedTransaction(transaction: TransactionRow) {
+    try {
+      const result = await api<{ operation_id: string }>(`/api/transactions/${transaction.id}/restore`, { method: "POST", headers: { "x-csrf-token": csrf } });
+      await loadData();
+      showToast({ tone: "success", message: `Restored “${transaction.raw_description}”.`, operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Transaction could not be restored." });
+    }
+  }
+
+  async function restoreSelectedTransactions(ids: number[]) {
+    try {
+      const result = await api<{ operation_id: string; restored: number }>("/api/transactions/bulk-restore", { method: "POST", headers: { "x-csrf-token": csrf }, body: JSON.stringify({ ids }) });
+      setSelectedTransactionIds([]);
+      await loadData();
+      showToast({ tone: "success", message: `Restored ${result.restored} transactions.`, operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Transactions could not be restored." });
+    }
+  }
+
+  async function openTransactionPeek(from: string, to: string) {
+    try {
+      const rows = await api<TransactionRow[]>(`/api/transactions?dateFrom=${from}&dateTo=${to}`);
+      setPeekDrawer({ title: `${formatShortDate(from)} – ${formatShortDate(to)}`, from, to, rows: rows.slice(0, 20) });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Transaction preview could not be loaded." });
+    }
   }
 
   function clearAccountForm() {
@@ -1051,11 +1179,11 @@ export function App() {
       if (!response.ok) {
         throw new Error(await readableApiError(response, `/api/imports/commit?account_id=${selectedAccountId}`));
       }
-      const result = (await response.json()) as { inserted: number; skipped: number };
+      const result = (await response.json()) as { inserted: number; skipped: number; operation_id?: string };
       setImportPreview(null);
       setSelectedFile(null);
       await loadData();
-      showToast({ tone: "success", message: `Imported ${result.inserted} rows. Skipped ${result.skipped} duplicates.` });
+      showToast({ tone: "success", message: `Imported ${result.inserted} rows. Skipped ${result.skipped} duplicates.`, operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Import failed." });
     } finally {
@@ -1066,7 +1194,7 @@ export function App() {
   async function updateTransaction(transactionId: number, patch: Partial<Pick<TransactionRow, "account_id" | "category_id" | "transaction_type" | "review_status" | "user_note">>, refreshAfterSave = false) {
     setToast(null);
     try {
-      await api(`/api/transactions/${transactionId}`, {
+      const result = await api<{ operation_id: string }>(`/api/transactions/${transactionId}`, {
         method: "PATCH",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify(patch),
@@ -1078,8 +1206,11 @@ export function App() {
       if (refreshAfterSave) {
         await loadData();
       }
+      showToast({ tone: "success", message: "Transaction updated.", operationId: result.operation_id });
+      return result.operation_id;
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Transaction could not be updated." });
+      return undefined;
     }
   }
 
@@ -1192,7 +1323,6 @@ export function App() {
       await updateTransaction(transaction.id, { user_note: noteValue }, false);
     }
     exitTransactionEdit();
-    showToast({ tone: "success", message: "Transaction changes saved." });
   }
 
   async function bulkUpdateSelectedTransactions() {
@@ -1205,7 +1335,7 @@ export function App() {
       return;
     }
     try {
-      const result = await api<{ updated: number; affected_accounts: number }>("/api/transactions/bulk-update", {
+      const result = await api<{ updated: number; affected_accounts: number; operation_id: string }>("/api/transactions/bulk-update", {
         method: "PATCH",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({ ids: selectedRepositoryTransactionIds, field: bulkEditField, value: bulkEditValue }),
@@ -1216,7 +1346,7 @@ export function App() {
       setSelectedTransactionIds((current) => current.filter((id) => !selectedRepositoryTransactionIds.includes(id)));
       const accountNote = result.affected_accounts ? ` This changed ${result.affected_accounts} account record${result.affected_accounts === 1 ? "" : "s"}.` : "";
       const fieldLabel = bulkTransactionFields.find((field) => field.value === bulkEditField)?.label.toLowerCase() ?? "value";
-      showToast({ tone: "success", message: `Updated ${fieldLabel} for ${result.updated} transaction${result.updated === 1 ? "" : "s"}.${accountNote}` });
+      showToast({ tone: "success", message: `Updated ${fieldLabel} for ${result.updated} transaction${result.updated === 1 ? "" : "s"}.${accountNote}`, operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Bulk transaction update failed." });
     }
@@ -1502,8 +1632,8 @@ export function App() {
       showToast({ tone: "error", message: "Choose a category before confirming an expense." });
       return;
     }
-    await updateTransaction(transaction.id, { review_status: "confirmed" });
-    showToast({ tone: "success", message: "Transaction confirmed." });
+    const operationId = await updateTransaction(transaction.id, { review_status: "confirmed" });
+    if (operationId) showToast({ tone: "success", message: "Transaction confirmed.", operationId });
   }
 
   async function saveRuleFromTransaction(transaction: TransactionRow) {
@@ -1796,14 +1926,26 @@ export function App() {
       return;
     }
     try {
+      let operationId: string | undefined;
       if (deleteTarget.kind === "transaction_bulk") {
-        for (const id of deleteTarget.ids) {
-          await api(`/api/transactions/${id}`, {
-            method: "DELETE",
-            headers: { "x-csrf-token": csrf },
-            body: JSON.stringify({ confirm_text: deleteConfirmText }),
-          });
-        }
+        const result = await api<{ operation_id: string }>("/api/transactions/bulk-delete", {
+          method: "DELETE",
+          headers: { "x-csrf-token": csrf },
+          body: JSON.stringify({ ids: deleteTarget.ids, confirm_text: deleteConfirmText }),
+        });
+        operationId = result.operation_id;
+      } else if (deleteTarget.kind === "transaction_bulk_permanent") {
+        await api("/api/transactions/bulk-permanent-delete", {
+          method: "DELETE",
+          headers: { "x-csrf-token": csrf },
+          body: JSON.stringify({ ids: deleteTarget.ids, confirm_text: deleteConfirmText }),
+        });
+      } else if (deleteTarget.kind === "transaction_permanent") {
+        await api(`/api/transactions/${deleteTarget.id}/permanent`, {
+          method: "DELETE",
+          headers: { "x-csrf-token": csrf },
+          body: JSON.stringify({ confirm_text: deleteConfirmText }),
+        });
       } else if (deleteTarget.kind === "account_bulk") {
         await api("/api/accounts/bulk-delete", {
           method: "DELETE",
@@ -1823,11 +1965,12 @@ export function App() {
             : deleteTarget.kind === "account"
               ? `/api/accounts/${deleteTarget.id}`
               : `/api/investments/holdings/${deleteTarget.id}`;
-        await api(path, {
+        const result = await api<{ operation_id?: string }>(path, {
           method: "DELETE",
           headers: { "x-csrf-token": csrf },
           body: JSON.stringify({ confirm_text: deleteConfirmText }),
         });
+        operationId = result.operation_id;
       }
       const deletedKind = deleteTarget.kind;
       setDeleteTarget(null);
@@ -1839,7 +1982,8 @@ export function App() {
       setSelectedHoldingIds([]);
       setLastSelectedHoldingId(null);
       await loadData();
-      showToast({ tone: "success", message: deletedKind.endsWith("bulk") ? "Selected rows deleted." : "Row deleted." });
+      const permanent = deletedKind.includes("permanent");
+      showToast({ tone: "success", message: permanent ? "Transaction data permanently deleted." : deletedKind.includes("bulk") ? "Selected rows moved to Trash." : "Row moved to Trash.", operationId });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rows could not be deleted." });
     }
@@ -2082,9 +2226,9 @@ export function App() {
   async function confirmInboxBatch(batch: InboxBatch) {
     setBusyAction(`inbox-confirm-${batch.id}`);
     try {
-      const result = await api<{ inserted: number; skipped: number }>(`/api/imports/${batch.id}/confirm`, { method: "POST", headers: { "x-csrf-token": csrf } });
+      const result = await api<{ inserted: number; skipped: number; operation_id?: string }>(`/api/imports/${batch.id}/confirm`, { method: "POST", headers: { "x-csrf-token": csrf } });
       await loadData();
-      showToast({ tone: "success", message: `Imported ${result.inserted} rows from ${batch.filename}. ${result.skipped} duplicates skipped.` });
+      showToast({ tone: "success", message: `Imported ${result.inserted} rows from ${batch.filename}. ${result.skipped} duplicates skipped.`, operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Inbox import could not be confirmed." });
     } finally {
@@ -2148,7 +2292,12 @@ export function App() {
 
   function navigateToView(view: AppView, accountId: number | null = null) {
     const nextAccountId = view === "account" ? accountId : null;
-    window.history.pushState({}, "", routeUrl(view, nextAccountId, readAppRoute(window.location).filters));
+    const nextFilters = readAppRoute(window.location).filters;
+    if (view !== "account" && view !== "all-accounts") {
+      nextFilters.view = undefined;
+      if (transactionView === "trash") setTransactionView("live");
+    }
+    window.history.pushState({}, "", routeUrl(view, nextAccountId, nextFilters));
     setActiveView(view);
     setFocusedAccountId(nextAccountId);
     setCategoryEditor(null);
@@ -2376,6 +2525,11 @@ export function App() {
           <div className={`toast ${toast.tone}`} style={{ margin: "16px 20px 0" }} role="status" aria-live="polite">
             {toast.tone === "success" ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
             <span>{toast.message}</span>
+            {toast.operationId ? (
+              <button className="toastAction" onClick={() => void undoLoggedOperation(toast.operationId!, toast.unconflictedOnly)} disabled={busyAction === `undo-${toast.operationId}`}>
+                {toast.unconflictedOnly ? "Undo safe rows" : "Undo"}
+              </button>
+            ) : null}
             <button className="toastClose" onClick={() => setToast(null)} aria-label="Dismiss notification">
               <X size={14} />
             </button>
@@ -2568,6 +2722,7 @@ export function App() {
                     setTransactionDateTo(toDate);
                     navigateToView("all-accounts");
                   }}
+                  onPeekTransactions={openTransactionPeek}
                   onRequestDelete={requestDelete}
                   onConfirmDelete={confirmDelete}
                   onDeleteConfirmTextChange={setDeleteConfirmText}
@@ -2580,6 +2735,62 @@ export function App() {
             </section>
           </>
         )}
+
+        {activeView === "history" ? (
+          <section className="ledgerPanel activityWorkspace">
+            <PanelTitle icon={History} title="Activity" subtitle="Review changes, inspect row-level details, and safely undo mistakes." />
+            <div className="activityIntro">
+              <div>
+                <strong>{operations.length} recent operation{operations.length === 1 ? "" : "s"}</strong>
+                <span>Undo is blocked when a later change would be overwritten.</span>
+              </div>
+              <button className="secondaryButton compactButton" onClick={() => void loadData()}><RefreshCw size={14} /> Refresh</button>
+            </div>
+            <div className="activityList">
+              {operations.map((operation) => (
+                <article className={operation.undone_by ? "activityCard undone" : "activityCard"} key={operation.id}>
+                  <div className="activityCardHeader">
+                    <button className="activitySummary" onClick={() => void toggleOperationDetail(operation.id)} aria-expanded={expandedOperationId === operation.id}>
+                      {expandedOperationId === operation.id ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                      <span>
+                        <strong>{operation.description}</strong>
+                        <small>{new Date(operation.created_at).toLocaleString()} · {operation.change_count} row{operation.change_count === 1 ? "" : "s"} · {operation.actor}</small>
+                      </span>
+                    </button>
+                    <div className="activityActions">
+                      {operation.undo_of ? <span className="statusBadge confirmed">Undo</span> : null}
+                      {operation.undone_by ? <span className="statusBadge possible-duplicate">Reverted</span> : null}
+                      <button className="secondaryButton compactButton" disabled={!operation.can_undo || busyAction === `undo-${operation.id}`} onClick={() => void undoLoggedOperation(operation.id)}>
+                        <RotateCcw size={13} /> {operation.kind === "undo" ? "Redo" : "Undo"}
+                      </button>
+                    </div>
+                  </div>
+                  {expandedOperationId === operation.id && expandedOperation ? (
+                    <div className="activityDiffs">
+                      {expandedOperation.changes.map((change) => {
+                        const fields = Array.from(new Set([...Object.keys(change.before ?? {}), ...Object.keys(change.after ?? {})])).filter((field) => field !== "id");
+                        return (
+                          <div className="activityDiff" key={change.id}>
+                            <strong>Row {change.entity_id}</strong>
+                            {fields.length === 0 ? <span>{change.before ? "Removed" : "Created"}</span> : fields.map((field) => (
+                              <div key={field}>
+                                <span>{readableAccountType(field)}</span>
+                                <code>{formatOperationDiffValue(operation, field, change.before?.[field], "before")}</code>
+                                <span>→</span>
+                                <code>{formatOperationDiffValue(operation, field, change.after?.[field], "after")}</code>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </article>
+              ))}
+              {operations.length === 0 ? <p className="emptyText">No recoverable activity has been recorded yet.</p> : null}
+            </div>
+          </section>
+        ) : null}
 
         {activeView === "account" && focusedAccount ? (
           <div className="stickyAccountChrome">
@@ -3390,7 +3601,11 @@ export function App() {
 
         {(activeView === "account" || activeView === "all-accounts") && (
         <section className="ledgerPanel ledgerWorkspace">
-          <PanelTitle icon={ReceiptText} title={activeView === "account" ? "Account Transactions" : "All Transactions"} subtitle={activeView === "account" ? "Transactions for the selected account." : "A searchable repository for every imported transaction."} />
+          <PanelTitle icon={transactionView === "trash" ? Trash2 : ReceiptText} title={transactionView === "trash" ? "Transaction Trash" : activeView === "account" ? "Account Transactions" : "All Transactions"} subtitle={transactionView === "trash" ? "Restore deleted transactions or permanently remove them." : activeView === "account" ? "Transactions for the selected account." : "A searchable repository for every imported transaction."} />
+          <div className="trashViewToggle" role="group" aria-label="Transaction view">
+            <button className={transactionView === "live" ? "active" : ""} onClick={() => setTransactionView("live")}><ReceiptText size={14} /> Transactions</button>
+            <button className={transactionView === "trash" ? "active" : ""} onClick={() => setTransactionView("trash")}><Trash2 size={14} /> Trash</button>
+          </div>
           {transactionFilterChips.length > 0 ? (
             <div className="transactionFilterChips" aria-label="Active transaction filters">
               {transactionFilterChips.map((chip) => (
@@ -3461,13 +3676,20 @@ export function App() {
                   <strong>{selectedRepositoryTransactionIds.length} selected</strong>
                   <span>{pagedTransactions.length} shown{filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}</span>
                 </div>
-                <button className="secondaryButton compactButton" onClick={() => setBulkEditorOpen((current) => !current)}>{bulkEditorOpen ? "Close bulk edit" : "Bulk edit"}</button>
+                {transactionView === "live" ? <button className="secondaryButton compactButton" onClick={() => setBulkEditorOpen((current) => !current)}>{bulkEditorOpen ? "Close bulk edit" : "Bulk edit"}</button> : null}
               </div>
-              <button className="dangerTextButton" onClick={() => requestBulkTransactionDelete(selectedRepositoryTransactionIds)}>Delete selected</button>
+              {transactionView === "live" ? (
+                <button className="dangerTextButton" onClick={() => requestBulkTransactionDelete(selectedRepositoryTransactionIds)}>Delete selected</button>
+              ) : (
+                <>
+                  <button className="secondaryButton compactButton" onClick={() => void restoreSelectedTransactions(selectedRepositoryTransactionIds)}>Restore selected</button>
+                  <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction_bulk_permanent", ids: selectedRepositoryTransactionIds, label: `${selectedRepositoryTransactionIds.length} deleted transactions` })}>Delete forever</button>
+                </>
+              )}
               <button className="ghostButton compactButton" onClick={() => { setSelectedTransactionIds((current) => current.filter((id) => !repositoryTransactionIds.includes(id))); setBulkEditorOpen(false); }}>Clear</button>
             </div>
           ) : null}
-          {bulkEditorOpen && selectedRepositoryTransactionIds.length > 0 ? (
+          {transactionView === "live" && bulkEditorOpen && selectedRepositoryTransactionIds.length > 0 ? (
             <div
               className="bulkEditPanel"
               onKeyDown={(event) => {
@@ -3500,7 +3722,7 @@ export function App() {
               {bulkEditField === "institution" ? <small>Institution changes apply to the account records associated with the selected transactions.</small> : null}
             </div>
           ) : null}
-          {deleteTarget?.kind === "transaction_bulk" ? (
+          {deleteTarget?.kind === "transaction_bulk" || deleteTarget?.kind === "transaction_bulk_permanent" ? (
             <DeleteConfirmInline
               target={deleteTarget}
               confirmText={deleteConfirmText}
@@ -3538,7 +3760,7 @@ export function App() {
               const categoryLabel = categories.find((category) => category.id === transaction.category_id)?.label;
               const editorOpen = categoryEditor?.transactionId === transaction.id;
               const isFocused = focusedTransactionId === transaction.id;
-              const isEditing = editingTransactionId === transaction.id;
+              const isEditing = transactionView === "live" && editingTransactionId === transaction.id;
               const typeLabel = transactionTypes.find((type) => type.value === transaction.transaction_type)?.label ?? transaction.transaction_type;
               return (
               <div className="inlineDeleteGroup ledgerDeleteGroup" key={transaction.id} id={`transaction-row-${transaction.id}`}>
@@ -3552,8 +3774,8 @@ export function App() {
                   ]
                     .filter(Boolean)
                     .join(" ")}
-                  onClick={() => handleTransactionRowClick(transaction.id)}
-                  onDoubleClick={() => openTransactionEditor(transaction.id)}
+                  onClick={() => { if (transactionView === "live") handleTransactionRowClick(transaction.id); }}
+                  onDoubleClick={() => { if (transactionView === "live") openTransactionEditor(transaction.id); }}
                   onKeyDown={(event) => {
                     if (!isEditing || event.key !== "Enter" || event.shiftKey) return;
                     const target = event.target as HTMLElement;
@@ -3694,15 +3916,22 @@ export function App() {
                     )}
                   </div>
                   <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
-                  <button
-                    className="dangerTextButton"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description });
-                    }}
-                  >
-                    Delete
-                  </button>
+                  {transactionView === "trash" ? (
+                    <div className="trashRowActions">
+                      <button className="secondaryButton compactButton" onClick={(event) => { event.stopPropagation(); void restoreDeletedTransaction(transaction); }}>Restore</button>
+                      <button className="dangerTextButton" onClick={(event) => { event.stopPropagation(); requestDelete({ kind: "transaction_permanent", id: transaction.id, label: transaction.raw_description }); }}>Delete forever</button>
+                    </div>
+                  ) : (
+                    <button
+                      className="dangerTextButton"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description });
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
                 </div>
                 {isEditing ? (
                   <div className="rowEditActions">
@@ -3782,7 +4011,7 @@ export function App() {
                     </div>
                   </section>
                 ) : null}
-                {deleteTarget?.kind === "transaction" && deleteTarget.id === transaction.id ? (
+                {(deleteTarget?.kind === "transaction" || deleteTarget?.kind === "transaction_permanent") && deleteTarget.id === transaction.id ? (
                   <DeleteConfirmInline
                     target={deleteTarget}
                     confirmText={deleteConfirmText}
@@ -3917,6 +4146,39 @@ export function App() {
             </div>
           </div>
         ) : null}
+        {peekDrawer ? (
+          <div className="peekBackdrop" onClick={() => setPeekDrawer(null)}>
+            <aside className="peekDrawer" aria-label="Matching transactions" onClick={(event) => event.stopPropagation()}>
+              <header>
+                <div>
+                  <span className="eyebrow">Transaction peek</span>
+                  <h2>{peekDrawer.title}</h2>
+                  <p>{peekDrawer.rows.length === 20 ? "Top 20 matching transactions" : `${peekDrawer.rows.length} matching transaction${peekDrawer.rows.length === 1 ? "" : "s"}`}</p>
+                </div>
+                <button className="ghostButton compactButton" onClick={() => setPeekDrawer(null)} aria-label="Close transaction preview"><X size={16} /></button>
+              </header>
+              <div className="peekRows">
+                {peekDrawer.rows.map((row) => (
+                  <div className="peekRow" key={row.id}>
+                    <span>{formatShortDate(row.transaction_date)}</span>
+                    <div><strong>{row.raw_description}</strong><small>{row.account_name}</small></div>
+                    <strong className={row.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(row.amount_cents)}</strong>
+                  </div>
+                ))}
+                {peekDrawer.rows.length === 0 ? <p className="emptyText">No transactions occurred in this range.</p> : null}
+              </div>
+              <footer>
+                <button className="primaryButton" onClick={() => {
+                  setTransactionDateFrom(peekDrawer.from);
+                  setTransactionDateTo(peekDrawer.to);
+                  setTransactionView("live");
+                  setPeekDrawer(null);
+                  navigateToView("all-accounts");
+                }}>Open full view →</button>
+              </footer>
+            </aside>
+          </div>
+        ) : null}
       </main>
     </div>
   );
@@ -3988,12 +4250,15 @@ function DeleteConfirmInline({
   onConfirm: () => Promise<void>;
   onCancel: () => void;
 }) {
+  const isBulk = target.kind.includes("bulk");
+  const isPermanent = target.kind.includes("permanent");
+  const isAccount = target.kind === "account" || target.kind === "account_bulk";
   return (
     <section className="deleteConfirmPanel inlineDeleteConfirm">
       <div>
-        <strong>{target.kind.endsWith("bulk") ? "Delete selected items?" : target.kind === "account" ? "Delete this account?" : `Delete this ${target.kind} row?`}</strong>
+        <strong>{isPermanent ? `Permanently delete ${isBulk ? "these transactions" : "this transaction"}?` : isBulk ? "Delete selected items?" : target.kind === "account" ? "Delete this account?" : "Move this row to Trash?"}</strong>
         <span>{target.label}</span>
-        <small>Deleting an account keeps its transactions and returns them to Review for account selection. Holdings, presets, and import history are removed; audit history remains.</small>
+        <small>{isPermanent ? "This cannot be undone. The transaction and its related split or allocation data will be removed." : isAccount ? "Deleting an account keeps its transactions and returns them to Review for account selection. Holdings, presets, and import history are removed; audit history remains." : "The transaction can be restored from Trash or immediately with Undo."}</small>
       </div>
       <input value={confirmText} onChange={(event) => onConfirmTextChange(event.target.value)} placeholder="Type DELETE to confirm" />
       <div className="buttonRow">
@@ -4036,6 +4301,7 @@ function ReportSurface({
   onClearHoldingSelection,
   onUpdateHoldingDescription,
   onViewTransactions,
+  onPeekTransactions,
   onRequestDelete,
   onConfirmDelete,
   onDeleteConfirmTextChange,
@@ -4060,6 +4326,7 @@ function ReportSurface({
   onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
   onViewTransactions: (fromDate: string, toDate: string) => void;
+  onPeekTransactions: (fromDate: string, toDate: string) => void;
   onRequestDelete: (target: DeleteTarget) => void;
   onConfirmDelete: () => Promise<void>;
   onDeleteConfirmTextChange: (value: string) => void;
@@ -4072,7 +4339,7 @@ function ReportSurface({
     return <IncomeReport income={income} expenses={expenses} net={net} />;
   }
   if (activeTab === "Net Worth") {
-    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} deleteTarget={deleteTarget} deleteConfirmText={deleteConfirmText} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onViewTransactions={onViewTransactions} onRequestDelete={onRequestDelete} onConfirmDelete={onConfirmDelete} onDeleteConfirmTextChange={onDeleteConfirmTextChange} onCancelDelete={onCancelDelete} />;
+    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} deleteTarget={deleteTarget} deleteConfirmText={deleteConfirmText} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onViewTransactions={onViewTransactions} onPeekTransactions={onPeekTransactions} onRequestDelete={onRequestDelete} onConfirmDelete={onConfirmDelete} onDeleteConfirmTextChange={onDeleteConfirmTextChange} onCancelDelete={onCancelDelete} />;
   }
   if (activeTab === "Cash Flow") {
     return <MonthlyCashFlowReport rows={cashFlowRows} income={income} expenses={expenses} net={net} />;
@@ -4186,7 +4453,7 @@ function IncomeReport({ income, expenses, net }: { income: number; expenses: num
   );
 }
 
-function NetWorthHistoryChart({ onViewTransactions }: { onViewTransactions: (fromDate: string, toDate: string) => void }) {
+function NetWorthHistoryChart({ onViewTransactions, onPeekTransactions }: { onViewTransactions: (fromDate: string, toDate: string) => void; onPeekTransactions: (fromDate: string, toDate: string) => void }) {
   const [period, setPeriod] = useState<NetWorthPeriod>(() => readAppRoute(window.location).filters.netWorthPeriod ?? "6M");
   const [data, setData] = useState<NetWorthSeriesResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -4365,6 +4632,7 @@ function NetWorthHistoryChart({ onViewTransactions }: { onViewTransactions: (fro
           </div>
           <span>High {formatMoney(selectionStats.max_cents)} ({formatShortDate(selectionStats.max_date)})</span>
           <span>Low {formatMoney(selectionStats.min_cents)} ({formatShortDate(selectionStats.min_date)})</span>
+          <button type="button" className="secondaryButton compactButton" onClick={() => onPeekTransactions(selectionStats.from, selectionStats.to)}>Peek transactions</button>
           <button type="button" className="secondaryButton compactButton" onClick={() => onViewTransactions(selectionStats.from, selectionStats.to)}>View transactions →</button>
           <button type="button" className="ghostButton compactButton" onClick={() => { setSelectionStats(null); setDragStart(null); setDragEnd(null); setIsDragging(false); }}>Clear</button>
         </div>
@@ -4392,6 +4660,24 @@ function formatCompactMoney(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(cents / 100);
 }
 
+function formatOperationValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function formatOperationDiffValue(operation: OperationSummary, field: string, value: unknown, side: "before" | "after") {
+  if (field === "deleted_at") {
+    if (value) {
+      const parsed = new Date(String(value));
+      return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
+    }
+    if (operation.kind === "delete") return side === "before" ? "Active" : `Moved to Trash ${new Date(operation.created_at).toLocaleString()}`;
+    if (operation.kind === "restore") return side === "after" ? "Active" : `In Trash before ${new Date(operation.created_at).toLocaleString()}`;
+  }
+  return formatOperationValue(value);
+}
+
 function NetWorthReport({
   accounts,
   allocationRows,
@@ -4406,6 +4692,7 @@ function NetWorthReport({
   onClearHoldingSelection,
   onUpdateHoldingDescription,
   onViewTransactions,
+  onPeekTransactions,
   onRequestDelete,
   onConfirmDelete,
   onDeleteConfirmTextChange,
@@ -4424,6 +4711,7 @@ function NetWorthReport({
   onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
   onViewTransactions: (fromDate: string, toDate: string) => void;
+  onPeekTransactions: (fromDate: string, toDate: string) => void;
   onRequestDelete: (target: DeleteTarget) => void;
   onConfirmDelete: () => Promise<void>;
   onDeleteConfirmTextChange: (value: string) => void;
@@ -4434,7 +4722,7 @@ function NetWorthReport({
   const sharedPriceDate = holdingRows.find((row) => row.price_date)?.price_date ?? "-";
   return (
     <div className="reportStack">
-      <NetWorthHistoryChart onViewTransactions={onViewTransactions} />
+      <NetWorthHistoryChart onViewTransactions={onViewTransactions} onPeekTransactions={onPeekTransactions} />
       <div className="reportMiniGrid">
         <ReportStat label="Latest investment value" value={formatMoney(total)} />
         <ReportStat label="Accounts with snapshots" value={String(accounts.length)} />
