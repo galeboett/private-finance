@@ -22,6 +22,7 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Added
 
+- Problem B foundation: operation and row-change journal tables, atomic before/after mutation recording for transaction edits, bulk edits, voids, and deletes, plus recoverable transaction soft deletion and one shared live-transaction query predicate.
 - `POST /api/password` — change the local password (requires the current password; revokes all other sessions). **SEC-02 partial**
 - `PATCH /api/rules/{id}` and `DELETE /api/rules/{id}` — rules are no longer permanent. **ARCH-07 partial**
 - `GET /api/backups` — list existing backups and the backups folder.

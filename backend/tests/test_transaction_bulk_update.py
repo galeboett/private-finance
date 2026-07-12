@@ -6,7 +6,7 @@ from starlette.requests import Request
 
 from app.db import Base
 from app.main import bulk_update_transactions
-from app.models import Account, Category, SessionToken, Transaction
+from app.models import Account, Category, Operation, OperationChange, SessionToken, Transaction
 from app.schemas import BulkTransactionUpdateRequest
 
 
@@ -27,7 +27,7 @@ def test_bulk_update_supports_every_editable_transaction_field():
         db.commit()
         ids = [row.id for row in rows]
         request = Request({"type": "http", "headers": [(b"x-csrf-token", b"csrf")]})
-        session = SessionToken(csrf_token="csrf")
+        session = SessionToken(user_id=42, csrf_token="csrf")
 
         for field, value in [
             ("description", "Updated merchant"),
@@ -49,3 +49,8 @@ def test_bulk_update_supports_every_editable_transaction_field():
             assert row.account_id == target_account.id
         db.refresh(target_account)
         assert target_account.institution.name == "New Bank"
+        operations = db.query(Operation).order_by(Operation.created_at).all()
+        assert len(operations) == 6
+        assert all(operation.kind == "bulk_update" for operation in operations)
+        assert all(operation.actor == "user:42" for operation in operations)
+        assert db.query(OperationChange).count() == 11

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
 from ..models import Account, Transaction, TransferLink
+from .transaction_queries import get_live_transaction, live_transaction_select
 
 
 TRANSFER_REVIEW_STATUSES = {"needs_review", "suggested", "possible_duplicate"}
@@ -45,9 +46,7 @@ def detect_transfer_candidates(db: Session, window_days: int = 5) -> list[Transf
     accounts = {account.id: account for account in db.scalars(select(Account).where(Account.status == "active")).all()}
     linked_transaction_ids = _linked_transaction_ids(db)
     rows = db.scalars(
-        select(Transaction)
-        .where(
-            Transaction.status == "active",
+        live_transaction_select(
             Transaction.review_status.in_(list(TRANSFER_REVIEW_STATUSES)),
         )
         .order_by(Transaction.transaction_date.asc(), Transaction.id.asc())
@@ -113,7 +112,7 @@ def create_transfer_suggestions(db: Session, window_days: int = 5, actor: str = 
 def list_unconfirmed_transfers(db: Session) -> list[dict]:
     links = db.scalars(select(TransferLink).where(TransferLink.confirmed.is_(False)).order_by(TransferLink.match_confidence.desc(), TransferLink.id.desc())).all()
     transaction_ids = {link.from_transaction_id for link in links} | {link.to_transaction_id for link in links}
-    transactions = {row.id: row for row in db.scalars(select(Transaction).where(Transaction.id.in_(transaction_ids))).all()} if transaction_ids else {}
+    transactions = {row.id: row for row in db.scalars(live_transaction_select(Transaction.id.in_(transaction_ids))).all()} if transaction_ids else {}
     results = []
     for link in links:
         from_transaction = transactions.get(link.from_transaction_id)
@@ -125,8 +124,8 @@ def list_unconfirmed_transfers(db: Session) -> list[dict]:
 
 
 def confirm_transfer_link(db: Session, link: TransferLink, actor: str = "local-user") -> dict:
-    from_transaction = db.get(Transaction, link.from_transaction_id)
-    to_transaction = db.get(Transaction, link.to_transaction_id)
+    from_transaction = get_live_transaction(db, link.from_transaction_id)
+    to_transaction = get_live_transaction(db, link.to_transaction_id)
     if not from_transaction or not to_transaction:
         raise ValueError("Transfer link points to a missing transaction")
     suggested_type = _suggested_type(from_transaction, to_transaction, db)
@@ -149,8 +148,8 @@ def confirm_transfer_link(db: Session, link: TransferLink, actor: str = "local-u
 
 def reject_transfer_link(db: Session, link: TransferLink, actor: str = "local-user") -> dict:
     link_id = link.id
-    from_transaction = db.get(Transaction, link.from_transaction_id)
-    to_transaction = db.get(Transaction, link.to_transaction_id)
+    from_transaction = get_live_transaction(db, link.from_transaction_id)
+    to_transaction = get_live_transaction(db, link.to_transaction_id)
     for transaction in (from_transaction, to_transaction):
         if transaction and transaction.review_status == "suggested":
             transaction.review_status = "needs_review"

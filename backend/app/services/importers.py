@@ -1065,6 +1065,8 @@ def _parse_import_date(value: str | None) -> date:
 def _find_possible_duplicate_id(db: Session, account_id: int, candidate: Transaction) -> int | None:
     existing = db.scalar(
         select(Transaction.id).where(
+            Transaction.deleted_at.is_(None),
+            Transaction.status == "active",
             Transaction.account_id == account_id,
             Transaction.transaction_date == candidate.transaction_date,
             Transaction.amount_cents == candidate.amount_cents,

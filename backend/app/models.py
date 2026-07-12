@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -138,6 +138,30 @@ class Transaction(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
     linked_transaction_id: Mapped[int | None] = mapped_column(ForeignKey("transactions.id"))
     duplicate_of_transaction_id: Mapped[int | None] = mapped_column(ForeignKey("transactions.id"))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+
+
+class Operation(Base):
+    __tablename__ = "operations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), nullable=False, index=True)
+    undone_by: Mapped[str | None] = mapped_column(ForeignKey("operations.id"))
+    undo_of: Mapped[str | None] = mapped_column(ForeignKey("operations.id"))
+
+
+class OperationChange(Base):
+    __tablename__ = "operation_changes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    operation_id: Mapped[str] = mapped_column(ForeignKey("operations.id"), nullable=False, index=True)
+    entity_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    before_json: Mapped[str | None] = mapped_column(Text)
+    after_json: Mapped[str | None] = mapped_column(Text)
 
 
 class TransactionSplit(TimestampMixin, Base):

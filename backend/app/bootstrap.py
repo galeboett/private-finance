@@ -11,6 +11,9 @@ def initialize_database() -> None:
         transaction_columns = {column["name"] for column in inspector.get_columns("transactions")}
         if "user_note" not in transaction_columns:
             connection.execute(text("ALTER TABLE transactions ADD COLUMN user_note TEXT"))
+        if "deleted_at" not in transaction_columns:
+            connection.execute(text("ALTER TABLE transactions ADD COLUMN deleted_at DATETIME"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_transactions_deleted_at ON transactions (deleted_at)"))
         connection.execute(
             text(
                 """

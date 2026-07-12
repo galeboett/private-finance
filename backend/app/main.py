@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -27,7 +27,9 @@ from .security import clear_login_failures, create_session, enforce_login_rate_l
 from .services.accounts import cleanup_imported_accounts
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
 from .services.importers import commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
+from .services.mutation_log import MutationChange, changed_values, journal_mutation
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
+from .services.transaction_queries import get_live_transaction, live_transaction_filters, live_transaction_select
 from .services.transfers import confirm_transfer_link, create_transfer_suggestions, list_unconfirmed_transfers, reject_transfer_link
 
 app = FastAPI(title=settings.app_name)
@@ -41,6 +43,10 @@ app.add_middleware(
 app.add_middleware(LocalhostSecurityMiddleware)
 
 UNASSIGNED_ACCOUNT_MARKER = "SYSTEM"
+
+
+def actor_for_session(session: SessionToken) -> str:
+    return f"user:{session.user_id}"
 
 
 @app.exception_handler(RequestValidationError)
@@ -184,8 +190,7 @@ def list_accounts(session: SessionToken = Depends(current_session), db: Session 
     recent_activity_start = date.today() - timedelta(days=30)
     for account in accounts:
         latest_running_balance = db.scalar(
-            select(Transaction)
-            .where(Transaction.account_id == account.id, Transaction.status == "active", Transaction.running_balance_cents.is_not(None))
+            live_transaction_select(Transaction.account_id == account.id, Transaction.running_balance_cents.is_not(None))
             .order_by(Transaction.transaction_date.desc(), Transaction.id.desc())
             .limit(1)
         )
@@ -204,15 +209,14 @@ def list_accounts(session: SessionToken = Depends(current_session), db: Session 
             sidebar_balance_as_of = latest_running_balance.transaction_date.isoformat()
         else:
             sidebar_balance_cents = db.scalar(
-                select(func.coalesce(func.sum(Transaction.amount_cents), 0)).where(
+                select(func.coalesce(func.sum(Transaction.amount_cents), 0)).where(*live_transaction_filters(
                     Transaction.account_id == account.id,
-                    Transaction.status == "active",
                     Transaction.transaction_date >= recent_activity_start,
-                )
+                ))
             )
             sidebar_balance_kind = "recent_activity"
             latest_transaction_date = db.scalar(
-                select(func.max(Transaction.transaction_date)).where(Transaction.account_id == account.id, Transaction.status == "active")
+                select(func.max(Transaction.transaction_date)).where(*live_transaction_filters(Transaction.account_id == account.id))
             )
             sidebar_balance_as_of = latest_transaction_date.isoformat() if latest_transaction_date else None
         result.append({
@@ -316,6 +320,7 @@ def _require_delete_confirmation(confirm_text: str) -> None:
 
 
 def _delete_transaction_row(db: Session, transaction: Transaction) -> None:
+    """Hard-delete an internal duplicate during account-merge maintenance."""
     db.execute(update(Transaction).where(Transaction.linked_transaction_id == transaction.id).values(linked_transaction_id=None))
     db.execute(update(Transaction).where(Transaction.duplicate_of_transaction_id == transaction.id).values(duplicate_of_transaction_id=None))
     db.execute(delete(TransactionSplit).where(TransactionSplit.transaction_id == transaction.id))
@@ -330,6 +335,28 @@ def _delete_transaction_row(db: Session, transaction: Transaction) -> None:
         {"description": transaction.raw_description, "amount_cents": transaction.amount_cents, "date": transaction.transaction_date.isoformat()},
     )
     db.delete(transaction)
+
+
+def _soft_delete_transaction(db: Session, transaction: Transaction, actor: str) -> str:
+    before = changed_values(transaction, ["deleted_at"])
+    transaction.deleted_at = datetime.now(UTC).replace(tzinfo=None)
+    operation_id = journal_mutation(
+        db,
+        kind="delete",
+        entity_type="transaction",
+        actor=actor,
+        description=f'Deleted transaction "{transaction.raw_description}"',
+        changes=[MutationChange(transaction.id, before, None)],
+    )
+    record_audit_event(
+        db,
+        "transaction_delete",
+        actor,
+        "transaction",
+        str(transaction.id),
+        {"description": transaction.raw_description, "operation_id": operation_id},
+    )
+    return operation_id
 
 
 def _delete_account_tree(db: Session, account: Account) -> None:
@@ -561,7 +588,7 @@ def import_report(batch_id: int, session: SessionToken = Depends(current_session
 
 @app.get("/api/transactions")
 def list_transactions(account_id: int | None = None, review_status: str | None = None, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
-    query = select(Transaction).where(Transaction.status == "active").order_by(Transaction.transaction_date.desc(), Transaction.id.desc())
+    query = live_transaction_select().order_by(Transaction.transaction_date.desc(), Transaction.id.desc())
     if account_id:
         query = query.where(Transaction.account_id == account_id)
     if review_status:
@@ -595,13 +622,15 @@ def list_transactions(account_id: int | None = None, review_status: str | None =
 @app.patch("/api/transactions/bulk-update")
 def bulk_update_transactions(payload: BulkTransactionUpdateRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
-    transactions = db.scalars(select(Transaction).where(Transaction.id.in_(payload.ids), Transaction.status == "active")).all()
+    transactions = db.scalars(live_transaction_select(Transaction.id.in_(payload.ids))).all()
     if len(transactions) != len(set(payload.ids)):
         raise HTTPException(status_code=404, detail="One or more transactions were not found")
 
     field = payload.field.value
     value = payload.value
     affected_accounts = 0
+    journal_entity_type = "transaction"
+    journal_changes: list[MutationChange] = []
     if field == "institution":
         name = str(value or "").strip()
         if not name:
@@ -610,8 +639,11 @@ def bulk_update_transactions(payload: BulkTransactionUpdateRequest, request: Req
         account_ids = {transaction.account_id for transaction in transactions}
         accounts = db.scalars(select(Account).where(Account.id.in_(account_ids))).all()
         for account in accounts:
+            before = changed_values(account, ["institution_id"])
             account.institution_id = institution.id if institution else None
+            journal_changes.append(MutationChange(account.id, before, changed_values(account, ["institution_id"])))
         affected_accounts = len(accounts)
+        journal_entity_type = "account"
     elif field == "account":
         try:
             account_id = int(value)
@@ -621,24 +653,32 @@ def bulk_update_transactions(payload: BulkTransactionUpdateRequest, request: Req
         if not target_account or target_account.last_four == UNASSIGNED_ACCOUNT_MARKER:
             raise HTTPException(status_code=400, detail="Account not found")
         for transaction in transactions:
+            before = changed_values(transaction, ["account_id"])
             transaction.account_id = account_id
+            journal_changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["account_id"])))
     elif field == "description":
         description = str(value or "").strip()
         if not description:
             raise HTTPException(status_code=400, detail="Description is required")
         for transaction in transactions:
+            before = changed_values(transaction, ["raw_description"])
             transaction.raw_description = description
+            journal_changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["raw_description"])))
     elif field == "details":
         details = str(value or "").strip() or None
         for transaction in transactions:
+            before = changed_values(transaction, ["user_note"])
             transaction.user_note = details
+            journal_changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["user_note"])))
     elif field == "type":
         try:
             transaction_type = TransactionType(str(value))
         except ValueError as error:
             raise HTTPException(status_code=400, detail="Choose a valid transaction type") from error
         for transaction in transactions:
+            before = changed_values(transaction, ["transaction_type"])
             transaction.transaction_type = transaction_type.value
+            journal_changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["transaction_type"])))
     elif field == "category":
         try:
             category_id = int(value)
@@ -647,21 +687,32 @@ def bulk_update_transactions(payload: BulkTransactionUpdateRequest, request: Req
         if not db.get(Category, category_id):
             raise HTTPException(status_code=400, detail="Category not found")
         for transaction in transactions:
+            before = changed_values(transaction, ["category_id"])
             transaction.category_id = category_id
+            journal_changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["category_id"])))
 
-    record_audit_event(db, "transaction_bulk_update", "local-user", "transactions", f"bulk:{len(transactions)}", {"field": field, "value": value, "count": len(transactions), "affected_accounts": affected_accounts, "transaction_ids": [transaction.id for transaction in transactions[:50]]})
+    actor = actor_for_session(session)
+    operation_id = journal_mutation(
+        db,
+        kind="bulk_update",
+        entity_type=journal_entity_type,
+        actor=actor,
+        description=f"Changed {field} on {len(journal_changes)} {journal_entity_type}{'' if len(journal_changes) == 1 else 's'}",
+        changes=journal_changes,
+    )
+    record_audit_event(db, "transaction_bulk_update", actor, "transactions", f"bulk:{len(transactions)}", {"field": field, "value": value, "count": len(transactions), "affected_accounts": affected_accounts, "transaction_ids": [transaction.id for transaction in transactions[:50]], "operation_id": operation_id})
     try:
         db.commit()
     except IntegrityError as error:
         db.rollback()
         raise HTTPException(status_code=400, detail="This change would create duplicate transactions in the target account") from error
-    return {"ok": True, "updated": len(transactions), "affected_accounts": affected_accounts}
+    return {"ok": True, "updated": len(transactions), "affected_accounts": affected_accounts, "operation_id": operation_id}
 
 
 @app.patch("/api/transactions/{transaction_id}")
 def update_transaction(transaction_id: int, payload: TransactionReviewUpdate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
-    transaction = db.get(Transaction, transaction_id)
+    transaction = get_live_transaction(db, transaction_id)
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
     updates = payload.model_dump(exclude_unset=True)
@@ -675,41 +726,61 @@ def update_transaction(transaction_id: int, payload: TransactionReviewUpdate, re
     next_account = db.get(Account, updates.get("account_id", transaction.account_id))
     if next_review_status == "confirmed" and (not next_account or next_account.last_four == UNASSIGNED_ACCOUNT_MARKER):
         raise HTTPException(status_code=400, detail="Choose an account before confirming this transaction")
+    before = changed_values(transaction, updates.keys())
     for key, value in updates.items():
         setattr(transaction, key, value)
-    record_audit_event(db, "transaction_update", "local-user", "transaction", str(transaction.id), updates)
+    actor = actor_for_session(session)
+    operation_id = journal_mutation(
+        db,
+        kind="update",
+        entity_type="transaction",
+        actor=actor,
+        description=f'Updated transaction "{transaction.raw_description}"',
+        changes=[MutationChange(transaction.id, before, changed_values(transaction, updates.keys()))],
+    )
+    record_audit_event(db, "transaction_update", actor, "transaction", str(transaction.id), {**updates, "operation_id": operation_id})
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 
 @app.post("/api/transactions/{transaction_id}/void")
 def void_transaction(transaction_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
-    transaction = db.get(Transaction, transaction_id)
+    transaction = get_live_transaction(db, transaction_id)
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    before = changed_values(transaction, ["status"])
     transaction.status = "voided"
-    record_audit_event(db, "transaction_void", "local-user", "transaction", str(transaction.id), {"status": "voided"})
+    actor = actor_for_session(session)
+    operation_id = journal_mutation(
+        db,
+        kind="update",
+        entity_type="transaction",
+        actor=actor,
+        description=f'Voided transaction "{transaction.raw_description}"',
+        changes=[MutationChange(transaction.id, before, changed_values(transaction, ["status"]))],
+    )
+    record_audit_event(db, "transaction_void", actor, "transaction", str(transaction.id), {"status": "voided", "operation_id": operation_id})
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 
 @app.delete("/api/transactions/{transaction_id}")
 def delete_transaction(transaction_id: int, payload: DeleteConfirmRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
     _require_delete_confirmation(payload.confirm_text)
-    transaction = db.get(Transaction, transaction_id)
+    transaction = get_live_transaction(db, transaction_id)
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    _delete_transaction_row(db, transaction)
+    operation_id = _soft_delete_transaction(db, transaction, actor_for_session(session))
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 
 @app.post("/api/transactions/{transaction_id}/splits")
 def set_splits(transaction_id: int, payload: SplitSetRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
-    transaction = db.get(Transaction, transaction_id)
+    transaction = get_live_transaction(db, transaction_id)
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
     split_total = sum(split.amount_cents for split in payload.splits)
@@ -764,7 +835,7 @@ def delete_category(category_id: int, request: Request, reassign_to: int | None 
 
 @app.get("/api/transactions/{transaction_id}/splits")
 def get_splits(transaction_id: int, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
-    transaction = db.get(Transaction, transaction_id)
+    transaction = get_live_transaction(db, transaction_id)
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
     return [
@@ -781,7 +852,7 @@ def _month_start(value: date, offset: int) -> date:
 @app.post("/api/transactions/{transaction_id}/monthly-allocation")
 def set_monthly_allocation(transaction_id: int, payload: MonthlyAllocationRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
-    transaction = db.get(Transaction, transaction_id)
+    transaction = get_live_transaction(db, transaction_id)
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
     if transaction.status != "active" or transaction.transaction_type != "expense":
@@ -808,7 +879,7 @@ def set_monthly_allocation(transaction_id: int, payload: MonthlyAllocationReques
 @app.delete("/api/transactions/{transaction_id}/monthly-allocation")
 def delete_monthly_allocation(transaction_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
-    transaction = db.get(Transaction, transaction_id)
+    transaction = get_live_transaction(db, transaction_id)
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
     db.execute(delete(ExpenseAllocation).where(ExpenseAllocation.transaction_id == transaction_id))
@@ -820,8 +891,7 @@ def delete_monthly_allocation(transaction_id: int, request: Request, session: Se
 @app.get("/api/review")
 def review_inbox(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     rows = db.scalars(
-        select(Transaction).where(
-            Transaction.status == "active",
+        live_transaction_select(
             Transaction.review_status.in_(["needs_review", "suggested", "possible_duplicate"]),
         )
     ).all()
@@ -861,7 +931,7 @@ def apply_rule(rule_id: int, payload: RuleApplyRequest, request: Request, sessio
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
 
-    query = select(Transaction).where(Transaction.status == "active")
+    query = live_transaction_select()
     if payload.scope == "unreviewed":
         query = query.where(Transaction.review_status.in_(["needs_review", "suggested", "possible_duplicate"]))
 
@@ -886,7 +956,7 @@ def preview_rule(rule_id: int, scope: str = "unreviewed", session: SessionToken 
     rule = db.get(CategoryRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
-    query = select(Transaction).where(Transaction.status == "active")
+    query = live_transaction_select()
     if scope == "unreviewed":
         query = query.where(Transaction.review_status.in_(["needs_review", "suggested", "possible_duplicate"]))
     matched = sum(1 for transaction in db.scalars(query).all() if rule_matches_transaction(rule, transaction))
@@ -1255,7 +1325,7 @@ def export_transactions(session: SessionToken = Depends(current_session), db: Se
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["Date", "Posted Date", "Account", "Institution", "Description", "Amount", "Type", "Category", "Review Status", "Note"])
-    rows = db.scalars(select(Transaction).where(Transaction.status == "active").order_by(Transaction.transaction_date.asc(), Transaction.id.asc())).all()
+    rows = db.scalars(live_transaction_select().order_by(Transaction.transaction_date.asc(), Transaction.id.asc())).all()
     for row in rows:
         account = accounts.get(row.account_id)
         writer.writerow(

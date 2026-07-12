@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..models import Account, Category, ExpenseAllocation, HoldingSnapshot, Transaction, TransactionSplit
+from .transaction_queries import live_transaction_filters, live_transaction_select
 
 
 def dashboard_summary(db: Session) -> dict:
@@ -15,23 +16,21 @@ def dashboard_summary(db: Session) -> dict:
     review_counts = dict(
         db.execute(
             select(Transaction.review_status, func.count(Transaction.id))
-            .where(Transaction.status == "active")
+            .where(*live_transaction_filters())
             .group_by(Transaction.review_status)
         ).all()
     )
     mtd_spend = db.scalar(
-        select(func.coalesce(func.sum(Transaction.amount_cents), 0)).where(
+        select(func.coalesce(func.sum(Transaction.amount_cents), 0)).where(*live_transaction_filters(
             Transaction.transaction_date >= month_start,
             Transaction.transaction_type == "expense",
-            Transaction.status == "active",
-        )
+        ))
     )
     cash_flow = db.scalar(
-        select(func.coalesce(func.sum(Transaction.amount_cents), 0)).where(
+        select(func.coalesce(func.sum(Transaction.amount_cents), 0)).where(*live_transaction_filters(
             Transaction.transaction_date >= month_start,
-            Transaction.status == "active",
             Transaction.transaction_type.in_(["expense", "income", "refund"]),
-        )
+        ))
     )
     net_worth = sum(row["market_value_cents"] for row in latest_net_worth_by_account(db))
     return {
@@ -44,7 +43,7 @@ def dashboard_summary(db: Session) -> dict:
 
 def category_totals(db: Session, start_date: date | None = None, end_date: date | None = None) -> list[dict]:
     """Return active expense totals, respecting splits and an optional date range."""
-    filters = [Transaction.status == "active", Transaction.transaction_type == "expense"]
+    filters = list(live_transaction_filters(Transaction.transaction_type == "expense"))
     if start_date:
         filters.append(Transaction.transaction_date >= start_date)
     if end_date:
@@ -64,7 +63,7 @@ def category_totals(db: Session, start_date: date | None = None, end_date: date 
         .where(~Transaction.id.in_(select(TransactionSplit.transaction_id)), ~allocation_exists, *filters)
         .group_by(Category.label)
     ).all()
-    allocation_filters = [Transaction.status == "active", Transaction.transaction_type == "expense"]
+    allocation_filters = list(live_transaction_filters(Transaction.transaction_type == "expense"))
     if start_date:
         allocation_filters.append(ExpenseAllocation.allocation_date >= start_date)
     if end_date:
@@ -84,8 +83,7 @@ def category_totals(db: Session, start_date: date | None = None, end_date: date 
 
 def cash_flow_summary(db: Session) -> list[dict]:
     rows = db.scalars(
-        select(Transaction)
-        .where(Transaction.status == "active", Transaction.transaction_type.in_(["expense", "income", "refund"]))
+        live_transaction_select(Transaction.transaction_type.in_(["expense", "income", "refund"]))
         .order_by(Transaction.transaction_date.asc())
     ).all()
     monthly: dict[str, dict[str, int]] = defaultdict(lambda: {"income_cents": 0, "expense_cents": 0, "net_cents": 0})
