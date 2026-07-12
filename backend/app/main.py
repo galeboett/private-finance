@@ -233,6 +233,44 @@ def category_key_from_label(label: str) -> str:
     return key[:60] or "category"
 
 
+def normalized_category_label(label: str) -> str:
+    """Compare category labels without case, whitespace, or punctuation noise."""
+    return "".join(character.casefold() for character in label if character.isalnum())
+
+
+def cleanup_duplicate_categories(db: Session, actor: str = "local-user") -> dict:
+    """Merge categories that differ only in presentation, preserving references."""
+    categories = db.scalars(select(Category).order_by(Category.id.asc())).all()
+    canonical_by_label: dict[str, Category] = {}
+    merged = 0
+    reassigned = 0
+    for category in categories:
+        normalized = normalized_category_label(category.label)
+        if not normalized:
+            continue
+        replacement = canonical_by_label.get(normalized)
+        if replacement is None:
+            canonical_by_label[normalized] = category
+            continue
+        reference_counts = {
+            "transactions": db.scalar(select(func.count(Transaction.id)).where(Transaction.category_id == category.id)) or 0,
+            "splits": db.scalar(select(func.count(TransactionSplit.id)).where(TransactionSplit.category_id == category.id)) or 0,
+            "allocations": db.scalar(select(func.count(ExpenseAllocation.id)).where(ExpenseAllocation.category_id == category.id)) or 0,
+            "rules": db.scalar(select(func.count(CategoryRule.id)).where(CategoryRule.category_id == category.id)) or 0,
+        }
+        db.execute(update(Transaction).where(Transaction.category_id == category.id).values(category_id=replacement.id))
+        db.execute(update(TransactionSplit).where(TransactionSplit.category_id == category.id).values(category_id=replacement.id))
+        db.execute(update(ExpenseAllocation).where(ExpenseAllocation.category_id == category.id).values(category_id=replacement.id))
+        db.execute(update(CategoryRule).where(CategoryRule.category_id == category.id).values(category_id=replacement.id))
+        db.execute(update(Category).where(Category.parent_id == category.id).values(parent_id=replacement.id))
+        record_audit_event(db, "category_merge", actor, "category", str(replacement.id), {"source_category_id": category.id, "source_label": category.label, "target_label": replacement.label, **reference_counts})
+        db.delete(category)
+        merged += 1
+        reassigned += sum(reference_counts.values())
+    db.commit()
+    return {"merged": merged, "reassigned": reassigned}
+
+
 
 def _require_delete_confirmation(confirm_text: str) -> None:
     if confirm_text != "DELETE":
@@ -309,6 +347,10 @@ def create_category(payload: CategoryCreate, request: Request, session: SessionT
     label = payload.label.strip()
     if not label:
         raise HTTPException(status_code=400, detail="Category label is required")
+    normalized_label = normalized_category_label(label)
+    existing = next((category for category in db.scalars(select(Category).order_by(Category.id.asc())).all() if normalized_category_label(category.label) == normalized_label), None)
+    if existing:
+        return {"id": existing.id, "key": existing.key, "label": existing.label}
     base_key = category_key_from_label(label)
     key = base_key
     suffix = 2
@@ -321,6 +363,12 @@ def create_category(payload: CategoryCreate, request: Request, session: SessionT
     record_audit_event(db, "category_create", "local-user", "category", str(category.id), {"label": label, "key": key})
     db.commit()
     return {"id": category.id, "key": category.key, "label": category.label}
+
+
+@app.post("/api/categories/cleanup-duplicates")
+def cleanup_categories_from_import_labels(request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    return cleanup_duplicate_categories(db)
 
 
 @app.patch("/api/categories/{category_id}")

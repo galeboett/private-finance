@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
@@ -43,6 +44,21 @@ def infer_account_characterization(display_name: str, current_type: str = "check
     if current_type in {"brokerage", "retirement", "credit_card", "cash"}:
         return AccountCharacterization(None, current_type, cleaned)
     return AccountCharacterization(None, current_type, cleaned)
+
+
+def infer_last_four(display_name: str) -> str | None:
+    """Return a likely card/account suffix embedded in an imported account label.
+
+    Imported labels often put the suffix before a parenthetical note (for example,
+    ``BoA Cash 3970 (premium rewards)``).  Calendar years are deliberately
+    ignored so names such as ``Chase Freedom (2025, prev csp)`` are not tagged
+    with a made-up account suffix.
+    """
+    matches = re.findall(r"(?<!\d)(\d{4})(?!\d)", display_name)
+    for value in reversed(matches):
+        if not 1900 <= int(value) <= 2100:
+            return value
+    return None
 
 
 def re_contains_word(value: str, word: str) -> bool:
@@ -111,10 +127,12 @@ def cleanup_imported_accounts(db: Session, actor: str = "local-user") -> dict:
         characterization = infer_account_characterization(account.display_name, account.account_type)
         institution = upsert_institution_by_name(db, characterization.institution_name) if characterization.institution_name else account.institution
         next_display_name = characterization.display_name or account.display_name
-        if account.display_name != next_display_name or account.account_type != characterization.account_type or account.institution_id != (institution.id if institution else None):
+        next_last_four = account.last_four or infer_last_four(next_display_name)
+        if account.display_name != next_display_name or account.account_type != characterization.account_type or account.institution_id != (institution.id if institution else None) or account.last_four != next_last_four:
             account.display_name = next_display_name
             account.account_type = characterization.account_type
             account.institution_id = institution.id if institution else None
+            account.last_four = next_last_four
             updated += 1
             record_audit_event(
                 db,
@@ -122,7 +140,7 @@ def cleanup_imported_accounts(db: Session, actor: str = "local-user") -> dict:
                 actor,
                 "account",
                 str(account.id),
-                {"display_name": account.display_name, "account_type": account.account_type, "institution_name": characterization.institution_name},
+                {"display_name": account.display_name, "account_type": account.account_type, "institution_name": characterization.institution_name, "last_four": account.last_four},
             )
 
     db.commit()

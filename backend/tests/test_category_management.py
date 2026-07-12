@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.db import Base
-from app.main import delete_category
+from app.main import cleanup_duplicate_categories, delete_category
 from app.models import Account, Category, CategoryRule, ExpenseAllocation, SessionToken, Transaction, TransactionSplit
 
 
@@ -38,3 +38,23 @@ def test_category_merge_reassigns_every_financial_reference():
         assert db.scalar(select(TransactionSplit.category_id)) == replacement.id
         assert db.scalar(select(ExpenseAllocation.category_id)) == replacement.id
         assert db.scalar(select(CategoryRule.category_id)) == replacement.id
+
+
+def test_cleanup_duplicate_categories_merges_spacing_and_case_variants():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        account = Account(display_name="Checking", account_type="checking")
+        canonical = Category(key="gift_card", label="Gift Card")
+        duplicate = Category(key="giftcard", label="Giftcard")
+        db.add_all([account, canonical, duplicate])
+        db.flush()
+        transaction = Transaction(account_id=account.id, transaction_date=date(2026, 7, 1), amount_cents=-1200, raw_description="Gift", transaction_type="expense", review_status="confirmed", category_id=duplicate.id, source_hash="gift-card")
+        db.add(transaction)
+        db.commit()
+
+        result = cleanup_duplicate_categories(db)
+
+        assert result == {"merged": 1, "reassigned": 1}
+        assert db.scalar(select(Category).where(Category.label == "Giftcard")) is None
+        assert db.get(Transaction, transaction.id).category_id == canonical.id

@@ -18,7 +18,7 @@ from ..audit import record_audit_event
 from ..config import settings
 from ..models import Account, Category, CategoryRule, HoldingSnapshot, ImportBatch, ImportPreset, StagingRow, Transaction
 from ..money import parse_decimal_to_cents
-from .accounts import infer_account_characterization, upsert_institution_by_name
+from .accounts import infer_account_characterization, infer_last_four, upsert_institution_by_name
 
 
 CARD_REFERENCE_HEADER = "Posted Date,Reference Number,Payee,Address,Amount"
@@ -619,6 +619,7 @@ def _find_or_create_history_account(db: Session, account_name: str) -> tuple[Acc
         account_type=characterization.account_type,
         currency="USD",
         status="active",
+        last_four=infer_last_four(characterization.display_name or cleaned),
     )
     db.add(account)
     db.flush()

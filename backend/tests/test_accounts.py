@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db import Base
 from app.models import Account, Transaction
-from app.services.accounts import cleanup_imported_accounts, infer_account_characterization
+from app.services.accounts import cleanup_imported_accounts, infer_account_characterization, infer_last_four
 from app.services.importers import _find_or_create_history_account
 
 
@@ -27,6 +27,11 @@ def test_infer_preserves_brokeragelink_as_brokerage():
 
     assert brokerage.account_type == "brokerage"
     assert brokerage.institution_name is None
+
+
+def test_infer_last_four_from_account_name_ignores_years():
+    assert infer_last_four("BoA Cash 3970 (premium rewards)") == "3970"
+    assert infer_last_four("Chase Freedom (2025, prev csp)") is None
 
 
 def test_categorized_history_account_creation_uses_inferred_metadata():
@@ -73,3 +78,4 @@ def test_cleanup_imported_accounts_merges_case_duplicates_and_recharacterizes_ca
         assert moved_transaction.account_id == cleaned_checkings.id
         assert cleaned_boa.account_type == "credit_card"
         assert cleaned_boa.institution.name == "Bank of America"
+        assert cleaned_boa.last_four == "3056"
