@@ -4,7 +4,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import Account, Transaction
+from app.main import UNASSIGNED_ACCOUNT_MARKER, _delete_account_tree
+from app.models import Account, Category, HoldingSnapshot, ImportBatch, Transaction, TransactionSplit
 from app.services.accounts import cleanup_imported_accounts, infer_account_characterization, infer_last_four
 from app.services.importers import _find_or_create_history_account
 
@@ -79,3 +80,44 @@ def test_cleanup_imported_accounts_merges_case_duplicates_and_recharacterizes_ca
         assert cleaned_boa.account_type == "credit_card"
         assert cleaned_boa.institution.name == "Bank of America"
         assert cleaned_boa.last_four == "3056"
+
+
+def test_account_deletion_preserves_transactions_for_account_review():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        account = Account(display_name="Old Card", account_type="credit_card")
+        category = Category(key="shopping", label="Shopping")
+        session.add_all([account, category])
+        session.flush()
+        batch = ImportBatch(account_id=account.id, filename="old.csv", file_hash="file", status="committed")
+        session.add(batch)
+        session.flush()
+        transaction = Transaction(account_id=account.id, import_batch_id=batch.id, transaction_date=date(2026, 7, 1), amount_cents=-5000, raw_description="Purchase", transaction_type="expense", category_id=category.id, review_status="confirmed", source_hash="preserved")
+        session.add(transaction)
+        session.flush()
+        split = TransactionSplit(transaction_id=transaction.id, category_id=category.id, amount_cents=-5000)
+        holding = HoldingSnapshot(account_id=account.id, snapshot_date=date(2026, 7, 1), symbol="TEST", market_value_cents=10000)
+        session.add_all([split, holding])
+        session.commit()
+        account_id = account.id
+        transaction_id = transaction.id
+        split_id = split.id
+        batch_id = batch.id
+        holding_id = holding.id
+
+        _delete_account_tree(session, account)
+        session.commit()
+
+        preserved = session.get(Transaction, transaction_id)
+        review_account = session.get(Account, preserved.account_id)
+        assert session.get(Account, account_id) is None
+        assert preserved is not None
+        assert preserved.review_status == "needs_review"
+        assert preserved.import_batch_id is None
+        assert preserved.category_id == category.id
+        assert session.get(TransactionSplit, split_id) is not None
+        assert review_account.last_four == UNASSIGNED_ACCOUNT_MARKER
+        assert review_account.display_name == "Needs account (Old Card)"
+        assert session.get(ImportBatch, batch_id) is None
+        assert session.get(HoldingSnapshot, holding_id) is None

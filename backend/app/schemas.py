@@ -93,6 +93,7 @@ class ImportPresetCreate(BaseModel):
 
 
 class TransactionReviewUpdate(BaseModel):
+    account_id: int | None = None
     category_id: int | None = None
     transaction_type: TransactionType | None = None
     review_status: ReviewStatus | None = None

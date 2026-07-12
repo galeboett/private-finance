@@ -40,6 +40,8 @@ app.add_middleware(
 )
 app.add_middleware(LocalhostSecurityMiddleware)
 
+UNASSIGNED_ACCOUNT_MARKER = "SYSTEM"
+
 
 @app.exception_handler(RequestValidationError)
 async def sanitized_validation_error_handler(request: Request, exc: RequestValidationError):
@@ -177,7 +179,7 @@ def upsert_institution(db: Session, name: str | None) -> Institution | None:
 
 @app.get("/api/accounts")
 def list_accounts(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
-    accounts = db.scalars(select(Account).order_by(Account.display_name.asc())).all()
+    accounts = db.scalars(select(Account).where((Account.last_four.is_(None)) | (Account.last_four != UNASSIGNED_ACCOUNT_MARKER)).order_by(Account.display_name.asc())).all()
     return [
         {
             "id": account.id,
@@ -296,8 +298,22 @@ def _delete_transaction_row(db: Session, transaction: Transaction) -> None:
 
 def _delete_account_tree(db: Session, account: Account) -> None:
     transactions = db.scalars(select(Transaction).where(Transaction.account_id == account.id)).all()
-    for transaction in transactions:
-        _delete_transaction_row(db, transaction)
+    if account.last_four == UNASSIGNED_ACCOUNT_MARKER:
+        raise HTTPException(status_code=400, detail="The system account used for transaction review cannot be deleted")
+    if transactions:
+        unassigned_account = Account(
+            display_name=f"Needs account ({account.display_name})",
+            account_type="other",
+            currency=account.currency,
+            status="archived",
+            last_four=UNASSIGNED_ACCOUNT_MARKER,
+        )
+        db.add(unassigned_account)
+        db.flush()
+        for transaction in transactions:
+            transaction.account_id = unassigned_account.id
+            transaction.import_batch_id = None
+            transaction.review_status = "needs_review"
     db.execute(delete(StagingRow).where(StagingRow.account_id == account.id))
     db.execute(delete(HoldingSnapshot).where(HoldingSnapshot.account_id == account.id))
     db.execute(delete(ImportBatch).where(ImportBatch.account_id == account.id))
@@ -308,7 +324,7 @@ def _delete_account_tree(db: Session, account: Account) -> None:
         "local-user",
         "account",
         str(account.id),
-        {"display_name": account.display_name, "account_type": account.account_type},
+        {"display_name": account.display_name, "account_type": account.account_type, "preserved_transactions": len(transactions)},
     )
     db.delete(account)
 
@@ -565,7 +581,8 @@ def bulk_update_transactions(payload: BulkTransactionUpdateRequest, request: Req
             account_id = int(value)
         except (TypeError, ValueError) as error:
             raise HTTPException(status_code=400, detail="Choose a valid account") from error
-        if not db.get(Account, account_id):
+        target_account = db.get(Account, account_id)
+        if not target_account or target_account.last_four == UNASSIGNED_ACCOUNT_MARKER:
             raise HTTPException(status_code=400, detail="Account not found")
         for transaction in transactions:
             transaction.account_id = account_id
@@ -612,8 +629,16 @@ def update_transaction(transaction_id: int, payload: TransactionReviewUpdate, re
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
     updates = payload.model_dump(exclude_unset=True)
+    if "account_id" in updates:
+        account = db.get(Account, updates["account_id"])
+        if not account or account.last_four == UNASSIGNED_ACCOUNT_MARKER:
+            raise HTTPException(status_code=400, detail="Choose a valid account")
     if "category_id" in updates and updates["category_id"] is not None and not db.get(Category, updates["category_id"]):
         raise HTTPException(status_code=400, detail="Category not found")
+    next_review_status = updates.get("review_status", transaction.review_status)
+    next_account = db.get(Account, updates.get("account_id", transaction.account_id))
+    if next_review_status == "confirmed" and (not next_account or next_account.last_four == UNASSIGNED_ACCOUNT_MARKER):
+        raise HTTPException(status_code=400, detail="Choose an account before confirming this transaction")
     for key, value in updates.items():
         setattr(transaction, key, value)
     record_audit_event(db, "transaction_update", "local-user", "transaction", str(transaction.id), updates)
