@@ -2,6 +2,8 @@ import {
   AlertCircle,
   ArrowDownToLine,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   FileUp,
   Landmark,
   LayoutDashboard,
@@ -39,6 +41,9 @@ type AccountSummary = {
   institution_name: string | null;
   currency: string;
   last_four: string | null;
+  sidebar_balance_cents: number;
+  sidebar_balance_kind: "running_balance" | "investment_snapshot" | "recent_activity";
+  sidebar_balance_as_of: string | null;
 };
 
 type ReviewItem = {
@@ -257,6 +262,15 @@ const accountOptionLabel = (account: AccountSummary) => {
   const lastFour = account.last_four?.trim();
   if (!lastFour || name.endsWith(lastFour) || name.endsWith(`(${lastFour})`)) return name;
   return `${name} (${lastFour})`;
+};
+
+const sidebarBalanceLabel = (account: AccountSummary) => {
+  const source = account.sidebar_balance_kind === "running_balance"
+    ? "Latest imported balance"
+    : account.sidebar_balance_kind === "investment_snapshot"
+      ? "Latest investment value"
+      : "Net activity in the last 30 days";
+  return account.sidebar_balance_as_of ? `${source}, as of ${formatShortDate(account.sidebar_balance_as_of)}` : source;
 };
 
 const centsToInput = (cents: number) => (cents / 100).toFixed(2);
@@ -786,6 +800,24 @@ export function App() {
       });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Account could not be saved." });
+    }
+  }
+
+  async function setAccountStatus(account: AccountSummary, status: "active" | "archived") {
+    try {
+      await api(`/api/accounts/${account.id}`, {
+        method: "PATCH",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ status }),
+      });
+      if (status === "archived" && focusedAccountId === account.id) {
+        setFocusedAccountId(null);
+        setActiveView("all-accounts");
+      }
+      await loadData();
+      showToast({ tone: "success", message: status === "archived" ? `${account.display_name} moved to Archived Accounts.` : `${account.display_name} restored.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Account status could not be updated." });
     }
   }
 
@@ -1690,24 +1722,12 @@ export function App() {
     return counts;
   }, [missingCategoryTransactions]);
   const accountBalances = useMemo(() => {
-    const transactionBalances = new Map<number, number>();
-    for (const transaction of transactions) {
-      transactionBalances.set(transaction.account_id, (transactionBalances.get(transaction.account_id) ?? 0) + transaction.amount_cents);
-    }
-    const snapshotBalances = new Map<number, number>();
-    for (const row of netWorthAccounts) {
-      snapshotBalances.set(row.account_id, row.market_value_cents);
-    }
     const balances = new Map<number, number>();
     for (const account of accounts) {
-      if (isBrokerageAccountType(account.account_type)) {
-        balances.set(account.id, snapshotBalances.get(account.id) ?? 0);
-      } else {
-        balances.set(account.id, transactionBalances.get(account.id) ?? 0);
-      }
+      balances.set(account.id, account.sidebar_balance_cents);
     }
     return balances;
-  }, [accounts, netWorthAccounts, transactions]);
+  }, [accounts]);
   const categorySuggestions = useMemo(() => {
     if (!categoryEditor) {
       return categories;
@@ -1827,9 +1847,11 @@ export function App() {
   };
   const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status) && transactionMatchesSearch(transaction));
   const visibleReviewTransactions = reviewTransactions.slice(0, 5);
-  const bankAccounts = accounts.filter((account) => bankAccountTypes.has(account.account_type));
-  const creditCardAccounts = accounts.filter((account) => creditCardAccountTypes.has(account.account_type));
-  const brokerageAccounts = accounts.filter((account) => brokerageAccountTypes.has(account.account_type));
+  const activeAccounts = accounts.filter((account) => account.status === "active");
+  const archivedAccounts = accounts.filter((account) => account.status === "archived");
+  const bankAccounts = activeAccounts.filter((account) => bankAccountTypes.has(account.account_type));
+  const creditCardAccounts = activeAccounts.filter((account) => creditCardAccountTypes.has(account.account_type));
+  const brokerageAccounts = activeAccounts.filter((account) => brokerageAccountTypes.has(account.account_type));
   const focusedMissingCategoryCount = focusedAccountId ? missingCategoryCountByAccount.get(focusedAccountId) ?? 0 : 0;
   const focusedAccountBalanceCents = focusedAccountId ? accountBalances.get(focusedAccountId) ?? 0 : 0;
   const transactionYears = Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))).sort((left, right) => right.localeCompare(left));
@@ -1883,6 +1905,15 @@ export function App() {
     totalCents: section.rows.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0),
     groups: buildTaxonomyGroups(section.rows, accountBalances, taxonomyOverrides),
   }));
+  const sidebarTaxonomyTree = archivedAccounts.length > 0
+    ? [...taxonomyTree, {
+        label: "Archived Accounts",
+        rows: archivedAccounts,
+        emptyText: "",
+        totalCents: archivedAccounts.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0),
+        groups: buildTaxonomyGroups(archivedAccounts, accountBalances, taxonomyOverrides),
+      }]
+    : taxonomyTree;
   const latestCashFlowRows = periodCashFlowRows.slice(-4).reverse();
   const reviewCount = reviewTransactions.length;
   const accountNeedingTaxonomy = accounts.find((account) => !taxonomyOverrides[String(account.id)] && !account.institution_name);
@@ -1962,7 +1993,10 @@ export function App() {
 
   function toggleTaxonomyGroup(sectionLabel: string, groupLabel: string) {
     const key = `${sectionLabel}::${groupLabel}`;
-    const next = { ...collapsedTaxonomyGroups, [key]: !collapsedTaxonomyGroups[key] };
+    const currentlyCollapsed = key === "section::Archived Accounts"
+      ? collapsedTaxonomyGroups[key] !== false
+      : Boolean(collapsedTaxonomyGroups[key]);
+    const next = { ...collapsedTaxonomyGroups, [key]: !currentlyCollapsed };
     setCollapsedTaxonomyGroups(next);
     writeStoredJson(collapsedTaxonomyStorageKey, next);
   }
@@ -2026,20 +2060,32 @@ export function App() {
             );
           })}
         </nav>
-        {taxonomyTree.map((section) => (
+        {sidebarTaxonomyTree.map((section) => {
+          const sectionCollapseKey = `section::${section.label}`;
+          const sectionCollapsed = section.label === "Archived Accounts"
+            ? collapsedTaxonomyGroups[sectionCollapseKey] !== false
+            : Boolean(collapsedTaxonomyGroups[sectionCollapseKey]);
+          return (
           <div className="sidebarSection" key={section.label}>
-            <div className="sidebarSectionHeader">
+            <button
+              className="sidebarSectionHeader"
+              type="button"
+              aria-expanded={!sectionCollapsed}
+              onClick={() => toggleTaxonomyGroup("section", section.label)}
+              title={`${sectionCollapsed ? "Expand" : "Collapse"} ${section.label}`}
+            >
+              {sectionCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
               <span>{section.label}</span>
               <span className={section.totalCents < 0 ? "sidebarSectionBalance negative" : "sidebarSectionBalance"}>{formatMoney(section.totalCents)}</span>
-            </div>
-            <div className="sidebarAccounts">
+            </button>
+            {sectionCollapsed ? null : <div className="sidebarAccounts">
               {section.groups.map((group) => {
                 const collapseKey = `${section.label}::${group.label}`;
                 const isCollapsed = Boolean(collapsedTaxonomyGroups[collapseKey]);
                 return (
                   <div className="sidebarTaxonomyGroup" key={`${section.label}-${group.label}`}>
-                    <button className="sidebarGroupHeader" onClick={() => toggleTaxonomyGroup(section.label, group.label)} title={`${isCollapsed ? "Expand" : "Collapse"} ${group.label}`}>
-                      <span className="sidebarGroupToggle">{isCollapsed ? "+" : "-"}</span>
+                    <button className="sidebarGroupHeader" type="button" aria-expanded={!isCollapsed} onClick={() => toggleTaxonomyGroup(section.label, group.label)} title={`${isCollapsed ? "Expand" : "Collapse"} ${group.label}`}>
+                      <span className="sidebarGroupToggle">{isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}</span>
                       <span>{group.label}</span>
                       <span className={group.totalCents < 0 ? "sidebarGroupBalance negative" : "sidebarGroupBalance"}>{formatMoney(group.totalCents)}</span>
                     </button>
@@ -2049,13 +2095,16 @@ export function App() {
                           const missingCount = missingCategoryCountByAccount.get(account.id) ?? 0;
                           const isActive = activeView === "account" && focusedAccountId === account.id;
                           return (
-                            <button key={account.id} className={isActive ? "sidebarAccount active" : "sidebarAccount"} onClick={() => openAccountView(account.id)} title={account.display_name}>
+                            <button key={account.id} className={isActive ? "sidebarAccount active" : "sidebarAccount"} onClick={() => openAccountView(account.id)} title={`${account.display_name} · ${sidebarBalanceLabel(account)}`}>
                               <span className={missingCount > 0 ? "attentionDot" : "attentionDot hidden"} />
                               <span className="sidebarAccountName">
                                 {account.display_name}
                                 {account.last_four ? ` (${account.last_four})` : ""}
                               </span>
-                              <span className={(accountBalances.get(account.id) ?? 0) < 0 ? "sidebarAccountBalance negative" : "sidebarAccountBalance"}>{formatMoney(accountBalances.get(account.id) ?? 0)}</span>
+                              <span className="sidebarAccountBalanceWrap">
+                                <span className={(accountBalances.get(account.id) ?? 0) < 0 ? "sidebarAccountBalance negative" : "sidebarAccountBalance"}>{formatMoney(accountBalances.get(account.id) ?? 0)}</span>
+                                {account.sidebar_balance_kind === "recent_activity" ? <small>30d</small> : null}
+                              </span>
                             </button>
                           );
                         })}
@@ -2063,9 +2112,9 @@ export function App() {
                 );
               })}
               {section.rows.length === 0 ? <p className="emptyText" style={{ color: "rgba(245,247,255,0.55)", padding: "0 12px" }}>{section.emptyText}</p> : null}
-            </div>
+            </div>}
           </div>
-        ))}
+        );})}
         <div className="sidebarFooter">
           <button className="taxonomyToggleButton" onClick={() => setTaxonomyEditorOpen((current) => !current)}>
             <span className="sidebarActionIcon">
@@ -2356,7 +2405,7 @@ export function App() {
               <div className="accountBalanceRow">
                 <div>
                   <strong className={focusedAccountBalanceCents < 0 ? "amount negative" : "amount positive"}>{formatMoney(focusedAccountBalanceCents)}</strong>
-                  <span>Working Balance</span>
+                  <span>{focusedAccount.sidebar_balance_kind === "recent_activity" ? "Last 30 days" : "Current balance"}</span>
                 </div>
                 <div>
                   <strong>{focusedMissingCategoryCount}</strong>
@@ -2700,11 +2749,14 @@ export function App() {
                           </span>
                         </button>
                         <small>
-                          {accountGroupLabel(account.account_type)} · {readableAccountType(account.account_type)}
+                          {account.status === "archived" ? "Archived" : accountGroupLabel(account.account_type)} · {readableAccountType(account.account_type)}
                         </small>
                         <div className="inlineActions">
                           <button className="secondaryButton" onClick={() => beginEditAccount(account)} title="Edit account">
                             <Pencil size={14} />
+                          </button>
+                          <button className="secondaryButton" onClick={() => void setAccountStatus(account, account.status === "archived" ? "active" : "archived")}>
+                            {account.status === "archived" ? "Restore" : "Archive"}
                           </button>
                           <button className="dangerTextButton" onClick={() => requestDelete({ kind: "account", id: account.id, label: account.display_name })}>
                             Delete

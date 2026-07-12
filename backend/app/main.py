@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -180,8 +180,42 @@ def upsert_institution(db: Session, name: str | None) -> Institution | None:
 @app.get("/api/accounts")
 def list_accounts(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     accounts = db.scalars(select(Account).where((Account.last_four.is_(None)) | (Account.last_four != UNASSIGNED_ACCOUNT_MARKER)).order_by(Account.display_name.asc())).all()
-    return [
-        {
+    result = []
+    recent_activity_start = date.today() - timedelta(days=30)
+    for account in accounts:
+        latest_running_balance = db.scalar(
+            select(Transaction)
+            .where(Transaction.account_id == account.id, Transaction.status == "active", Transaction.running_balance_cents.is_not(None))
+            .order_by(Transaction.transaction_date.desc(), Transaction.id.desc())
+            .limit(1)
+        )
+        latest_holding_date = db.scalar(select(func.max(HoldingSnapshot.snapshot_date)).where(HoldingSnapshot.account_id == account.id))
+        if account.account_type in {"brokerage", "retirement"} and latest_holding_date:
+            sidebar_balance_cents = db.scalar(
+                select(func.coalesce(func.sum(HoldingSnapshot.market_value_cents), 0)).where(
+                    HoldingSnapshot.account_id == account.id, HoldingSnapshot.snapshot_date == latest_holding_date
+                )
+            )
+            sidebar_balance_kind = "investment_snapshot"
+            sidebar_balance_as_of = latest_holding_date.isoformat()
+        elif latest_running_balance:
+            sidebar_balance_cents = latest_running_balance.running_balance_cents
+            sidebar_balance_kind = "running_balance"
+            sidebar_balance_as_of = latest_running_balance.transaction_date.isoformat()
+        else:
+            sidebar_balance_cents = db.scalar(
+                select(func.coalesce(func.sum(Transaction.amount_cents), 0)).where(
+                    Transaction.account_id == account.id,
+                    Transaction.status == "active",
+                    Transaction.transaction_date >= recent_activity_start,
+                )
+            )
+            sidebar_balance_kind = "recent_activity"
+            latest_transaction_date = db.scalar(
+                select(func.max(Transaction.transaction_date)).where(Transaction.account_id == account.id, Transaction.status == "active")
+            )
+            sidebar_balance_as_of = latest_transaction_date.isoformat() if latest_transaction_date else None
+        result.append({
             "id": account.id,
             "institution_name": account.institution.name if account.institution else None,
             "display_name": account.display_name,
@@ -189,9 +223,11 @@ def list_accounts(session: SessionToken = Depends(current_session), db: Session 
             "currency": account.currency,
             "status": account.status,
             "last_four": account.last_four,
-        }
-        for account in accounts
-    ]
+            "sidebar_balance_cents": sidebar_balance_cents or 0,
+            "sidebar_balance_kind": sidebar_balance_kind,
+            "sidebar_balance_as_of": sidebar_balance_as_of,
+        })
+    return result
 
 
 @app.post("/api/accounts/cleanup-imported")
