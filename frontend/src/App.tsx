@@ -252,6 +252,13 @@ const bulkTransactionFields: Array<{ value: BulkTransactionField; label: string 
 const formatMoney = (cents: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
 
+const accountOptionLabel = (account: AccountSummary) => {
+  const name = account.display_name.trim();
+  const lastFour = account.last_four?.trim();
+  if (!lastFour || name.endsWith(lastFour) || name.endsWith(`(${lastFour})`)) return name;
+  return `${name} (${lastFour})`;
+};
+
 const centsToInput = (cents: number) => (cents / 100).toFixed(2);
 const moneyInputToCents = (value: string) => {
   const amount = Number(value);
@@ -892,7 +899,7 @@ export function App() {
     }
   }
 
-  async function updateTransaction(transactionId: number, patch: Partial<Pick<TransactionRow, "category_id" | "transaction_type" | "review_status" | "user_note">>, refreshAfterSave = false) {
+  async function updateTransaction(transactionId: number, patch: Partial<Pick<TransactionRow, "account_id" | "category_id" | "transaction_type" | "review_status" | "user_note">>, refreshAfterSave = false) {
     setToast(null);
     try {
       await api(`/api/transactions/${transactionId}`, {
@@ -1323,6 +1330,10 @@ export function App() {
   }
 
   async function confirmTransaction(transaction: TransactionRow) {
+    if (!accounts.some((account) => account.id === transaction.account_id)) {
+      showToast({ tone: "error", message: "Choose an account before confirming this transaction." });
+      return;
+    }
     if (transaction.transaction_type === "expense" && !transaction.category_id) {
       showToast({ tone: "error", message: "Choose a category before confirming an expense." });
       return;
@@ -2459,7 +2470,7 @@ export function App() {
         ) : null}
 
         {(activeView === "review" || activeView === "settings") && (
-        <section className={activeView === "review" ? "workGrid viewSection reviewWorkspace" : "workGrid viewSection"}>
+        <section className={activeView === "review" ? "workGrid viewSection reviewWorkspace" : "workGrid viewSection settingsWorkspace"}>
           {activeView === "settings" ? (
           <section className="toolPanel importWorkspace">
             <PanelTitle icon={FileUp} title="Import & Accounts" subtitle="Start with a CSV. The app will match an account or prefill one for your review." />
@@ -2875,6 +2886,17 @@ export function App() {
                     </div>
                     <div className="reviewControls">
                       <select
+                        className={!accounts.some((account) => account.id === transaction.account_id) ? "needsAccountSelect" : ""}
+                        aria-label={`Account for ${transaction.raw_description}`}
+                        value={transaction.account_id}
+                        onChange={(event) => void updateTransaction(transaction.id, { account_id: Number(event.target.value) }, true)}
+                      >
+                        {!accounts.some((account) => account.id === transaction.account_id) ? <option value={transaction.account_id} disabled>{transaction.account_name}</option> : null}
+                        {accounts.map((account) => (
+                          <option key={account.id} value={account.id}>{account.display_name}</option>
+                        ))}
+                      </select>
+                      <select
                         value={transaction.transaction_type}
                         onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value })}
                       >
@@ -2992,7 +3014,7 @@ export function App() {
           ) : null}
 
           {activeView === "settings" ? (
-          <section className="toolPanel">
+          <section className="toolPanel categoriesWorkspace">
             <PanelTitle icon={PiggyBank} title="Categories" subtitle="Spending buckets for expense reporting. Add or rename them as your life changes." />
             <div className="compactForm">
               <div className="buttonRow">
@@ -3044,26 +3066,28 @@ export function App() {
         <section className="ledgerPanel ledgerWorkspace">
           <PanelTitle icon={ReceiptText} title={activeView === "account" ? "Account Transactions" : "All Transactions"} subtitle={activeView === "account" ? "Transactions for the selected account." : "A searchable repository for every imported transaction."} />
           <div className="ledgerListToolbar">
-            <div>
-              <strong>{filteredTransactions.length} transaction{filteredTransactions.length === 1 ? "" : "s"}</strong>
-              <span>Showing {pagedTransactions.length}{filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}</span>
+            <div className="ledgerSummaryGroup">
+              <div className="ledgerSummaryText">
+                <strong>{filteredTransactions.length} transaction{filteredTransactions.length === 1 ? "" : "s"}</strong>
+                <span>Showing {pagedTransactions.length}{filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}</span>
+              </div>
+              <button
+                type="button"
+                className="secondaryButton compactButton"
+                disabled={repositoryTransactionIds.length === 0}
+                onClick={() => {
+                  setSelectedTransactionIds((current) => {
+                    const repositoryIds = new Set(repositoryTransactionIds);
+                    if (allRepositoryTransactionsSelected) {
+                      return current.filter((id) => !repositoryIds.has(id));
+                    }
+                    return Array.from(new Set([...current, ...repositoryTransactionIds]));
+                  });
+                }}
+              >
+                {allRepositoryTransactionsSelected ? "Clear all" : `Select all ${repositoryTransactionIds.length}`}
+              </button>
             </div>
-            <button
-              type="button"
-              className="secondaryButton compactButton"
-              disabled={repositoryTransactionIds.length === 0}
-              onClick={() => {
-                setSelectedTransactionIds((current) => {
-                  const repositoryIds = new Set(repositoryTransactionIds);
-                  if (allRepositoryTransactionsSelected) {
-                    return current.filter((id) => !repositoryIds.has(id));
-                  }
-                  return Array.from(new Set([...current, ...repositoryTransactionIds]));
-                });
-              }}
-            >
-              {allRepositoryTransactionsSelected ? "Clear all" : `Select all ${repositoryTransactionIds.length}`}
-            </button>
             {pagedTransactions.length < filteredTransactions.length ? (
               <>
                 <button type="button" className="secondaryButton compactButton" onClick={() => setTransactionPage((current) => Math.min(transactionPageCount, current + 1))}>
@@ -3077,9 +3101,13 @@ export function App() {
           </div>
           {selectedRepositoryTransactionIds.length > 0 ? (
             <div className="bulkSelectionBar">
-              <strong>{selectedRepositoryTransactionIds.length} selected</strong>
-              <span>{pagedTransactions.length} shown{filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}</span>
-              <button className="secondaryButton compactButton" onClick={() => setBulkEditorOpen((current) => !current)}>Bulk edit</button>
+              <div className="bulkSelectionContext">
+                <div>
+                  <strong>{selectedRepositoryTransactionIds.length} selected</strong>
+                  <span>{pagedTransactions.length} shown{filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}</span>
+                </div>
+                <button className="secondaryButton compactButton" onClick={() => setBulkEditorOpen((current) => !current)}>{bulkEditorOpen ? "Close bulk edit" : "Bulk edit"}</button>
+              </div>
               <button className="dangerTextButton" onClick={() => requestBulkTransactionDelete(selectedRepositoryTransactionIds)}>Delete selected</button>
               <button className="ghostButton compactButton" onClick={() => { setSelectedTransactionIds((current) => current.filter((id) => !repositoryTransactionIds.includes(id))); setBulkEditorOpen(false); }}>Clear</button>
             </div>
@@ -3101,7 +3129,7 @@ export function App() {
               <label>Field<select value={bulkEditField} onChange={(event) => { setBulkEditField(event.target.value as BulkTransactionField); setBulkEditValue(""); }}>{bulkTransactionFields.map((field) => <option key={field.value} value={field.value}>{field.label}</option>)}</select></label>
               <label>New value
                 {bulkEditField === "account" ? (
-                  <select value={bulkEditValue} onChange={(event) => setBulkEditValue(event.target.value)}><option value="">Choose account</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.display_name}</option>)}</select>
+                  <select value={bulkEditValue} onChange={(event) => setBulkEditValue(event.target.value)}><option value="">Choose account</option>{accounts.map((account) => <option key={account.id} value={account.id}>{accountOptionLabel(account)}</option>)}</select>
                 ) : bulkEditField === "type" ? (
                   <select value={bulkEditValue} onChange={(event) => setBulkEditValue(event.target.value)}><option value="">Choose type</option>{transactionTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}</select>
                 ) : bulkEditField === "category" ? (
@@ -3608,9 +3636,9 @@ function DeleteConfirmInline({
   return (
     <section className="deleteConfirmPanel inlineDeleteConfirm">
       <div>
-        <strong>{target.kind.endsWith("bulk") ? "Delete selected items?" : target.kind === "account" ? "Delete this account and its imported data?" : `Delete this ${target.kind} row?`}</strong>
+        <strong>{target.kind.endsWith("bulk") ? "Delete selected items?" : target.kind === "account" ? "Delete this account?" : `Delete this ${target.kind} row?`}</strong>
         <span>{target.label}</span>
-        <small>Accounts delete their imported transactions, holdings, presets, and import history. Audit history remains append-only.</small>
+        <small>Deleting an account keeps its transactions and returns them to Review for account selection. Holdings, presets, and import history are removed; audit history remains.</small>
       </div>
       <input value={confirmText} onChange={(event) => onConfirmTextChange(event.target.value)} placeholder="Type DELETE to confirm" />
       <div className="buttonRow">

@@ -1164,13 +1164,48 @@ button:disabled {
   gap: 12px;
 }
 
+.settingsWorkspace {
+  grid-template-columns: minmax(620px, 1.55fr) minmax(360px, 0.85fr);
+  align-items: start;
+  max-width: 1240px;
+}
+
 .toolPanel {
   min-height: 276px;
   padding: 16px;
 }
 
 .importWorkspace {
-  grid-column: span 1;
+  min-width: 0;
+}
+
+.categoriesWorkspace {
+  min-width: 0;
+}
+
+.settingsWorkspace .panelTitle {
+  margin-bottom: 16px;
+}
+
+.settingsWorkspace .workspaceTabs {
+  margin-bottom: 14px;
+}
+
+.settingsWorkspace .denseList {
+  gap: 10px;
+}
+
+.settingsWorkspace .accountRow {
+  grid-template-columns: auto minmax(220px, 1fr) minmax(160px, auto) auto;
+  padding: 11px 12px;
+}
+
+.settingsWorkspace .accountInlineEditor {
+  padding: 16px;
+}
+
+.settingsWorkspace .categoryGrid {
+  gap: 9px;
 }
 
 .reviewInboxPanel {
@@ -1587,8 +1622,15 @@ textarea {
 
 .reviewControls {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 8px;
+}
+
+.needsAccountSelect {
+  border-color: #e4b64e;
+  background: var(--yellow-soft);
+  color: #7a5200;
+  font-weight: 800;
 }
 
 .ruleApplyPanel {
@@ -2093,8 +2135,22 @@ select.editableCell {
   background: var(--blue-soft);
 }
 
-.bulkSelectionBar span {
+.bulkSelectionContext {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
   margin-right: auto;
+}
+
+.bulkSelectionContext > div {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bulkSelectionContext span {
   color: var(--muted);
   font-size: 12px;
 }
@@ -2111,10 +2167,17 @@ select.editableCell {
   background: #fafbfe;
 }
 
-.ledgerListToolbar > div {
+.ledgerSummaryGroup {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-right: auto;
+}
+
+.ledgerSummaryText {
   display: grid;
   gap: 1px;
-  margin-right: auto;
 }
 
 .ledgerListToolbar span {
@@ -2695,6 +2758,17 @@ select.editableCell {
   line-height: 1.45;
 }
 
+@media (max-width: 1380px) {
+  .settingsWorkspace {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 900px;
+  }
+
+  .settingsWorkspace .importWorkspace {
+    grid-column: auto;
+  }
+}
+
 @media (max-width: 1100px) {
   .appFrame {
     grid-template-columns: 84px 1fr;
@@ -2743,6 +2817,10 @@ select.editableCell {
 
   .importWorkspace {
     grid-column: span 2;
+  }
+
+  .settingsWorkspace .importWorkspace {
+    grid-column: auto;
   }
 
   .flowCanvas {
