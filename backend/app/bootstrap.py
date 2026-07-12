@@ -3,6 +3,7 @@ from sqlalchemy import inspect, text
 from .config import settings
 from .db import Base, engine, session_scope
 from .seed import seed_categories
+from .services.snapshots import backfill_net_worth_snapshots
 
 
 def initialize_database() -> None:
@@ -53,4 +54,5 @@ def initialize_database() -> None:
         )
     with session_scope() as db:
         seed_categories(db)
+        backfill_net_worth_snapshots(db)
     settings.import_inbox_dir.mkdir(parents=True, exist_ok=True)

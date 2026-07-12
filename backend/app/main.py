@@ -31,6 +31,7 @@ from .services.importers import commit_categorized_history, commit_import, commi
 from .services.import_inbox import confirm_pending_import, discard_pending_import, inbox_directory, pending_import_batches, scan_import_inbox
 from .services.mutation_log import MutationChange, changed_values, journal_mutation
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
+from .services.snapshots import net_worth_series, net_worth_stats
 from .services.transaction_filters import parse_csv_ints, parse_csv_values, transaction_filter_conditions
 from .services.transaction_queries import get_live_transaction, live_transaction_filters, live_transaction_select
 from .services.transfers import confirm_transfer_link, create_transfer_suggestions, list_unconfirmed_transfers, reject_transfer_link
@@ -1185,6 +1186,33 @@ def get_net_worth_timeseries(session: SessionToken = Depends(current_session), d
 @app.get("/api/net-worth/accounts")
 def get_net_worth_accounts(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     return latest_net_worth_by_account(db)
+
+
+@app.get("/api/snapshots/networth")
+def get_net_worth_series(
+    from_date: date | None = Query(default=None, alias="from"),
+    to_date: date | None = Query(default=None, alias="to"),
+    bucket: Literal["day", "week", "month"] = "day",
+    session: SessionToken = Depends(current_session),
+    db: Session = Depends(get_db),
+):
+    try:
+        return net_worth_series(db, from_date=from_date, to_date=to_date, bucket=bucket)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.get("/api/snapshots/networth/stats")
+def get_net_worth_stats(
+    from_date: date = Query(alias="from"),
+    to_date: date = Query(alias="to"),
+    session: SessionToken = Depends(current_session),
+    db: Session = Depends(get_db),
+):
+    try:
+        return net_worth_stats(db, from_date=from_date, to_date=to_date)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.get("/api/investments/holdings")

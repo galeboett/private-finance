@@ -22,6 +22,7 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Added
 
+- Problem D foundation: durable per-account net-worth snapshots populated from imported running balances and brokerage positions, startup backfill for existing data, forward/backward balance reconstruction, day/week/month series and range-stat APIs, and an interactive net-worth chart with period controls, hover details, drag-to-compare statistics, and transaction drill-through.
 - Problem E Tier 1 foundation: a configurable private Import Inbox with manual scanning, exact and semantic SHA-256 deduplication (independent of filename suffixes and harmless CSV formatting), account/preset matching, staged previews, confirm/discard review, unchanged source files, and one mutation-journal operation per confirmed import.
 - Problem C foundation: a canonical transaction-filter contract shared by the backend query builder and frontend URL codec, real app paths with browser back/forward support, bookmarkable transaction filters, and removable active-filter chips.
 - Problem B foundation: operation and row-change journal tables, atomic before/after mutation recording for transaction edits, bulk edits, voids, and deletes, plus recoverable transaction soft deletion and one shared live-transaction query predicate.

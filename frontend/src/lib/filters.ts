@@ -2,6 +2,7 @@ export type TransactionDirection = "inflow" | "outflow";
 export type TransactionView = "live" | "trash";
 export type TransactionSort = "date" | "amount";
 export type SortDirection = "asc" | "desc";
+export type NetWorthPeriod = "1M" | "6M" | "1Y" | "Max";
 
 export interface TxnFilter {
   accounts?: string[];
@@ -17,6 +18,7 @@ export interface TxnFilter {
   view?: TransactionView;
   sort?: TransactionSort;
   sortDirection?: SortDirection;
+  netWorthPeriod?: NetWorthPeriod;
 }
 
 export type RouteView = "overview" | "all-accounts" | "account" | "review" | "reports" | "settings";
@@ -73,6 +75,8 @@ export function decodeTxnFilter(params: URLSearchParams): TxnFilter {
   if (sort === "date" || sort === "amount") filter.sort = sort;
   const sortDirection = params.get("sortDirection");
   if (sortDirection === "asc" || sortDirection === "desc") filter.sortDirection = sortDirection;
+  const netWorthPeriod = params.get("period");
+  if (netWorthPeriod === "1M" || netWorthPeriod === "6M" || netWorthPeriod === "1Y" || netWorthPeriod === "Max") filter.netWorthPeriod = netWorthPeriod;
   return filter;
 }
 
@@ -90,6 +94,7 @@ export function encodeTxnFilter(filter: TxnFilter): URLSearchParams {
   if (filter.view === "trash") params.set("view", "trash");
   if (filter.sort && filter.sort !== "date") params.set("sort", filter.sort);
   if (filter.sortDirection && filter.sortDirection !== "desc") params.set("sortDirection", filter.sortDirection);
+  if (filter.netWorthPeriod && filter.netWorthPeriod !== "6M") params.set("period", filter.netWorthPeriod);
   return params;
 }
 

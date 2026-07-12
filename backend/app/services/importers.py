@@ -20,6 +20,7 @@ from ..models import Account, Category, CategoryRule, HoldingSnapshot, ImportBat
 from ..money import parse_decimal_to_cents
 from .accounts import infer_account_characterization, infer_last_four, upsert_institution_by_name
 from .mutation_log import MutationChange, changed_values, journal_mutation
+from .snapshots import record_imported_snapshots
 
 
 CARD_REFERENCE_HEADER = "Posted Date,Reference Number,Payee,Address,Amount"
@@ -917,7 +918,7 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
     rules = db.scalars(select(CategoryRule).order_by(CategoryRule.priority.asc(), CategoryRule.id.asc())).all()
 
     resolved_snapshot_date: date | None = None
-    cleared_snapshot_scopes: set[tuple[int, str]] = set()
+    cleared_snapshot_scopes: set[tuple[int, date]] = set()
     if _is_brokerage_preset(detected):
         resolved_snapshot_date = snapshot_date or _snapshot_date_from_preview(preview) or _extract_snapshot_date(filename)
         if resolved_snapshot_date is None:
@@ -947,7 +948,7 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
                 continue
             market_value_cents = parse_decimal_to_cents(row.get("market_value"))
             if market_value_cents is not None:
-                scope = (target_account.id, resolved_snapshot_date.isoformat())
+                scope = (target_account.id, resolved_snapshot_date)
                 if scope not in cleared_snapshot_scopes:
                     # Re-importing a positions file replaces that account/date snapshot
                     # instead of double-counting it.
@@ -1038,6 +1039,7 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
     batch.skipped_duplicates = skipped
     batch.warnings_json = json.dumps(warnings)
     db.flush()
+    record_imported_snapshots(db, created_transactions, cleared_snapshot_scopes)
     if created_holdings:
         journal_changes.extend(
             MutationChange(holding.id, None, changed_values(holding, ["account_id", "snapshot_date", "symbol", "description", "quantity_basis_points", "price_cents", "market_value_cents", "asset_class"]))

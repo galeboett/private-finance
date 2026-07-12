@@ -216,6 +216,17 @@ class HoldingSnapshot(TimestampMixin, Base):
     asset_class: Mapped[str | None] = mapped_column(String(80))
 
 
+class NetWorthSnapshot(TimestampMixin, Base):
+    __tablename__ = "net_worth_snapshots"
+    __table_args__ = (UniqueConstraint("snapshot_date", "account_id", name="uq_net_worth_snapshot_date_account"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False, index=True)
+    balance_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(30), nullable=False)
+
+
 class SecurityMetadata(TimestampMixin, Base):
     __tablename__ = "security_metadata"
 

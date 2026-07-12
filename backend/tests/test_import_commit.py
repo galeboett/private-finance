@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import Account, Category, CategoryRule, HoldingSnapshot, Transaction
+from app.models import Account, Category, CategoryRule, HoldingSnapshot, NetWorthSnapshot, Transaction
 from app.services.importers import (
     _extract_snapshot_date,
     _history_transaction_type,
@@ -65,6 +65,25 @@ def test_commit_import_reimport_replaces_holdings_snapshot():
         holdings = session.query(HoldingSnapshot).all()
         assert len(holdings) == 2
         assert sum(row.market_value_cents for row in holdings) == 57200
+        snapshots = session.query(NetWorthSnapshot).all()
+        assert len(snapshots) == 1
+        assert snapshots[0].balance_cents == 57200
+
+
+def test_commit_import_records_running_balance_snapshot():
+    with _session() as session:
+        account = Account(display_name="Checking", account_type="checking")
+        session.add(account)
+        session.commit()
+        content = b"Date,Description,Amount,Running Bal.\n07/01/2026,Deposit,100.00,1000.00\n"
+
+        commit_import(session, account, None, "checking.csv", content)
+        session.commit()
+
+        snapshot = session.query(NetWorthSnapshot).one()
+        assert snapshot.snapshot_date == date(2026, 7, 1)
+        assert snapshot.balance_cents == 100000
+        assert snapshot.source == "import"
 
 
 def test_commit_import_uses_filename_snapshot_date():

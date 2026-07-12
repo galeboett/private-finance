@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { readAppRoute, routeUrl, type RouteView, type TxnFilter } from "./lib/filters";
+import { readAppRoute, routeUrl, type NetWorthPeriod, type RouteView, type TxnFilter } from "./lib/filters";
 
 type BootstrapCategory = { id: number; key: string; label: string };
 type DashboardSummary = {
@@ -149,6 +149,22 @@ type RuleSummary = {
 type CategoryTotal = { category: string; amount_cents: number };
 type MonthlyCashFlow = { month: string; income_cents: number; expense_cents: number; net_cents: number };
 type NetWorthAccount = { account_id: number; account: string; account_type: string; latest_date: string; market_value_cents: number };
+type NetWorthPoint = { date: string; total_cents: number; by_account: Record<string, number> };
+type NetWorthSeriesResponse = { from: string; to: string; bucket: "day" | "week" | "month"; series: NetWorthPoint[] };
+type NetWorthStats = {
+  from: string;
+  to: string;
+  start_cents: number;
+  end_cents: number;
+  change_cents: number;
+  change_pct: number | null;
+  min_cents: number;
+  min_date: string;
+  max_cents: number;
+  max_date: string;
+  best_day: { date: string; delta_cents: number };
+  worst_day: { date: string; delta_cents: number };
+};
 type AllocationRow = { asset_class: string; market_value_cents: number };
 type TransactionSortKey = "date" | "amount";
 type SortDirection = "asc" | "desc";
@@ -712,6 +728,7 @@ export function App() {
       search: transactionSearch || undefined,
       sort: transactionSortKey,
       sortDirection: transactionSortDirection,
+      netWorthPeriod: readAppRoute(window.location).filters.netWorthPeriod,
     };
     const nextUrl = routeUrl(activeView, focusedAccountId, filters);
     const currentUrl = `${window.location.pathname}${window.location.search}`;
@@ -2546,6 +2563,11 @@ export function App() {
                     setLastSelectedHoldingId(null);
                   }}
                   onUpdateHoldingDescription={updateHoldingDescription}
+                  onViewTransactions={(fromDate, toDate) => {
+                    setTransactionDateFrom(fromDate);
+                    setTransactionDateTo(toDate);
+                    navigateToView("all-accounts");
+                  }}
                   onRequestDelete={requestDelete}
                   onConfirmDelete={confirmDelete}
                   onDeleteConfirmTextChange={setDeleteConfirmText}
@@ -4013,6 +4035,7 @@ function ReportSurface({
   onRequestBulkHoldingDelete,
   onClearHoldingSelection,
   onUpdateHoldingDescription,
+  onViewTransactions,
   onRequestDelete,
   onConfirmDelete,
   onDeleteConfirmTextChange,
@@ -4036,6 +4059,7 @@ function ReportSurface({
   onRequestBulkHoldingDelete: (ids: number[]) => void;
   onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
+  onViewTransactions: (fromDate: string, toDate: string) => void;
   onRequestDelete: (target: DeleteTarget) => void;
   onConfirmDelete: () => Promise<void>;
   onDeleteConfirmTextChange: (value: string) => void;
@@ -4048,7 +4072,7 @@ function ReportSurface({
     return <IncomeReport income={income} expenses={expenses} net={net} />;
   }
   if (activeTab === "Net Worth") {
-    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} deleteTarget={deleteTarget} deleteConfirmText={deleteConfirmText} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onRequestDelete={onRequestDelete} onConfirmDelete={onConfirmDelete} onDeleteConfirmTextChange={onDeleteConfirmTextChange} onCancelDelete={onCancelDelete} />;
+    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} deleteTarget={deleteTarget} deleteConfirmText={deleteConfirmText} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onViewTransactions={onViewTransactions} onRequestDelete={onRequestDelete} onConfirmDelete={onConfirmDelete} onDeleteConfirmTextChange={onDeleteConfirmTextChange} onCancelDelete={onCancelDelete} />;
   }
   if (activeTab === "Cash Flow") {
     return <MonthlyCashFlowReport rows={cashFlowRows} income={income} expenses={expenses} net={net} />;
@@ -4162,6 +4186,212 @@ function IncomeReport({ income, expenses, net }: { income: number; expenses: num
   );
 }
 
+function NetWorthHistoryChart({ onViewTransactions }: { onViewTransactions: (fromDate: string, toDate: string) => void }) {
+  const [period, setPeriod] = useState<NetWorthPeriod>(() => readAppRoute(window.location).filters.netWorthPeriod ?? "6M");
+  const [data, setData] = useState<NetWorthSeriesResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [dragStart, setDragStart] = useState<number | null>(null);
+  const [dragEnd, setDragEnd] = useState<number | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [selectionStats, setSelectionStats] = useState<NetWorthStats | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const range = netWorthPeriodRange(period);
+    setLoading(true);
+    setSelectionStats(null);
+    setDragStart(null);
+    setDragEnd(null);
+    setIsDragging(false);
+    api<NetWorthSeriesResponse>(`/api/snapshots/networth?${range.params.toString()}`)
+      .then((result) => {
+        if (!cancelled) setData(result);
+      })
+      .catch(() => {
+        if (!cancelled) setData(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [period]);
+
+  useEffect(() => {
+    function clearSelection(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setSelectionStats(null);
+      setDragStart(null);
+      setDragEnd(null);
+      setIsDragging(false);
+    }
+    window.addEventListener("keydown", clearSelection);
+    return () => window.removeEventListener("keydown", clearSelection);
+  }, []);
+
+  function choosePeriod(nextPeriod: NetWorthPeriod) {
+    setPeriod(nextPeriod);
+    const route = readAppRoute(window.location);
+    route.filters.netWorthPeriod = nextPeriod;
+    window.history.replaceState({}, "", routeUrl(route.view, route.accountId, route.filters));
+  }
+
+  const rows = data?.series ?? [];
+  const width = 800;
+  const height = 280;
+  const left = 58;
+  const right = 18;
+  const top = 24;
+  const bottom = 36;
+  const chartWidth = width - left - right;
+  const chartHeight = height - top - bottom;
+  const values = rows.map((row) => row.total_cents);
+  const rawMinimum = values.length > 0 ? Math.min(...values) : 0;
+  const rawMaximum = values.length > 0 ? Math.max(...values) : 0;
+  const chartPadding = Math.max((rawMaximum - rawMinimum) * 0.08, Math.abs(rawMaximum) * 0.01, 100);
+  const minimum = rawMinimum - chartPadding;
+  const maximum = rawMaximum + chartPadding;
+  const span = Math.max(maximum - minimum, 1);
+  const xFor = (index: number) => left + (rows.length <= 1 ? chartWidth / 2 : (index / (rows.length - 1)) * chartWidth);
+  const yFor = (value: number) => top + ((maximum - value) / span) * chartHeight;
+  const linePath = rows.map((row, index) => `${index === 0 ? "M" : "L"} ${xFor(index)} ${yFor(row.total_cents)}`).join(" ");
+  const areaPath = rows.length > 0 ? `${linePath} L ${xFor(rows.length - 1)} ${top + chartHeight} L ${xFor(0)} ${top + chartHeight} Z` : "";
+  const latest = rows.at(-1)?.total_cents ?? 0;
+  const first = rows[0]?.total_cents ?? 0;
+  const periodChange = latest - first;
+  const activeIndex = hoverIndex ?? dragEnd;
+  const selectedStart = dragStart === null || dragEnd === null ? null : Math.min(dragStart, dragEnd);
+  const selectedEnd = dragStart === null || dragEnd === null ? null : Math.max(dragStart, dragEnd);
+
+  function pointerIndex(event: ReactPointerEvent<SVGSVGElement>) {
+    if (rows.length <= 1) return 0;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const viewX = ((event.clientX - bounds.left) / bounds.width) * width;
+    const ratio = Math.max(0, Math.min(1, (viewX - left) / chartWidth));
+    return Math.round(ratio * (rows.length - 1));
+  }
+
+  async function finishSelection(startIndex: number, endIndex: number) {
+    const startDate = rows[Math.min(startIndex, endIndex)]?.date;
+    const endDate = rows[Math.max(startIndex, endIndex)]?.date;
+    if (!startDate || !endDate) return;
+    try {
+      const stats = await api<NetWorthStats>(`/api/snapshots/networth/stats?from=${startDate}&to=${endDate}`);
+      setSelectionStats(stats);
+    } catch {
+      setSelectionStats(null);
+    }
+  }
+
+  return (
+    <section className="netWorthHistoryPanel">
+      <div className="netWorthHistoryHeader">
+        <div>
+          <span>Net worth history</span>
+          <strong>{formatMoney(latest)}</strong>
+          <small className={periodChange < 0 ? "amount negative" : "amount positive"}>{periodChange >= 0 ? "+" : ""}{formatMoney(periodChange)} during this period</small>
+        </div>
+        <div className="periodSelector" aria-label="Net worth period">
+          {(["1M", "6M", "1Y", "Max"] as NetWorthPeriod[]).map((option) => (
+            <button type="button" className={period === option ? "active" : ""} key={option} onClick={() => choosePeriod(option)}>{option}</button>
+          ))}
+        </div>
+      </div>
+      {loading ? <p className="emptyText">Loading net worth history…</p> : rows.length === 0 ? <p className="emptyText">Import account balances or brokerage positions to build net worth history.</p> : (
+        <div className="netWorthChartWrap">
+          <svg
+            className="netWorthChart"
+            viewBox={`0 0 ${width} ${height}`}
+            role="img"
+            aria-label="Interactive net worth history. Drag across the chart to inspect a date range."
+            onPointerDown={(event) => {
+              const index = pointerIndex(event);
+              event.currentTarget.setPointerCapture(event.pointerId);
+              setDragStart(index);
+              setDragEnd(index);
+              setIsDragging(true);
+              setSelectionStats(null);
+            }}
+            onPointerMove={(event) => {
+              const index = pointerIndex(event);
+              setHoverIndex(index);
+              if (isDragging) setDragEnd(index);
+            }}
+            onPointerUp={(event) => {
+              if (!isDragging || dragStart === null) return;
+              const index = pointerIndex(event);
+              setDragEnd(index);
+              void finishSelection(dragStart, index);
+              setIsDragging(false);
+            }}
+            onPointerLeave={() => setHoverIndex(null)}
+          >
+            <defs>
+              <linearGradient id="netWorthFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#3b6ae8" stopOpacity="0.3" />
+                <stop offset="100%" stopColor="#3b6ae8" stopOpacity="0.03" />
+              </linearGradient>
+            </defs>
+            <line x1={left} x2={width - right} y1={top + chartHeight} y2={top + chartHeight} className="chartAxis" />
+            <text x={left} y={height - 10} className="chartLabel">{formatShortDate(rows[0].date)}</text>
+            <text x={width - right} y={height - 10} textAnchor="end" className="chartLabel">{formatShortDate(rows.at(-1)?.date)}</text>
+            <text x={left - 8} y={top + 4} textAnchor="end" className="chartLabel">{formatCompactMoney(maximum)}</text>
+            <text x={left - 8} y={top + chartHeight} textAnchor="end" className="chartLabel">{formatCompactMoney(minimum)}</text>
+            {selectedStart !== null && selectedEnd !== null ? <rect x={xFor(selectedStart)} y={top} width={Math.max(2, xFor(selectedEnd) - xFor(selectedStart))} height={chartHeight} className="chartSelection" /> : null}
+            <path d={areaPath} fill="url(#netWorthFill)" />
+            <path d={linePath} className="netWorthLine" />
+            {activeIndex !== null && rows[activeIndex] ? (
+              <g>
+                <line x1={xFor(activeIndex)} x2={xFor(activeIndex)} y1={top} y2={top + chartHeight} className="chartHoverLine" />
+                <circle cx={xFor(activeIndex)} cy={yFor(rows[activeIndex].total_cents)} r="5" className="chartHoverPoint" />
+                <g transform={`translate(${Math.min(width - 175, Math.max(left, xFor(activeIndex) - 75))}, ${Math.max(8, yFor(rows[activeIndex].total_cents) - 54)})`}>
+                  <rect width="150" height="42" rx="6" className="chartTooltip" />
+                  <text x="10" y="16" className="chartTooltipDate">{formatShortDate(rows[activeIndex].date)}</text>
+                  <text x="10" y="33" className="chartTooltipValue">{formatMoney(rows[activeIndex].total_cents)}</text>
+                </g>
+              </g>
+            ) : null}
+          </svg>
+          <small>Drag across the chart to compare a range. Balance gaps are forward-filled from the latest snapshot.</small>
+        </div>
+      )}
+      {selectionStats ? (
+        <div className="netWorthSelectionStats">
+          <div>
+            <strong>{formatShortDate(selectionStats.from)} – {formatShortDate(selectionStats.to)}</strong>
+            <span className={selectionStats.change_cents < 0 ? "amount negative" : "amount positive"}>{selectionStats.change_cents >= 0 ? "+" : ""}{formatMoney(selectionStats.change_cents)}{selectionStats.change_pct === null ? "" : ` (${selectionStats.change_pct}%)`}</span>
+          </div>
+          <span>High {formatMoney(selectionStats.max_cents)} ({formatShortDate(selectionStats.max_date)})</span>
+          <span>Low {formatMoney(selectionStats.min_cents)} ({formatShortDate(selectionStats.min_date)})</span>
+          <button type="button" className="secondaryButton compactButton" onClick={() => onViewTransactions(selectionStats.from, selectionStats.to)}>View transactions →</button>
+          <button type="button" className="ghostButton compactButton" onClick={() => { setSelectionStats(null); setDragStart(null); setDragEnd(null); setIsDragging(false); }}>Clear</button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function netWorthPeriodRange(period: NetWorthPeriod) {
+  const today = new Date();
+  const to = localIsoDate(today);
+  const params = new URLSearchParams({ to, bucket: period === "1Y" ? "week" : period === "Max" ? "month" : "day" });
+  if (period !== "Max") {
+    const from = new Date(today.getFullYear(), today.getMonth() - (period === "1M" ? 1 : period === "6M" ? 6 : 12), today.getDate());
+    params.set("from", localIsoDate(from));
+  }
+  return { params };
+}
+
+function localIsoDate(value: Date) {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+}
+
+function formatCompactMoney(cents: number) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(cents / 100);
+}
+
 function NetWorthReport({
   accounts,
   allocationRows,
@@ -4175,6 +4405,7 @@ function NetWorthReport({
   onRequestBulkHoldingDelete,
   onClearHoldingSelection,
   onUpdateHoldingDescription,
+  onViewTransactions,
   onRequestDelete,
   onConfirmDelete,
   onDeleteConfirmTextChange,
@@ -4192,6 +4423,7 @@ function NetWorthReport({
   onRequestBulkHoldingDelete: (ids: number[]) => void;
   onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
+  onViewTransactions: (fromDate: string, toDate: string) => void;
   onRequestDelete: (target: DeleteTarget) => void;
   onConfirmDelete: () => Promise<void>;
   onDeleteConfirmTextChange: (value: string) => void;
@@ -4202,6 +4434,7 @@ function NetWorthReport({
   const sharedPriceDate = holdingRows.find((row) => row.price_date)?.price_date ?? "-";
   return (
     <div className="reportStack">
+      <NetWorthHistoryChart onViewTransactions={onViewTransactions} />
       <div className="reportMiniGrid">
         <ReportStat label="Latest investment value" value={formatMoney(total)} />
         <ReportStat label="Accounts with snapshots" value={String(accounts.length)} />

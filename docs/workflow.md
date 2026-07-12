@@ -39,6 +39,16 @@ The app builds a full personal finance picture by turning account exports into a
    - Spending summaries use expense transactions and fixed categories.
    - Net-worth views use account balances and investment snapshots.
 
+## Net Worth History
+
+- Open the overview and select **Net Worth** in the report tabs.
+- Choose **1M**, **6M**, **1Y**, or **Max**. The selected period stays in the page URL so it can be bookmarked.
+- Hover over the chart to inspect a day's total.
+- Drag across a date range to see the change, percent change, high, and low for that range.
+- Select **View transactions** to open the transaction ledger with the chosen dates already applied.
+- Select **Clear** or press Escape to remove the range selection.
+- Imported running balances and brokerage positions create durable snapshots. Between known balances, the app reconstructs checking and savings history from ledger movements and forward-fills investment values.
+
 ## Automated vs Manual
 
 Automated:

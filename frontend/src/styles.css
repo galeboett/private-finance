@@ -854,6 +854,148 @@ button:disabled {
   margin-top: 18px;
 }
 
+.netWorthHistoryPanel {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfcff;
+}
+
+.netWorthHistoryHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.netWorthHistoryHeader > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.netWorthHistoryHeader span,
+.netWorthHistoryHeader small,
+.netWorthChartWrap > small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.netWorthHistoryHeader strong {
+  font-size: 26px;
+}
+
+.periodSelector {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+}
+
+.periodSelector button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.periodSelector button.active {
+  background: var(--blue);
+  color: #fff;
+}
+
+.netWorthChartWrap {
+  display: grid;
+  gap: 5px;
+}
+
+.netWorthChart {
+  width: 100%;
+  min-height: 240px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.chartAxis {
+  stroke: #d9e0ea;
+  stroke-width: 1;
+}
+
+.chartLabel {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.netWorthLine {
+  fill: none;
+  stroke: var(--blue);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.chartSelection {
+  fill: var(--blue);
+  opacity: 0.12;
+}
+
+.chartHoverLine {
+  stroke: #8ca9f7;
+  stroke-dasharray: 4 4;
+  stroke-width: 1;
+}
+
+.chartHoverPoint {
+  fill: #fff;
+  stroke: var(--blue);
+  stroke-width: 3;
+}
+
+.chartTooltip {
+  fill: #17213b;
+  opacity: 0.94;
+}
+
+.chartTooltipDate {
+  fill: #bfc9df;
+  font-size: 10px;
+}
+
+.chartTooltipValue {
+  fill: #fff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.netWorthSelectionStats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #cad7fb;
+  border-radius: 8px;
+  background: var(--blue-soft);
+}
+
+.netWorthSelectionStats > div {
+  display: grid;
+  gap: 2px;
+  margin-right: auto;
+}
+
+.netWorthSelectionStats span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .reportMiniGrid,
 .compareGrid {
   display: grid;
@@ -3054,6 +3196,22 @@ select.editableCell {
 
   .bulkEditPanel > small {
     grid-column: auto;
+  }
+
+  .netWorthHistoryHeader {
+    display: grid;
+  }
+
+  .periodSelector {
+    width: fit-content;
+  }
+
+  .netWorthChart {
+    min-height: 200px;
+  }
+
+  .netWorthSelectionStats {
+    align-items: flex-start;
   }
 
   .importWorkspace {
