@@ -1961,12 +1961,20 @@ export function App() {
       return;
     }
     if (focusedTransactionId === transactionId) {
-      setEditingTransactionId(transactionId);
+      openTransactionEditor(transactionId);
       return;
     }
     setFocusedTransactionId(transactionId);
     setEditingTransactionId(null);
     setCategoryEditor(null);
+  }
+
+  function openTransactionEditor(transactionId: number) {
+    setFocusedTransactionId(transactionId);
+    setEditingTransactionId(transactionId);
+    setCategoryEditor(null);
+    setSplitEditor(null);
+    setMonthlyAllocationEditor(null);
   }
 
   return (
@@ -3091,6 +3099,7 @@ export function App() {
                     .filter(Boolean)
                     .join(" ")}
                   onClick={() => handleTransactionRowClick(transaction.id)}
+                  onDoubleClick={() => openTransactionEditor(transaction.id)}
                 >
                   <input
                     type="checkbox"
@@ -3151,7 +3160,7 @@ export function App() {
                         <button
                           type="button"
                           className={["categoryTrigger", needsCategory ? "needsCategory" : "", editorOpen ? "open" : ""].filter(Boolean).join(" ")}
-                          onClick={() => setCategoryEditor({ transactionId: transaction.id, query: categoryLabel ?? "" })}
+                          onClick={() => setCategoryEditor({ transactionId: transaction.id, query: "" })}
                           title="Search and assign a category"
                         >
                           <span>{needsCategory ? "This needs a category" : categoryLabel ?? "No category"}</span>
