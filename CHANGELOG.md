@@ -22,6 +22,7 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Added
 
+- Problem E Tier 1 foundation: a configurable private Import Inbox with manual scanning, exact and semantic SHA-256 deduplication (independent of filename suffixes and harmless CSV formatting), account/preset matching, staged previews, confirm/discard review, unchanged source files, and one mutation-journal operation per confirmed import.
 - Problem C foundation: a canonical transaction-filter contract shared by the backend query builder and frontend URL codec, real app paths with browser back/forward support, bookmarkable transaction filters, and removable active-filter chips.
 - Problem B foundation: operation and row-change journal tables, atomic before/after mutation recording for transaction edits, bulk edits, voids, and deletes, plus recoverable transaction soft deletion and one shared live-transaction query predicate.
 - `POST /api/password` — change the local password (requires the current password; revokes all other sessions). **SEC-02 partial**

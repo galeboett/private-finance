@@ -80,6 +80,12 @@ class ImportBatch(TimestampMixin, Base):
     imported_rows: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     skipped_duplicates: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     warnings_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    source_path: Mapped[str | None] = mapped_column(Text)
+    match_confidence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    match_reason: Mapped[str | None] = mapped_column(Text)
+    proposed_account_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    detected_preset: Mapped[str | None] = mapped_column(String(40))
+    semantic_hash: Mapped[str | None] = mapped_column(String(128), index=True)
 
 
 class StagingRow(TimestampMixin, Base):

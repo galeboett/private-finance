@@ -11,7 +11,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from openpyxl import load_workbook
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
@@ -19,6 +19,7 @@ from ..config import settings
 from ..models import Account, Category, CategoryRule, HoldingSnapshot, ImportBatch, ImportPreset, StagingRow, Transaction
 from ..money import parse_decimal_to_cents
 from .accounts import infer_account_characterization, infer_last_four, upsert_institution_by_name
+from .mutation_log import MutationChange, changed_values, journal_mutation
 
 
 CARD_REFERENCE_HEADER = "Posted Date,Reference Number,Payee,Address,Amount"
@@ -860,19 +861,58 @@ def preview_import(content: bytes, preset_type: str) -> PreviewResult:
     return parse_csv_preview(content, preset_type)
 
 
-def commit_import(db: Session, account, preset: ImportPreset | None, filename: str, content: bytes, actor: str = "local-user", snapshot_date: date | None = None) -> dict:
+def semantic_import_hash(content: bytes, preset_type: str | None = None, filename: str = "") -> str:
+    """Fingerprint parsed financial rows, independent of download filename and CSV formatting."""
+    detected = preset_type or detect_preset_from_content(decode_text(content), filename)
+    if not detected:
+        raise ValueError("Unable to detect preset type")
+    preview = preview_import(content, detected)
+    canonical_rows = []
+    for row in preview.rows:
+        canonical = {
+            key: _canonical_fingerprint_value(value)
+            for key, value in row.items()
+            if key != "row_index"
+        }
+        canonical_rows.append(json.dumps(canonical, sort_keys=True, separators=(",", ":")))
+    payload = json.dumps({"preset_type": detected, "rows": sorted(canonical_rows)}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _canonical_fingerprint_value(value):
+    if isinstance(value, str):
+        return " ".join(value.replace("\ufeff", "").split())
+    return value
+
+
+def commit_import(db: Session, account, preset: ImportPreset | None, filename: str, content: bytes, actor: str = "local-user", snapshot_date: date | None = None, existing_batch: ImportBatch | None = None) -> dict:
     detected = preset.preset_type if preset else detect_preset_from_content(decode_text(content), filename)
     if not detected:
         raise ValueError("Unable to detect preset type")
     preview = preview_import(content, detected)
     file_hash = hashlib.sha256(content).hexdigest()
-    batch = ImportBatch(account_id=account.id, preset_id=preset.id if preset else None, filename=filename, file_hash=file_hash, status="committed")
-    db.add(batch)
-    db.flush()
+    semantic_hash = semantic_import_hash(content, detected, filename)
+    if existing_batch:
+        batch = existing_batch
+        batch.account_id = account.id
+        batch.preset_id = preset.id if preset else None
+        batch.filename = filename
+        batch.file_hash = file_hash
+        batch.semantic_hash = semantic_hash
+        batch.status = "committed"
+        batch.detected_preset = detected
+        db.execute(delete(StagingRow).where(StagingRow.import_batch_id == batch.id))
+    else:
+        batch = ImportBatch(account_id=account.id, preset_id=preset.id if preset else None, filename=filename, file_hash=file_hash, semantic_hash=semantic_hash, status="committed", detected_preset=detected)
+        db.add(batch)
+        db.flush()
 
     inserted = 0
     skipped = 0
     warnings = list(preview.warnings)
+    journal_changes: list[MutationChange] = []
+    created_holdings: list[HoldingSnapshot] = []
+    created_transactions: list[Transaction] = []
     description_counter: Counter[tuple[str, str, str | None]] = Counter()
     rules = db.scalars(select(CategoryRule).order_by(CategoryRule.priority.asc(), CategoryRule.id.asc())).all()
 
@@ -918,12 +958,12 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
                         )
                     ).all()
                     for stale_row in stale:
+                        journal_changes.append(MutationChange(stale_row.id, changed_values(stale_row, ["account_id", "snapshot_date", "symbol", "description", "quantity_basis_points", "price_cents", "market_value_cents", "asset_class"]), None))
                         db.delete(stale_row)
                     if stale:
                         db.flush()
                     cleared_snapshot_scopes.add(scope)
-                db.add(
-                    HoldingSnapshot(
+                holding = HoldingSnapshot(
                         account_id=target_account.id,
                         snapshot_date=resolved_snapshot_date,
                         symbol=row.get("symbol"),
@@ -933,7 +973,8 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
                         market_value_cents=market_value_cents,
                         asset_class=row.get("asset_class"),
                     )
-                )
+                db.add(holding)
+                created_holdings.append(holding)
                 inserted += 1
             continue
 
@@ -990,13 +1031,33 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
             transaction.review_status = "possible_duplicate"
             transaction.duplicate_of_transaction_id = duplicate_of_id
         db.add(transaction)
+        created_transactions.append(transaction)
         inserted += 1
 
     batch.imported_rows = inserted
     batch.skipped_duplicates = skipped
     batch.warnings_json = json.dumps(warnings)
-    record_audit_event(db, "import_commit", actor, "import_batch", str(batch.id), {"filename": filename, "inserted": inserted, "skipped": skipped})
-    return {"batch_id": batch.id, "inserted": inserted, "skipped": skipped, "warnings": warnings}
+    db.flush()
+    if created_holdings:
+        journal_changes.extend(
+            MutationChange(holding.id, None, changed_values(holding, ["account_id", "snapshot_date", "symbol", "description", "quantity_basis_points", "price_cents", "market_value_cents", "asset_class"]))
+            for holding in created_holdings
+        )
+    if created_transactions:
+        journal_changes.extend(MutationChange(transaction.id, None, changed_values(transaction, ["deleted_at"])) for transaction in created_transactions)
+    operation_id = None
+    if journal_changes:
+        row_label = "row" if inserted == 1 else "rows"
+        operation_id = journal_mutation(
+            db,
+            kind="import",
+            entity_type="holding_snapshot" if _is_brokerage_preset(detected) else "transaction",
+            actor=actor,
+            description=f'Imported {inserted} {row_label} from "{filename}"',
+            changes=journal_changes,
+        )
+    record_audit_event(db, "import_commit", actor, "import_batch", str(batch.id), {"filename": filename, "inserted": inserted, "skipped": skipped, "operation_id": operation_id})
+    return {"batch_id": batch.id, "inserted": inserted, "skipped": skipped, "warnings": warnings, "operation_id": operation_id}
 
 
 def _resolve_brokerage_account(db: Session, selected_account: Account, row: dict) -> tuple[Account, str | None]:

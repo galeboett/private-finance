@@ -267,6 +267,30 @@ const selectionSummary = (label: string, selected: string[], options: FilterOpti
   return `${label}: ${selected.length} selected`;
 };
 
+type InboxBatch = {
+  id: number;
+  filename: string;
+  preset_type: string | null;
+  account_id: number;
+  account_name: string;
+  account_last_four: string | null;
+  match_confidence: number;
+  match_reason: string | null;
+  row_count: number;
+  warnings: string[];
+  preview: Array<Record<string, string | number | null>>;
+  created_at: string;
+};
+
+type ImportInboxState = { folder: string; pending: InboxBatch[] };
+type ImportInboxScan = ImportInboxState & {
+  files_found: number;
+  staged: Array<{ batch_id: number; filename: string; account_id: number; row_count: number }>;
+  skipped: Array<{ filename: string; reason: string }>;
+  needs_account: Array<{ filename: string; preset_type: string; reason: string; proposed_account: Record<string, string | null> }>;
+  errors: Array<{ filename: string; message: string }>;
+};
+
 const accountOptionLabel = (account: AccountSummary) => {
   const name = account.display_name.trim();
   const lastFour = account.last_four?.trim();
@@ -543,6 +567,8 @@ export function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importAnalysis, setImportAnalysis] = useState<ImportAnalysis | null>(null);
+  const [importInbox, setImportInbox] = useState<ImportInboxState>({ folder: "", pending: [] });
+  const [lastInboxScan, setLastInboxScan] = useState<ImportInboxScan | null>(null);
   const [importWorkspaceTab, setImportWorkspaceTab] = useState<"smart" | "manual">("smart");
   const [activeTab, setActiveTab] = useState("Cash Flow");
   const [activeView, setActiveView] = useState<AppView>(initialRoute.current.view);
@@ -758,7 +784,7 @@ export function App() {
   }
 
   async function loadData() {
-    const [dashboardData, accountsData, reviewData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData, transferData] = await Promise.all([
+    const [dashboardData, accountsData, reviewData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData, transferData, inboxData] = await Promise.all([
       api<DashboardSummary>("/api/dashboard/summary"),
       api<AccountSummary[]>("/api/accounts"),
       api<ReviewItem[]>("/api/review"),
@@ -770,6 +796,7 @@ export function App() {
       api<AllocationRow[]>("/api/investments/allocation"),
       api<HoldingRow[]>("/api/investments/holdings"),
       api<TransferCandidate[]>("/api/transfers/unconfirmed"),
+      api<ImportInboxState>("/api/imports/inbox"),
     ]);
     setDashboard(dashboardData);
     setAccounts(accountsData);
@@ -782,6 +809,7 @@ export function App() {
     setAllocationRows(allocationData);
     setHoldingRows(holdingsData);
     setTransferCandidates(transferData);
+    setImportInbox(inboxData);
   }
 
   function showToast(nextToast: ToastState) {
@@ -2015,6 +2043,50 @@ export function App() {
   } else if (activeView === "all-accounts" && !sameFilterValues(selectedTransactionAccountFilters, accounts.map((account) => account.id))) {
     transactionFilterChips.push({ key: "accounts", label: selectionSummary("Accounts", selectedTransactionAccountFilters.map(String), accounts.map((account) => ({ value: String(account.id), label: accountOptionLabel(account) }))), onRemove: () => setSelectedTransactionAccountFilters(accounts.map((account) => account.id)) });
   }
+
+  async function scanImportInbox() {
+    setBusyAction("inbox-scan");
+    try {
+      const result = await api<ImportInboxScan>("/api/imports/inbox/scan", { method: "POST", headers: { "x-csrf-token": csrf } });
+      setImportInbox({ folder: result.folder, pending: result.pending });
+      setLastInboxScan(result);
+      const followUpCount = result.needs_account.length + result.errors.length;
+      showToast({
+        tone: followUpCount ? "info" : "success",
+        message: `${result.staged.length} file${result.staged.length === 1 ? "" : "s"} staged, ${result.skipped.length} already recorded${followUpCount ? `, ${followUpCount} need attention` : ""}.`,
+      });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Import inbox could not be scanned." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function confirmInboxBatch(batch: InboxBatch) {
+    setBusyAction(`inbox-confirm-${batch.id}`);
+    try {
+      const result = await api<{ inserted: number; skipped: number }>(`/api/imports/${batch.id}/confirm`, { method: "POST", headers: { "x-csrf-token": csrf } });
+      await loadData();
+      showToast({ tone: "success", message: `Imported ${result.inserted} rows from ${batch.filename}. ${result.skipped} duplicates skipped.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Inbox import could not be confirmed." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function discardInboxBatch(batch: InboxBatch) {
+    setBusyAction(`inbox-discard-${batch.id}`);
+    try {
+      await api(`/api/imports/${batch.id}/discard`, { method: "POST", headers: { "x-csrf-token": csrf } });
+      setImportInbox((current) => ({ ...current, pending: current.pending.filter((item) => item.id !== batch.id) }));
+      showToast({ tone: "info", message: `${batch.filename} was removed from pending review. The source file was not changed.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Inbox import could not be discarded." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
   if (transactionSearch.trim()) transactionFilterChips.push({ key: "search", label: `Search: ${transactionSearch.trim()}`, onRemove: () => setTransactionSearch("") });
   if (!sameFilterValues(selectedTransactionMonthFilters, monthOptions.map((month) => month.value))) transactionFilterChips.push({ key: "months", label: selectionSummary("Months", selectedTransactionMonthFilters, monthOptions), onRemove: () => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value)) });
   if (!sameFilterValues(selectedTransactionYearFilters, transactionYears)) transactionFilterChips.push({ key: "years", label: selectionSummary("Years", selectedTransactionYearFilters, transactionYears.map((year) => ({ value: year, label: year }))), onRemove: () => setSelectedTransactionYearFilters(transactionYears) });
@@ -2644,6 +2716,76 @@ export function App() {
 
             {importWorkspaceTab === "smart" ? (
               <>
+                <div className="importInboxPanel">
+                  <div className="importInboxHeader">
+                    <div>
+                      <strong>Import Inbox</strong>
+                      <span>Copy statement CSVs into this private local folder, then scan and review them before anything is imported.</span>
+                      <code>{importInbox.folder || "The inbox folder will be created when the backend starts."}</code>
+                    </div>
+                    <button className="primaryButton" onClick={() => void scanImportInbox()} disabled={busyAction !== null}>
+                      <RefreshCw size={16} />
+                      {busyAction === "inbox-scan" ? "Scanning…" : "Scan inbox"}
+                    </button>
+                  </div>
+                  <small>Files stay in place. Their fingerprints prevent accidental re-imports.</small>
+                  {lastInboxScan && (lastInboxScan.needs_account.length > 0 || lastInboxScan.errors.length > 0) ? (
+                    <div className="inboxScanIssues">
+                      {lastInboxScan.needs_account.map((item) => (
+                        <div key={`account-${item.filename}`}>
+                          <strong>{item.filename}</strong>
+                          <span>Needs an account match: {item.reason} Use Smart import below to analyze it manually.</span>
+                        </div>
+                      ))}
+                      {lastInboxScan.errors.map((item) => (
+                        <div key={`error-${item.filename}`}>
+                          <strong>{item.filename}</strong>
+                          <span>{item.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {importInbox.pending.length > 0 ? (
+                    <div className="pendingInboxList">
+                      {importInbox.pending.map((batch) => (
+                        <article className="pendingInboxCard" key={batch.id}>
+                          <div className="pendingInboxTitle">
+                            <div>
+                              <strong>{batch.filename}</strong>
+                              <span>{batch.preset_type ?? "Detected CSV"} · {batch.row_count} rows</span>
+                            </div>
+                            <span className="statusBadge suggested">{batch.match_confidence}% match</span>
+                          </div>
+                          <div className="matchedAccountCard">
+                            <Landmark size={16} />
+                            <div>
+                              <strong>{batch.account_name}{batch.account_last_four && !batch.account_name.endsWith(batch.account_last_four) ? ` (${batch.account_last_four})` : ""}</strong>
+                              <span>{batch.match_reason ?? "Matched from the file name and contents."}</span>
+                            </div>
+                          </div>
+                          {batch.preview.length > 0 ? (
+                            <div className="inboxPreviewRows">
+                              {batch.preview.slice(0, 3).map((row, index) => (
+                                <div key={`${batch.id}-${index}`}>
+                                  <span>{String(row.transaction_date ?? row.snapshot_date ?? `Row ${index + 1}`)}</span>
+                                  <strong>{String(row.raw_description ?? row.description ?? row.symbol ?? row.account_name ?? "Imported row")}</strong>
+                                  <span>{String(row.amount ?? row.market_value ?? "")}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                          {batch.warnings.length > 0 ? <small>{batch.warnings.join(" ")}</small> : null}
+                          <div className="buttonRow">
+                            <button className="primaryButton" onClick={() => void confirmInboxBatch(batch)} disabled={busyAction !== null}>Confirm import</button>
+                            <button className="secondaryButton" onClick={() => void discardInboxBatch(batch)} disabled={busyAction !== null}>Discard batch</button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="emptyText">No files are waiting for confirmation.</p>
+                  )}
+                </div>
                 <div className="historyImportPanel">
                   <div>
                     <strong>Categorized history import</strong>

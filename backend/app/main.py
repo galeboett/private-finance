@@ -28,6 +28,7 @@ from .security import clear_login_failures, create_session, enforce_login_rate_l
 from .services.accounts import cleanup_imported_accounts
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
 from .services.importers import commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
+from .services.import_inbox import confirm_pending_import, discard_pending_import, inbox_directory, pending_import_batches, scan_import_inbox
 from .services.mutation_log import MutationChange, changed_values, journal_mutation
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
 from .services.transaction_filters import parse_csv_ints, parse_csv_values, transaction_filter_conditions
@@ -541,7 +542,7 @@ async def imports_commit(request: Request, account_id: int, preset_id: int | Non
         except ValueError as error:
             raise HTTPException(status_code=400, detail="snapshot_date must be YYYY-MM-DD") from error
     try:
-        result = commit_import(db, account, preset, file.filename or "import.csv", content, snapshot_date=parsed_snapshot_date)
+        result = commit_import(db, account, preset, file.filename or "import.csv", content, actor=actor_for_session(session), snapshot_date=parsed_snapshot_date)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     db.commit()
@@ -577,6 +578,49 @@ async def imports_reviewed_categorized_history(request: Request, session: Sessio
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
     return result
+
+
+@app.get("/api/imports/inbox")
+def get_import_inbox(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return {"folder": str(inbox_directory()), "pending": pending_import_batches(db)}
+
+
+@app.post("/api/imports/inbox/scan")
+def scan_inbox(request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    result = scan_import_inbox(db)
+    record_audit_event(db, "import_inbox_scan", actor_for_session(session), "import_inbox", result["folder"], {"files_found": result["files_found"], "staged": len(result["staged"]), "needs_account": len(result["needs_account"]), "errors": len(result["errors"])})
+    db.commit()
+    return {**result, "pending": pending_import_batches(db)}
+
+
+@app.post("/api/imports/{batch_id}/confirm")
+def confirm_inbox_import(batch_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    batch = db.get(ImportBatch, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Import batch not found")
+    try:
+        result = confirm_pending_import(db, batch, actor_for_session(session))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    db.commit()
+    return result
+
+
+@app.post("/api/imports/{batch_id}/discard")
+def discard_inbox_import(batch_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    batch = db.get(ImportBatch, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Import batch not found")
+    try:
+        discard_pending_import(batch)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    record_audit_event(db, "import_inbox_discard", actor_for_session(session), "import_batch", str(batch.id), {"filename": batch.filename})
+    db.commit()
+    return {"ok": True}
 
 @app.get("/api/imports/{batch_id}/report")
 def import_report(batch_id: int, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
