@@ -1117,6 +1117,47 @@ button:disabled {
   background: var(--green-soft);
 }
 
+.accountInlineEditor {
+  display: grid;
+  gap: 12px;
+  margin-top: -8px;
+  padding: 14px;
+  border: 1px solid #9ccbb4;
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: #f3fbf6;
+}
+
+.accountInlineEditorHeader {
+  display: grid;
+  gap: 3px;
+}
+
+.accountInlineEditorHeader strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #246447;
+}
+
+.accountInlineEditorHeader span,
+.accountInlineFields label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.accountInlineFields {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(160px, 1fr) minmax(200px, 1fr) minmax(110px, 0.55fr);
+  gap: 10px;
+}
+
+.accountInlineFields label {
+  display: grid;
+  gap: 5px;
+  font-weight: 700;
+}
+
 .workGrid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1830,7 +1871,7 @@ textarea {
 .ledgerRow {
   min-width: 1420px;
   display: grid;
-  grid-template-columns: 64px 104px 140px 150px minmax(260px, 1.4fr) minmax(190px, 0.9fr) 132px 150px 116px 156px;
+  grid-template-columns: 64px 104px 140px 150px minmax(260px, 1.4fr) minmax(190px, 0.9fr) 132px 150px 116px 86px;
   gap: 10px;
   align-items: center;
   padding: 9px 0;
@@ -1927,47 +1968,9 @@ select.editableCell {
 
 .rowEditActions {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
-  margin: 0 0 10px;
-  padding: 10px 12px;
-  border: 1px solid #b9c9f4;
-  border-top: 0;
-  border-radius: 0 0 8px 8px;
-  background: #f5f8ff;
-}
-
-.rowEditPrompt {
-  display: grid;
-  gap: 2px;
-  margin-right: auto;
-}
-
-.rowEditPrompt strong {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--blue);
-}
-
-.rowEditPrompt span {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.ledgerRowActions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.ledgerRowActions .secondaryButton,
-.ledgerRowActions .primaryButton {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  margin: -4px 0 10px;
 }
 
 .savedRuleGroup {
@@ -2818,6 +2821,10 @@ select.editableCell {
   }
 
   .bulkEditPanel {
+    grid-template-columns: 1fr;
+  }
+
+  .accountInlineFields {
     grid-template-columns: 1fr;
   }
 

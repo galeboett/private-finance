@@ -1969,12 +1969,16 @@ export function App() {
     if (editingTransactionId === transactionId) {
       return;
     }
+    if (focusedTransactionId === transactionId) {
+      openTransactionEditor(transactionId);
+      return;
+    }
     setFocusedTransactionId(transactionId);
     setEditingTransactionId(null);
     setCategoryEditor(null);
   }
 
-  function beginTransactionEdit(transactionId: number) {
+  function openTransactionEditor(transactionId: number) {
     setFocusedTransactionId(transactionId);
     setEditingTransactionId(transactionId);
     setCategoryEditor(null);
@@ -2610,7 +2614,7 @@ export function App() {
               </>
             ) : (
               <>
-                <div className="compactForm">
+                {!editingAccountId ? <div className="compactForm">
                   <input value={accountForm.display_name} onChange={(event) => setAccountForm({ ...accountForm, display_name: event.target.value })} placeholder="Account name" />
                   <input value={accountForm.institution_name} onChange={(event) => setAccountForm({ ...accountForm, institution_name: event.target.value })} placeholder="Institution" />
                   <select value={accountForm.account_type} onChange={(event) => setAccountForm({ ...accountForm, account_type: event.target.value })}>
@@ -2623,16 +2627,11 @@ export function App() {
                   <input value={accountForm.last_four} onChange={(event) => setAccountForm({ ...accountForm, last_four: event.target.value })} placeholder="Last four" />
                   <div className="buttonRow">
                     <button className="primaryButton" onClick={() => void saveAccount()}>
-                      {editingAccountId ? <Pencil size={16} /> : <Plus size={16} />}
-                      {editingAccountId ? "Save account" : "Add account"}
+                      <Plus size={16} />
+                      Add account
                     </button>
-                    {editingAccountId ? (
-                      <button className="secondaryButton" onClick={clearAccountForm}>
-                        Cancel
-                      </button>
-                    ) : null}
                   </div>
-                </div>
+                </div> : null}
                 <div className="cleanupPanel">
                   <div>
                     <strong>Clean imported account labels</strong>
@@ -2675,7 +2674,7 @@ export function App() {
                 <div className="denseList">
                   {accounts.map((account) => (
                     <div className="inlineDeleteGroup" key={account.id}>
-                      <div className={selectedAccountId === account.id ? "accountRow selected" : "accountRow"}>
+                      <div className={editingAccountId === account.id || selectedAccountId === account.id ? "accountRow selected" : "accountRow"}>
                         <input
                           type="checkbox"
                           checked={selectedAccountIds.includes(account.id)}
@@ -2701,6 +2700,33 @@ export function App() {
                           </button>
                         </div>
                       </div>
+                      {editingAccountId === account.id ? (
+                        <section
+                          className="accountInlineEditor"
+                          aria-label={`Edit ${account.display_name}`}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) {
+                              event.preventDefault();
+                              void saveAccount();
+                            }
+                          }}
+                        >
+                          <div className="accountInlineEditorHeader">
+                            <strong><Pencil size={15} /> Edit {account.display_name}</strong>
+                            <span>Update the account details below, then choose Save account. Press Enter to save at any time.</span>
+                          </div>
+                          <div className="accountInlineFields">
+                            <label>Account name<input autoFocus value={accountForm.display_name} onChange={(event) => setAccountForm({ ...accountForm, display_name: event.target.value })} /></label>
+                            <label>Institution<input value={accountForm.institution_name} onChange={(event) => setAccountForm({ ...accountForm, institution_name: event.target.value })} placeholder="Optional" /></label>
+                            <label>Account type<select value={accountForm.account_type} onChange={(event) => setAccountForm({ ...accountForm, account_type: event.target.value })}>{accountTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                            <label>Last four<input value={accountForm.last_four} onChange={(event) => setAccountForm({ ...accountForm, last_four: event.target.value })} placeholder="Optional" inputMode="numeric" /></label>
+                          </div>
+                          <div className="buttonRow">
+                            <button type="button" className="primaryButton" onClick={() => void saveAccount()}><Pencil size={15} /> Save account</button>
+                            <button type="button" className="secondaryButton" onClick={clearAccountForm}>Cancel</button>
+                          </div>
+                        </section>
+                      ) : null}
                       {deleteTarget?.kind === "account" && deleteTarget.id === account.id ? (
                         <DeleteConfirmInline
                           target={deleteTarget}
@@ -3144,6 +3170,7 @@ export function App() {
                     .filter(Boolean)
                     .join(" ")}
                   onClick={() => handleTransactionRowClick(transaction.id)}
+                  onDoubleClick={() => openTransactionEditor(transaction.id)}
                   onKeyDown={(event) => {
                     if (!isEditing || event.key !== "Enter" || event.shiftKey) return;
                     const target = event.target as HTMLElement;
@@ -3284,39 +3311,18 @@ export function App() {
                     )}
                   </div>
                   <span className={transaction.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(transaction.amount_cents)}</span>
-                  <div className="ledgerRowActions">
-                    <button
-                      type="button"
-                      className={isEditing ? "primaryButton compactButton" : "secondaryButton compactButton"}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (isEditing) {
-                          void confirmTransactionEdit(transaction);
-                        } else {
-                          beginTransactionEdit(transaction.id);
-                        }
-                      }}
-                      title={isEditing ? "Save and finish editing" : "Edit transaction"}
-                    >
-                      {isEditing ? "Done" : <><Pencil size={14} /> Edit</>}
-                    </button>
-                    <button
-                      className="dangerTextButton"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description });
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </div>
+                  <button
+                    className="dangerTextButton"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description });
+                    }}
+                  >
+                    Delete
+                  </button>
                 </div>
                 {isEditing ? (
                   <div className="rowEditActions">
-                    <div className="rowEditPrompt">
-                      <strong><Pencil size={14} /> Editing transaction</strong>
-                      <span>Update the highlighted fields. Press Enter or choose Done to confirm.</span>
-                    </div>
                     <button type="button" className="secondaryButton compactButton" onClick={() => void openSplitEditor(transaction)} disabled={transaction.monthly_allocation_count > 0}>
                       Split categories
                     </button>
