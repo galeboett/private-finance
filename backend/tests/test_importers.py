@@ -5,6 +5,7 @@ from app.config import settings
 from app.db import Base
 from app.models import Account, Category, Transaction
 from app.services.importers import commit_categorized_history, commit_reviewed_categorized_history, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
+from app.services.operation_history import undo_operation
 
 
 def test_detect_card_reference_preset():
@@ -215,6 +216,11 @@ def test_commit_categorized_history_creates_accounts_categories_and_confirmed_tr
         assert [category.label for category in categories] == ["Fees & Charges", "Income"]
         assert all(transaction.review_status == "confirmed" for transaction in transactions)
         assert {transaction.transaction_type for transaction in transactions} == {"expense", "income"}
+        assert result["operation_id"]
+
+        undo_operation(session, operation_id=result["operation_id"], actor="user:1")
+        session.commit()
+        assert all(transaction.deleted_at is not None for transaction in session.query(Transaction).all())
 
 
 def test_commit_categorized_history_skips_duplicates_on_reupload():

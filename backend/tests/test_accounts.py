@@ -7,6 +7,7 @@ from app.db import Base
 from app.main import UNASSIGNED_ACCOUNT_MARKER, _delete_account_tree
 from app.models import Account, Category, HoldingSnapshot, ImportBatch, Transaction, TransactionSplit
 from app.services.accounts import cleanup_imported_accounts, infer_account_characterization, infer_last_four
+from app.services.operation_history import undo_operation
 from app.services.importers import _find_or_create_history_account
 
 
@@ -67,6 +68,7 @@ def test_cleanup_imported_accounts_merges_case_duplicates_and_recharacterizes_ca
             )
         )
         session.commit()
+        duplicate_id = duplicate_checkings.id
 
         result = cleanup_imported_accounts(session)
         accounts = session.scalars(select(Account).order_by(Account.display_name)).all()
@@ -80,6 +82,16 @@ def test_cleanup_imported_accounts_merges_case_duplicates_and_recharacterizes_ca
         assert cleaned_boa.account_type == "credit_card"
         assert cleaned_boa.institution.name == "Bank of America"
         assert cleaned_boa.last_four == "3056"
+        assert result["operation_id"]
+
+        undo_operation(session, operation_id=result["operation_id"], actor="user:1")
+        session.commit()
+        restored_duplicate = session.get(Account, duplicate_id)
+        session.refresh(moved_transaction)
+        session.refresh(cleaned_boa)
+        assert restored_duplicate.display_name == "checkings"
+        assert moved_transaction.account_id == restored_duplicate.id
+        assert cleaned_boa.account_type == "checking"
 
 
 def test_account_deletion_preserves_transactions_for_account_review():

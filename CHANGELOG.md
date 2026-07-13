@@ -23,6 +23,7 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Added
 
+- Completed Problem B mutation coverage for ordinary finance changes: mixed-entity Activity operations and undo now cover accounts, categories, rules, splits, allocations, transfers, holdings, app-data imports, and categorized-history imports. Bulk review/rule actions are journaled as one user action, and related editing screens share selection, bulk-action, and undo-toast behavior.
 - Problem B/C/D recovery and drill-down polish: conflict-aware operation undo/redo APIs, row-level Activity details, 10-second undo actions for bulk edits/imports/deletes/restores, a recoverable transaction Trash with explicit delete-forever confirmation, and a net-worth transaction peek drawer that preserves dashboard context.
 - Problem D foundation: durable per-account net-worth snapshots populated from imported running balances and brokerage positions, startup backfill for existing data, forward/backward balance reconstruction, day/week/month series and range-stat APIs, and an interactive net-worth chart with period controls, hover details, drag-to-compare statistics, and transaction drill-through.
 - Problem E Tier 1 foundation: a configurable private Import Inbox with manual scanning, exact and semantic SHA-256 deduplication (independent of filename suffixes and harmless CSV formatting), account/preset matching, staged previews, confirm/discard review, unchanged source files, and one mutation-journal operation per confirmed import.

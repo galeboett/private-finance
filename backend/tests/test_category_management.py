@@ -7,6 +7,7 @@ from starlette.requests import Request
 from app.db import Base
 from app.main import cleanup_duplicate_categories, delete_category
 from app.models import Account, Category, CategoryRule, ExpenseAllocation, SessionToken, Transaction, TransactionSplit
+from app.services.operation_history import undo_operation
 
 
 def test_category_merge_reassigns_every_financial_reference():
@@ -27,17 +28,26 @@ def test_category_merge_reassigns_every_financial_reference():
             CategoryRule(category_id=old.id, priority=100, field_name="raw_description", match_text="Expense", suggested_transaction_type="expense"),
         ])
         db.commit()
+        old_id = old.id
 
         request = Request({"type": "http", "headers": [(b"x-csrf-token", b"csrf")]})
         session = SessionToken(csrf_token="csrf")
         result = delete_category(old.id, request, replacement.id, session, db)
 
         assert result["reassigned"] == 4
-        assert db.get(Category, old.id) is None
+        assert db.get(Category, old_id) is None
         assert db.get(Transaction, transaction.id).category_id == replacement.id
         assert db.scalar(select(TransactionSplit.category_id)) == replacement.id
         assert db.scalar(select(ExpenseAllocation.category_id)) == replacement.id
         assert db.scalar(select(CategoryRule.category_id)) == replacement.id
+
+        undo_operation(db, operation_id=result["operation_id"], actor="user:1")
+        db.commit()
+        assert db.get(Category, old_id).label == "Old"
+        assert db.get(Transaction, transaction.id).category_id == old_id
+        assert db.scalar(select(TransactionSplit.category_id)) == old_id
+        assert db.scalar(select(ExpenseAllocation.category_id)) == old_id
+        assert db.scalar(select(CategoryRule.category_id)) == old_id
 
 
 def test_cleanup_duplicate_categories_merges_spacing_and_case_variants():
@@ -55,6 +65,8 @@ def test_cleanup_duplicate_categories_merges_spacing_and_case_variants():
 
         result = cleanup_duplicate_categories(db)
 
-        assert result == {"merged": 1, "reassigned": 1}
+        assert result["merged"] == 1
+        assert result["reassigned"] == 1
+        assert result["operation_id"]
         assert db.scalar(select(Category).where(Category.label == "Giftcard")) is None
         assert db.get(Transaction, transaction.id).category_id == canonical.id

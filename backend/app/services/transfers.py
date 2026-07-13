@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
 from ..models import Account, Transaction, TransferLink
+from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .transaction_queries import get_live_transaction, live_transaction_select
 
 
@@ -79,7 +80,10 @@ def detect_transfer_candidates(db: Session, window_days: int = 5) -> list[Transf
 def create_transfer_suggestions(db: Session, window_days: int = 5, actor: str = "local-user") -> dict:
     created = 0
     suggestions = []
+    changes: list[MutationChange] = []
     for candidate in detect_transfer_candidates(db, window_days):
+        from_before = changed_values(candidate.from_transaction, ["review_status"])
+        to_before = changed_values(candidate.to_transaction, ["review_status"])
         link = TransferLink(
             from_transaction_id=candidate.from_transaction.id,
             to_transaction_id=candidate.to_transaction.id,
@@ -90,6 +94,11 @@ def create_transfer_suggestions(db: Session, window_days: int = 5, actor: str = 
         candidate.from_transaction.review_status = "suggested"
         candidate.to_transaction.review_status = "suggested"
         db.flush()
+        changes.extend([
+            MutationChange(link.id, None, full_values(link), entity_type="transfer_link"),
+            MutationChange(candidate.from_transaction.id, from_before, changed_values(candidate.from_transaction, ["review_status"]), entity_type="transaction"),
+            MutationChange(candidate.to_transaction.id, to_before, changed_values(candidate.to_transaction, ["review_status"]), entity_type="transaction"),
+        ])
         record_audit_event(
             db,
             "transfer_suggest",
@@ -105,8 +114,9 @@ def create_transfer_suggestions(db: Session, window_days: int = 5, actor: str = 
         )
         suggestions.append(_transfer_link_payload(link, candidate.from_transaction, candidate.to_transaction, candidate.suggested_type))
         created += 1
+    operation_id = journal_mutation(db, kind="create", entity_type="mixed", actor=actor, description=f"Created {created} transfer suggestions", changes=changes) if changes else None
     db.commit()
-    return {"created": created, "suggestions": suggestions}
+    return {"created": created, "suggestions": suggestions, "operation_id": operation_id}
 
 
 def list_unconfirmed_transfers(db: Session) -> list[dict]:
@@ -129,11 +139,19 @@ def confirm_transfer_link(db: Session, link: TransferLink, actor: str = "local-u
     if not from_transaction or not to_transaction:
         raise ValueError("Transfer link points to a missing transaction")
     suggested_type = _suggested_type(from_transaction, to_transaction, db)
+    link_before = changed_values(link, ["confirmed"])
+    from_before = changed_values(from_transaction, ["transaction_type", "review_status"])
+    to_before = changed_values(to_transaction, ["transaction_type", "review_status"])
     link.confirmed = True
     from_transaction.transaction_type = suggested_type
     to_transaction.transaction_type = suggested_type
     from_transaction.review_status = "confirmed"
     to_transaction.review_status = "confirmed"
+    operation_id = journal_mutation(db, kind="update", entity_type="mixed", actor=actor, description="Confirmed transfer pair", changes=[
+        MutationChange(link.id, link_before, changed_values(link, ["confirmed"]), entity_type="transfer_link"),
+        MutationChange(from_transaction.id, from_before, changed_values(from_transaction, ["transaction_type", "review_status"]), entity_type="transaction"),
+        MutationChange(to_transaction.id, to_before, changed_values(to_transaction, ["transaction_type", "review_status"]), entity_type="transaction"),
+    ])
     record_audit_event(
         db,
         "transfer_confirm",
@@ -143,20 +161,24 @@ def confirm_transfer_link(db: Session, link: TransferLink, actor: str = "local-u
         {"from_transaction_id": from_transaction.id, "to_transaction_id": to_transaction.id, "suggested_type": suggested_type},
     )
     db.commit()
-    return _transfer_link_payload(link, from_transaction, to_transaction, suggested_type)
+    return {**_transfer_link_payload(link, from_transaction, to_transaction, suggested_type), "operation_id": operation_id}
 
 
 def reject_transfer_link(db: Session, link: TransferLink, actor: str = "local-user") -> dict:
     link_id = link.id
     from_transaction = get_live_transaction(db, link.from_transaction_id)
     to_transaction = get_live_transaction(db, link.to_transaction_id)
+    changes = [MutationChange(link.id, full_values(link), None, entity_type="transfer_link")]
     for transaction in (from_transaction, to_transaction):
         if transaction and transaction.review_status == "suggested":
+            before = changed_values(transaction, ["review_status"])
             transaction.review_status = "needs_review"
+            changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["review_status"]), entity_type="transaction"))
+    operation_id = journal_mutation(db, kind="delete", entity_type="mixed", actor=actor, description="Rejected transfer suggestion", changes=changes)
     record_audit_event(db, "transfer_reject", actor, "transfer_link", str(link_id), {"from_transaction_id": link.from_transaction_id, "to_transaction_id": link.to_transaction_id})
     db.delete(link)
     db.commit()
-    return {"id": link_id, "rejected": True}
+    return {"id": link_id, "rejected": True, "operation_id": operation_id}
 
 
 def _linked_transaction_ids(db: Session) -> set[int]:

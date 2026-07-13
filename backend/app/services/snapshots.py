@@ -49,6 +49,17 @@ def record_imported_snapshots(db: Session, transactions: Iterable[Transaction], 
         upsert_net_worth_snapshot(db, account_id=account_id, snapshot_date=snapshot_date, balance_cents=total, source="import")
 
 
+def refresh_holding_net_worth_snapshot(db: Session, *, account_id: int, snapshot_date: date) -> None:
+    db.flush()
+    total = db.scalar(select(func.sum(HoldingSnapshot.market_value_cents)).where(HoldingSnapshot.account_id == account_id, HoldingSnapshot.snapshot_date == snapshot_date))
+    snapshot = db.scalar(select(NetWorthSnapshot).where(NetWorthSnapshot.account_id == account_id, NetWorthSnapshot.snapshot_date == snapshot_date))
+    if total is None:
+        if snapshot and snapshot.source == "import":
+            db.delete(snapshot)
+        return
+    upsert_net_worth_snapshot(db, account_id=account_id, snapshot_date=snapshot_date, balance_cents=total, source="import")
+
+
 def backfill_net_worth_snapshots(db: Session) -> int:
     before_count = db.scalar(select(func.count(NetWorthSnapshot.id))) or 0
     holding_totals = db.execute(

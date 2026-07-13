@@ -101,12 +101,22 @@ class TransactionReviewUpdate(BaseModel):
     user_note: str | None = None
 
 
+class OperationBulkUpdateRequest(BaseModel):
+    entity_type: Literal["transaction"]
+    ids: list[int] = Field(min_length=1)
+    patch: TransactionReviewUpdate
+
+
 class RuleCreate(BaseModel):
     category_id: int
     field_name: str
     match_text: str
     suggested_transaction_type: TransactionType = TransactionType.EXPENSE
     priority: int = 100
+
+
+class BulkRuleCreateRequest(BaseModel):
+    rules: list[RuleCreate] = Field(min_length=1)
 
 
 class RuleApplyRequest(BaseModel):

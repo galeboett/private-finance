@@ -5,9 +5,10 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.db import Base
-from app.main import bulk_update_transactions
+from app.main import bulk_update_transactions, operation_bulk_update
 from app.models import Account, Category, Operation, OperationChange, SessionToken, Transaction
-from app.schemas import BulkTransactionUpdateRequest
+from app.schemas import BulkTransactionUpdateRequest, OperationBulkUpdateRequest, TransactionReviewUpdate
+from app.services.operation_history import undo_operation
 
 
 def test_bulk_update_supports_every_editable_transaction_field():
@@ -54,3 +55,45 @@ def test_bulk_update_supports_every_editable_transaction_field():
         assert all(operation.kind == "bulk_update" for operation in operations)
         assert all(operation.actor == "user:42" for operation in operations)
         assert db.query(OperationChange).count() == 11
+
+
+def test_generic_bulk_operation_updates_multiple_fields_and_undoes_together():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        account = Account(display_name="Checking", account_type="checking")
+        category = Category(key="travel", label="Travel")
+        db.add_all([account, category])
+        db.flush()
+        rows = [
+            Transaction(
+                account_id=account.id,
+                transaction_date=date(2026, 7, index),
+                amount_cents=-1000 * index,
+                raw_description=f"Original {index}",
+                transaction_type="expense",
+                review_status="suggested",
+                source_hash=f"operation-bulk-{index}",
+            )
+            for index in (1, 2)
+        ]
+        db.add_all(rows)
+        db.commit()
+        request = Request({"type": "http", "headers": [(b"x-csrf-token", b"csrf")]})
+        session = SessionToken(user_id=42, csrf_token="csrf")
+
+        result = operation_bulk_update(
+            OperationBulkUpdateRequest(
+                entity_type="transaction",
+                ids=[row.id for row in rows],
+                patch=TransactionReviewUpdate(category_id=category.id, review_status="confirmed"),
+            ),
+            request,
+            session,
+            db,
+        )
+
+        assert result["updated"] == 2
+        assert all(row.category_id == category.id and row.review_status == "confirmed" for row in rows)
+        undo_operation(db, operation_id=result["operation_id"], actor="user:42")
+        assert all(row.category_id is None and row.review_status == "suggested" for row in rows)

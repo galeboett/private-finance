@@ -4,10 +4,28 @@ import json
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from ..models import Account, HoldingSnapshot, NetWorthSnapshot, Operation, OperationChange, Transaction
+from ..models import (
+    Account,
+    Category,
+    CategoryRule,
+    ExpenseAllocation,
+    HoldingSnapshot,
+    ImportBatch,
+    ImportPreset,
+    Institution,
+    NetWorthSnapshot,
+    Operation,
+    OperationChange,
+    SecurityMetadata,
+    SecurityPrice,
+    StagingRow,
+    Transaction,
+    TransactionSplit,
+    TransferLink,
+)
 from .mutation_log import MutationChange, journal_mutation
 
 
@@ -15,6 +33,18 @@ ENTITY_MODELS = {
     "transaction": Transaction,
     "account": Account,
     "holding_snapshot": HoldingSnapshot,
+    "net_worth_snapshot": NetWorthSnapshot,
+    "category": Category,
+    "category_rule": CategoryRule,
+    "transaction_split": TransactionSplit,
+    "expense_allocation": ExpenseAllocation,
+    "transfer_link": TransferLink,
+    "security_metadata": SecurityMetadata,
+    "security_price": SecurityPrice,
+    "import_preset": ImportPreset,
+    "import_batch": ImportBatch,
+    "staging_row": StagingRow,
+    "institution": Institution,
 }
 
 
@@ -26,14 +56,18 @@ class OperationConflict(ValueError):
 
 def list_operations(db: Session, *, limit: int = 50, entity_type: str | None = None, actor: str | None = None) -> list[dict[str, Any]]:
     change_counts = (
-        select(OperationChange.operation_id, func.count(OperationChange.id).label("change_count"))
+        select(
+            OperationChange.operation_id,
+            func.count(OperationChange.id).label("change_count"),
+            func.max(OperationChange.id).label("latest_change_id"),
+        )
         .group_by(OperationChange.operation_id)
         .subquery()
     )
     query = (
         select(Operation, change_counts.c.change_count)
         .join(change_counts, change_counts.c.operation_id == Operation.id)
-        .order_by(Operation.created_at.desc())
+        .order_by(change_counts.c.latest_change_id.desc())
         .limit(limit)
     )
     if entity_type:
@@ -56,6 +90,7 @@ def operation_detail(db: Session, operation_id: str) -> dict[str, Any] | None:
     payload["changes"] = [
         {
             "id": change.id,
+            "entity_type": change.entity_type,
             "entity_id": change.entity_id,
             "before": _decode_image(change.before_json),
             "after": _decode_image(change.after_json),
@@ -71,10 +106,6 @@ def undo_operation(db: Session, *, operation_id: str, actor: str, unconflicted_o
         raise LookupError("Operation not found")
     if operation.undone_by:
         raise ValueError("This operation has already been undone")
-    model = ENTITY_MODELS.get(operation.entity_type)
-    if model is None:
-        raise ValueError(f'Undo is not supported for entity type "{operation.entity_type}"')
-
     changes = db.scalars(
         select(OperationChange)
         .where(OperationChange.operation_id == operation.id)
@@ -83,28 +114,39 @@ def undo_operation(db: Session, *, operation_id: str, actor: str, unconflicted_o
     conflicts = _later_conflicts(db, operation, changes)
     if conflicts and not unconflicted_only:
         raise OperationConflict(conflicts)
-    applicable = [change for change in changes if change.entity_id not in conflicts]
+    conflicted_keys = set(conflicts)
+    mixed_changes = len({change.entity_type or operation.entity_type for change in changes}) > 1
+    applicable = [
+        change
+        for change in changes
+        if (f"{change.entity_type or operation.entity_type}:{change.entity_id}" if mixed_changes else change.entity_id) not in conflicted_keys
+    ]
     if not applicable:
         raise OperationConflict(conflicts)
 
     undo_changes: list[MutationChange] = []
-    snapshot_scopes: set[tuple[int, date]] = set()
+    snapshot_scopes: dict[type, set[tuple[int, date]]] = {Transaction: set(), HoldingSnapshot: set()}
     for change in applicable:
+        entity_type = change.entity_type or operation.entity_type
+        model = ENTITY_MODELS.get(entity_type)
+        if model is None:
+            raise ValueError(f'Undo is not supported for entity type "{entity_type}"')
         before = _decode_image(change.before_json)
         after = _decode_image(change.after_json)
         entity = db.get(model, _primary_key(model, change.entity_id))
         if isinstance(entity, (Transaction, HoldingSnapshot)):
-            snapshot_scopes.add((entity.account_id, entity.transaction_date if isinstance(entity, Transaction) else entity.snapshot_date))
+            snapshot_scopes[model].add((entity.account_id, entity.transaction_date if isinstance(entity, Transaction) else entity.snapshot_date))
         elif model is HoldingSnapshot:
             scope_image = before or after or {}
             if scope_image.get("account_id") and scope_image.get("snapshot_date"):
-                snapshot_scopes.add((int(scope_image["account_id"]), date.fromisoformat(scope_image["snapshot_date"])))
+                snapshot_scopes[HoldingSnapshot].add((int(scope_image["account_id"]), date.fromisoformat(scope_image["snapshot_date"])))
         current = _capture_image(entity, after or before)
         _apply_image(db, model, entity, before)
-        undo_changes.append(MutationChange(change.entity_id, current, before))
+        undo_changes.append(MutationChange(change.entity_id, current, before, entity_type=entity_type))
 
-    if model in {Transaction, HoldingSnapshot}:
-        _sync_import_snapshots(db, model, snapshot_scopes)
+    for snapshot_model, scopes in snapshot_scopes.items():
+        if scopes:
+            _sync_import_snapshots(db, snapshot_model, scopes)
 
     undo_id = journal_mutation(
         db,
@@ -135,20 +177,20 @@ def _operation_summary(operation: Operation, change_count: int) -> dict[str, Any
 
 
 def _later_conflicts(db: Session, operation: Operation, changes: list[OperationChange]) -> list[str]:
-    entity_ids = [change.entity_id for change in changes]
-    if not entity_ids:
+    if not changes:
         return []
+    conditions = [and_(OperationChange.entity_type == (change.entity_type or operation.entity_type), OperationChange.entity_id == change.entity_id) for change in changes]
+    last_change_id = max(change.id for change in changes)
     rows = db.execute(
-        select(OperationChange.entity_id)
-        .join(Operation, Operation.id == OperationChange.operation_id)
+        select(OperationChange.entity_type, OperationChange.entity_id)
         .where(
-            Operation.entity_type == operation.entity_type,
-            Operation.created_at > operation.created_at,
-            OperationChange.entity_id.in_(entity_ids),
+            OperationChange.id > last_change_id,
+            or_(*conditions),
         )
         .distinct()
     ).all()
-    return sorted({row[0] for row in rows})
+    mixed = len({change.entity_type or operation.entity_type for change in changes}) > 1
+    return sorted({f"{entity_type}:{entity_id}" if mixed else entity_id for entity_type, entity_id in rows})
 
 
 def _decode_image(value: str | None) -> dict[str, Any] | None:

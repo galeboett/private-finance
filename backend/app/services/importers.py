@@ -739,6 +739,7 @@ def _commit_categorized_history_rows(db: Session, filename: str, rows: list[dict
     skipped = 0
     accounts_created: set[int] = set()
     categories_created: set[int] = set()
+    created_transactions: list[Transaction] = []
     warnings: list[str] = []
 
     for row in rows:
@@ -782,8 +783,7 @@ def _commit_categorized_history_rows(db: Session, filename: str, rows: list[dict
                 normalized_json=json.dumps(row, default=str),
             )
         )
-        db.add(
-            Transaction(
+        transaction = Transaction(
                 account_id=account.id,
                 import_batch_id=batch.id,
                 transaction_date=transaction_date,
@@ -798,7 +798,8 @@ def _commit_categorized_history_rows(db: Session, filename: str, rows: list[dict
                 source_reference=f"categorized-history-row-{row['row_index']}",
                 source_ordinal=ordinal,
             )
-        )
+        db.add(transaction)
+        created_transactions.append(transaction)
         inserted += 1
         imported_by_account_id[account.id] += 1
 
@@ -807,13 +808,23 @@ def _commit_categorized_history_rows(db: Session, filename: str, rows: list[dict
         batch.skipped_duplicates = skipped_by_account_id[account_id]
         batch.warnings_json = json.dumps(warnings)
 
+    db.flush()
+    operation_id = journal_mutation(
+        db,
+        kind="import",
+        entity_type="transaction",
+        actor=actor,
+        description=f'Imported {inserted} categorized-history rows from "{filename}"',
+        changes=[MutationChange(transaction.id, None, changed_values(transaction, ["deleted_at"])) for transaction in created_transactions],
+    ) if created_transactions else None
+
     record_audit_event(
         db,
         "categorized_history_import",
         actor,
         "import_batch",
         filename,
-        {"filename": filename, "inserted": inserted, "skipped": skipped, "accounts_created": len(accounts_created), "categories_created": len(categories_created)},
+        {"filename": filename, "inserted": inserted, "skipped": skipped, "accounts_created": len(accounts_created), "categories_created": len(categories_created), "operation_id": operation_id},
     )
     return {
         "inserted": inserted,
@@ -821,6 +832,7 @@ def _commit_categorized_history_rows(db: Session, filename: str, rows: list[dict
         "accounts_created": len(accounts_created),
         "categories_created": len(categories_created),
         "warnings": warnings,
+        "operation_id": operation_id,
     }
 
 def _history_transaction_type(category_label: str | None, amount_cents: int, account_type: str) -> str:

@@ -30,6 +30,11 @@ def initialize_database() -> None:
         if "semantic_hash" not in import_batch_columns:
             connection.execute(text("ALTER TABLE import_batches ADD COLUMN semantic_hash VARCHAR(128)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_import_batches_semantic_hash ON import_batches (semantic_hash)"))
+        operation_change_columns = {column["name"] for column in inspector.get_columns("operation_changes")}
+        if "entity_type" not in operation_change_columns:
+            connection.execute(text("ALTER TABLE operation_changes ADD COLUMN entity_type VARCHAR(40)"))
+            connection.execute(text("UPDATE operation_changes SET entity_type = (SELECT entity_type FROM operations WHERE operations.id = operation_changes.operation_id) WHERE entity_type IS NULL"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_operation_changes_entity_type ON operation_changes (entity_type)"))
         connection.execute(
             text(
                 """

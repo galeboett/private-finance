@@ -165,6 +165,7 @@ class OperationChange(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     operation_id: Mapped[str] = mapped_column(ForeignKey("operations.id"), nullable=False, index=True)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     entity_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     before_json: Mapped[str | None] = mapped_column(Text)
     after_json: Mapped[str | None] = mapped_column(Text)

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
 from ..models import Account, HoldingSnapshot, ImportBatch, ImportPreset, Institution, StagingRow, Transaction, TransactionSplit, TransferLink
+from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 
 
 @dataclass(frozen=True)
@@ -76,20 +77,34 @@ def upsert_institution_by_name(db: Session, name: str | None) -> Institution | N
     return institution
 
 
-def merge_account_into(db: Session, source: Account, target: Account, actor: str = "local-user") -> int:
+def merge_account_into(db: Session, source: Account, target: Account, actor: str = "local-user") -> tuple[int, list[MutationChange]]:
     if source.id == target.id:
-        return 0
+        return 0, []
 
     moved_transactions = 0
+    changes: list[MutationChange] = [MutationChange(source.id, full_values(source), None, entity_type="account")]
     source_transactions = db.scalars(select(Transaction).where(Transaction.account_id == source.id)).all()
     for transaction in source_transactions:
         duplicate = db.scalar(select(Transaction).where(Transaction.account_id == target.id, Transaction.source_hash == transaction.source_hash))
         if duplicate:
+            changes.append(MutationChange(transaction.id, full_values(transaction), None, entity_type="transaction"))
+            changes.extend(MutationChange(split.id, full_values(split), None, entity_type="transaction_split") for split in db.scalars(select(TransactionSplit).where(TransactionSplit.transaction_id == transaction.id)).all())
+            changes.extend(MutationChange(link.id, full_values(link), None, entity_type="transfer_link") for link in db.scalars(select(TransferLink).where((TransferLink.from_transaction_id == transaction.id) | (TransferLink.to_transaction_id == transaction.id))).all())
             _delete_transaction_row_for_merge(db, transaction)
             continue
+        before = changed_values(transaction, ["account_id"])
         transaction.account_id = target.id
+        changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["account_id"]), entity_type="transaction"))
         moved_transactions += 1
 
+    related_groups = [
+        ("staging_row", db.scalars(select(StagingRow).where(StagingRow.account_id == source.id)).all()),
+        ("holding_snapshot", db.scalars(select(HoldingSnapshot).where(HoldingSnapshot.account_id == source.id)).all()),
+        ("import_batch", db.scalars(select(ImportBatch).where(ImportBatch.account_id == source.id)).all()),
+        ("import_preset", db.scalars(select(ImportPreset).where(ImportPreset.account_id == source.id)).all()),
+    ]
+    for entity_type, rows in related_groups:
+        changes.extend(MutationChange(row.id, changed_values(row, ["account_id"]), {"id": row.id, "account_id": target.id}, entity_type=entity_type) for row in rows)
     db.execute(update(StagingRow).where(StagingRow.account_id == source.id).values(account_id=target.id))
     db.execute(update(HoldingSnapshot).where(HoldingSnapshot.account_id == source.id).values(account_id=target.id))
     db.execute(update(ImportBatch).where(ImportBatch.account_id == source.id).values(account_id=target.id))
@@ -103,7 +118,7 @@ def merge_account_into(db: Session, source: Account, target: Account, actor: str
         {"source_account_id": source.id, "source_display_name": source.display_name, "target_display_name": target.display_name, "moved_transactions": moved_transactions},
     )
     db.delete(source)
-    return moved_transactions
+    return moved_transactions, changes
 
 
 def cleanup_imported_accounts(db: Session, actor: str = "local-user") -> dict:
@@ -112,6 +127,7 @@ def cleanup_imported_accounts(db: Session, actor: str = "local-user") -> dict:
     merged = 0
     moved_transactions = 0
     seen_by_normalized_name: dict[str, Account] = {}
+    journal_changes: list[MutationChange] = []
 
     for account in list(accounts):
         if account not in db:
@@ -119,7 +135,9 @@ def cleanup_imported_accounts(db: Session, actor: str = "local-user") -> dict:
         normalized = account.display_name.strip().casefold()
         existing = seen_by_normalized_name.get(normalized)
         if existing:
-            moved_transactions += merge_account_into(db, account, existing, actor)
+            moved, changes = merge_account_into(db, account, existing, actor)
+            moved_transactions += moved
+            journal_changes.extend(changes)
             merged += 1
             continue
         seen_by_normalized_name[normalized] = account
@@ -129,10 +147,12 @@ def cleanup_imported_accounts(db: Session, actor: str = "local-user") -> dict:
         next_display_name = characterization.display_name or account.display_name
         next_last_four = account.last_four or infer_last_four(next_display_name)
         if account.display_name != next_display_name or account.account_type != characterization.account_type or account.institution_id != (institution.id if institution else None) or account.last_four != next_last_four:
+            before = changed_values(account, ["display_name", "account_type", "institution_id", "last_four"])
             account.display_name = next_display_name
             account.account_type = characterization.account_type
             account.institution_id = institution.id if institution else None
             account.last_four = next_last_four
+            journal_changes.append(MutationChange(account.id, before, changed_values(account, ["display_name", "account_type", "institution_id", "last_four"]), entity_type="account"))
             updated += 1
             record_audit_event(
                 db,
@@ -143,8 +163,9 @@ def cleanup_imported_accounts(db: Session, actor: str = "local-user") -> dict:
                 {"display_name": account.display_name, "account_type": account.account_type, "institution_name": characterization.institution_name, "last_four": account.last_four},
             )
 
+    operation_id = journal_mutation(db, kind="cleanup", entity_type="mixed", actor=actor, description="Cleaned imported account labels", changes=journal_changes) if journal_changes else None
     db.commit()
-    return {"updated": updated, "merged": merged, "moved_transactions": moved_transactions}
+    return {"updated": updated, "merged": merged, "moved_transactions": moved_transactions, "operation_id": operation_id}
 
 
 def _delete_transaction_row_for_merge(db: Session, transaction: Transaction) -> None:

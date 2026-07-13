@@ -25,7 +25,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { readAppRoute, routeUrl, type NetWorthPeriod, type RouteView, type TxnFilter } from "./lib/filters";
 
@@ -120,7 +120,7 @@ type CategorizedHistoryRow = {
 
 type CategorizedHistoryImportResponse =
   | { needs_review: true; filename: string; rows: CategorizedHistoryRow[] }
-  | { needs_review?: false; inserted: number; skipped: number; accounts_created: number; categories_created: number; warnings: string[] };
+  | { needs_review?: false; inserted: number; skipped: number; accounts_created: number; categories_created: number; warnings: string[]; operation_id?: string };
 
 type ToastState = {
   tone: "success" | "error" | "info";
@@ -187,7 +187,7 @@ type OperationSummary = {
 };
 
 type OperationDetail = OperationSummary & {
-  changes: Array<{ id: number; entity_id: string; before: Record<string, unknown> | null; after: Record<string, unknown> | null }>;
+  changes: Array<{ id: number; entity_type: string; entity_id: string; before: Record<string, unknown> | null; after: Record<string, unknown> | null }>;
 };
 
 type PeekDrawerState = {
@@ -591,6 +591,61 @@ function buildTaxonomyGroups(rows: AccountSummary[], accountBalances: Map<number
   });
 }
 
+function useSelection() {
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [lastSelectedId, setLastSelectedId] = useState<number | null>(null);
+
+  function toggle(id: number, visibleIds: number[], shiftKey: boolean) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (shiftKey && lastSelectedId !== null) {
+        const start = visibleIds.indexOf(lastSelectedId);
+        const end = visibleIds.indexOf(id);
+        if (start >= 0 && end >= 0) {
+          const [from, to] = start < end ? [start, end] : [end, start];
+          visibleIds.slice(from, to + 1).forEach((visibleId) => next.add(visibleId));
+          return Array.from(next);
+        }
+      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return Array.from(next);
+    });
+    setLastSelectedId(id);
+  }
+
+  function resetAnchor() {
+    setLastSelectedId(null);
+  }
+
+  return { selectedIds, setSelectedIds, toggle, resetAnchor };
+}
+
+function UndoToast({ toast, busy, onUndo, onDismiss }: { toast: ToastState; busy: boolean; onUndo: (operationId: string, unconflictedOnly: boolean) => void; onDismiss: () => void }) {
+  return (
+    <div className={`toast ${toast.tone}`} style={{ margin: "16px 20px 0" }} role="status" aria-live="polite">
+      {toast.tone === "success" ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+      <span>{toast.message}</span>
+      {toast.operationId ? (
+        <button className="toastAction" onClick={() => onUndo(toast.operationId!, Boolean(toast.unconflictedOnly))} disabled={busy}>
+          {toast.unconflictedOnly ? "Undo safe rows" : "Undo"}
+        </button>
+      ) : null}
+      <button className="toastClose" onClick={onDismiss} aria-label="Dismiss notification"><X size={14} /></button>
+    </div>
+  );
+}
+
+function BulkActionBar({ count, detail, onClear, children }: { count: number; detail: string; onClear: () => void; children: ReactNode }) {
+  return (
+    <div className="bulkSelectionBar">
+      <div className="bulkSelectionContext"><div><strong>{count} selected</strong><span>{detail}</span></div></div>
+      {children}
+      <button className="ghostButton compactButton" onClick={onClear}>Clear</button>
+    </div>
+  );
+}
+
 export function App() {
   const initialRoute = useRef(readAppRoute(window.location));
   const [configured, setConfigured] = useState(false);
@@ -637,12 +692,9 @@ export function App() {
   const [lastSavedRule, setLastSavedRule] = useState<SavedRuleAction | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
-  const [selectedTransactionIds, setSelectedTransactionIds] = useState<number[]>([]);
-  const [lastSelectedTransactionId, setLastSelectedTransactionId] = useState<number | null>(null);
-  const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([]);
-  const [lastSelectedAccountId, setLastSelectedAccountId] = useState<number | null>(null);
-  const [selectedHoldingIds, setSelectedHoldingIds] = useState<number[]>([]);
-  const [lastSelectedHoldingId, setLastSelectedHoldingId] = useState<number | null>(null);
+  const { selectedIds: selectedTransactionIds, setSelectedIds: setSelectedTransactionIds, toggle: toggleTransactionSelection, resetAnchor: resetTransactionSelectionAnchor } = useSelection();
+  const { selectedIds: selectedAccountIds, setSelectedIds: setSelectedAccountIds, toggle: toggleAccountSelection, resetAnchor: resetAccountSelectionAnchor } = useSelection();
+  const { selectedIds: selectedHoldingIds, setSelectedIds: setSelectedHoldingIds, toggle: toggleHoldingSelection, resetAnchor: resetHoldingSelectionAnchor } = useSelection();
   const [appImportFile, setAppImportFile] = useState<File | null>(null);
   const [categorizedHistoryFile, setCategorizedHistoryFile] = useState<File | null>(null);
   const [categorizedHistoryFilename, setCategorizedHistoryFilename] = useState("");
@@ -1037,7 +1089,7 @@ export function App() {
     }
     try {
       const isEditing = editingAccountId !== null;
-      const result = await api<{ id?: number }>(isEditing ? `/api/accounts/${editingAccountId}` : "/api/accounts", {
+      const result = await api<{ id?: number; operation_id?: string }>(isEditing ? `/api/accounts/${editingAccountId}` : "/api/accounts", {
         method: isEditing ? "PATCH" : "POST",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify(accountForm),
@@ -1058,6 +1110,7 @@ export function App() {
       showToast({
         tone: "success",
         message: isEditing ? "Account updated." : "Account added. It is selected for your next import.",
+        operationId: result.operation_id,
       });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Account could not be saved." });
@@ -1066,7 +1119,7 @@ export function App() {
 
   async function setAccountStatus(account: AccountSummary, status: "active" | "archived") {
     try {
-      await api(`/api/accounts/${account.id}`, {
+      const result = await api<{ operation_id: string }>(`/api/accounts/${account.id}`, {
         method: "PATCH",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({ status }),
@@ -1075,7 +1128,7 @@ export function App() {
         navigateToView("all-accounts");
       }
       await loadData();
-      showToast({ tone: "success", message: status === "archived" ? `${account.display_name} moved to Archived Accounts.` : `${account.display_name} restored.` });
+      showToast({ tone: "success", message: status === "archived" ? `${account.display_name} moved to Archived Accounts.` : `${account.display_name} restored.`, operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Account status could not be updated." });
     }
@@ -1088,14 +1141,14 @@ export function App() {
       return;
     }
     try {
-      const category = await api<BootstrapCategory>("/api/categories", {
+      const category = await api<BootstrapCategory & { operation_id?: string }>("/api/categories", {
         method: "POST",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({ label }),
       });
       setCategories((current) => [...current, category].sort((left, right) => left.label.localeCompare(right.label)));
       setNewCategoryLabel("");
-      showToast({ tone: "success", message: "Category added. You can use it during review now." });
+      showToast({ tone: "success", message: "Category added. You can use it during review now.", operationId: category.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Category could not be added." });
     }
@@ -1108,7 +1161,7 @@ export function App() {
       return;
     }
     try {
-      await api(`/api/categories/${editingCategoryId}`, {
+      const result = await api<{ operation_id: string }>(`/api/categories/${editingCategoryId}`, {
         method: "PATCH",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({ label }),
@@ -1118,7 +1171,7 @@ export function App() {
       );
       setEditingCategoryId(null);
       setEditingCategoryLabel("");
-      showToast({ tone: "success", message: "Category renamed." });
+      showToast({ tone: "success", message: "Category renamed.", operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Category could not be updated." });
     }
@@ -1220,13 +1273,13 @@ export function App() {
     const replacement = categories.find((item) => item.id === categoryReassignId);
     try {
       const suffix = replacement ? `?reassign_to=${replacement.id}` : "";
-      await api(`/api/categories/${editingCategoryId}${suffix}`, { method: "DELETE", headers: { "x-csrf-token": csrf } });
+      const result = await api<{ operation_id: string }>(`/api/categories/${editingCategoryId}${suffix}`, { method: "DELETE", headers: { "x-csrf-token": csrf } });
       setCategories((current) => current.filter((item) => item.id !== editingCategoryId));
       setEditingCategoryId(null);
       setEditingCategoryLabel("");
       setCategoryReassignId("");
       await loadData();
-      showToast({ tone: "success", message: replacement ? `${category?.label ?? "Category"} merged into ${replacement.label}.` : "Unused category deleted." });
+      showToast({ tone: "success", message: replacement ? `${category?.label ?? "Category"} merged into ${replacement.label}.` : "Unused category deleted.", operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Category could not be deleted." });
     }
@@ -1262,10 +1315,10 @@ export function App() {
     }
     setBusyAction(`split-${transaction.id}`);
     try {
-      await api(`/api/transactions/${transaction.id}/splits`, { method: "POST", headers: { "x-csrf-token": csrf }, body: JSON.stringify({ splits }) });
+      const result = await api<{ operation_id: string }>(`/api/transactions/${transaction.id}/splits`, { method: "POST", headers: { "x-csrf-token": csrf }, body: JSON.stringify({ splits }) });
       setSplitEditor(null);
       await loadData();
-      showToast({ tone: "success", message: "Transaction split saved." });
+      showToast({ tone: "success", message: "Transaction split saved.", operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Split could not be saved." });
     } finally {
@@ -1282,14 +1335,14 @@ export function App() {
     }
     setBusyAction(`allocation-${transaction.id}`);
     try {
-      await api(`/api/transactions/${transaction.id}/monthly-allocation`, {
+      const result = await api<{ operation_id: string }>(`/api/transactions/${transaction.id}/monthly-allocation`, {
         method: "POST",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({ category_id: monthlyAllocationEditor.category_id, months, allocation_start: `${monthlyAllocationEditor.start_month}-01` }),
       });
       setMonthlyAllocationEditor(null);
       await loadData();
-      showToast({ tone: "success", message: `Expense spread evenly from ${monthlyAllocationEditor.start_month} through ${monthlyAllocationEditor.end_month}.` });
+      showToast({ tone: "success", message: `Expense spread evenly from ${monthlyAllocationEditor.start_month} through ${monthlyAllocationEditor.end_month}.`, operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Monthly allocation could not be saved." });
     } finally {
@@ -1300,9 +1353,9 @@ export function App() {
   async function removeMonthlyAllocation(transaction: TransactionRow) {
     setBusyAction(`allocation-${transaction.id}`);
     try {
-      await api(`/api/transactions/${transaction.id}/monthly-allocation`, { method: "DELETE", headers: { "x-csrf-token": csrf } });
+      const result = await api<{ operation_id: string }>(`/api/transactions/${transaction.id}/monthly-allocation`, { method: "DELETE", headers: { "x-csrf-token": csrf } });
       await loadData();
-      showToast({ tone: "success", message: "Monthly spread removed; the expense is again counted on its charge date." });
+      showToast({ tone: "success", message: "Monthly spread removed; the expense is again counted on its charge date.", operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Monthly allocation could not be removed." });
     } finally {
@@ -1355,7 +1408,7 @@ export function App() {
   async function cleanupImportedAccounts() {
     setToast(null);
     try {
-      const result = await api<{ updated: number; merged: number; moved_transactions: number }>("/api/accounts/cleanup-imported", {
+      const result = await api<{ updated: number; merged: number; moved_transactions: number; operation_id?: string }>("/api/accounts/cleanup-imported", {
         method: "POST",
         headers: { "x-csrf-token": csrf },
       });
@@ -1363,6 +1416,7 @@ export function App() {
       showToast({
         tone: "success",
         message: `Cleaned imported accounts: ${result.updated} updated, ${result.merged} merged, ${result.moved_transactions} transactions moved.`,
+        operationId: result.operation_id,
       });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Imported account cleanup failed." });
@@ -1479,9 +1533,10 @@ export function App() {
       if (!response.ok) {
         throw new Error(await readableApiError(response, "/api/imports/app-data"));
       }
+      const result = await parseApiJson<{ operation_id: string }>(response, "/api/imports/app-data");
       setAppImportFile(null);
       await loadData();
-      showToast({ tone: "success", message: "App data restored from export." });
+      showToast({ tone: "success", message: "App data restored from export.", operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Import failed." });
     } finally {
@@ -1520,7 +1575,7 @@ export function App() {
       return;
     }
     try {
-      const result = await api<{ inserted: number; skipped: number; accounts_created: number; categories_created: number; warnings: string[] }>("/api/imports/categorized-history/reviewed", {
+      const result = await api<{ inserted: number; skipped: number; accounts_created: number; categories_created: number; warnings: string[]; operation_id?: string }>("/api/imports/categorized-history/reviewed", {
         method: "POST",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({ filename: categorizedHistoryFilename || "categorized-history", rows: categorizedHistoryRows }),
@@ -1532,6 +1587,7 @@ export function App() {
       showToast({
         tone: "success",
         message: `Imported ${result.inserted} categorized transactions, created ${result.accounts_created} accounts and ${result.categories_created} categories. Skipped ${result.skipped} duplicates.`,
+        operationId: result.operation_id,
       });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Reviewed categorized history import failed." });
@@ -1571,6 +1627,7 @@ export function App() {
       showToast({
         tone: "success",
         message: `Imported ${result.inserted} categorized transactions, created ${result.accounts_created} accounts and ${result.categories_created} categories. Skipped ${result.skipped} duplicates.`,
+        operationId: result.operation_id,
       });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Categorized history import failed." });
@@ -1581,7 +1638,7 @@ export function App() {
   async function detectTransfers() {
     setToast(null);
     try {
-      const result = await api<{ created: number }>("/api/transfers/detect", {
+      const result = await api<{ created: number; operation_id?: string }>("/api/transfers/detect", {
         method: "POST",
         headers: { "x-csrf-token": csrf },
       });
@@ -1589,6 +1646,7 @@ export function App() {
       showToast({
         tone: "success",
         message: result.created > 0 ? `Found ${result.created} possible transfer/payment matches.` : "No new transfer/payment matches found.",
+        operationId: result.operation_id,
       });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Transfer scan failed." });
@@ -1598,12 +1656,12 @@ export function App() {
   async function confirmTransferCandidate(candidateId: number) {
     setToast(null);
     try {
-      await api(`/api/transfers/${candidateId}/confirm`, {
+      const result = await api<{ operation_id: string }>(`/api/transfers/${candidateId}/confirm`, {
         method: "POST",
         headers: { "x-csrf-token": csrf },
       });
       await loadData();
-      showToast({ tone: "success", message: "Transfer/payment confirmed and excluded from spending totals." });
+      showToast({ tone: "success", message: "Transfer/payment confirmed and excluded from spending totals.", operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Transfer candidate could not be confirmed." });
     }
@@ -1612,12 +1670,12 @@ export function App() {
   async function rejectTransferCandidate(candidateId: number) {
     setToast(null);
     try {
-      await api(`/api/transfers/${candidateId}/reject`, {
+      const result = await api<{ operation_id: string }>(`/api/transfers/${candidateId}/reject`, {
         method: "POST",
         headers: { "x-csrf-token": csrf },
       });
       await loadData();
-      showToast({ tone: "success", message: "Transfer/payment suggestion rejected." });
+      showToast({ tone: "success", message: "Transfer/payment suggestion rejected.", operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Transfer candidate could not be rejected." });
     }
@@ -1644,7 +1702,7 @@ export function App() {
     }
     const matchText = suggestedRuleText(transaction.raw_description);
     try {
-      const rule = await api<{ id: number }>("/api/rules", {
+      const rule = await api<{ id: number; operation_id: string }>("/api/rules", {
         method: "POST",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({
@@ -1657,7 +1715,7 @@ export function App() {
       });
       setLastSavedRule({ id: rule.id, matchText });
       await loadData();
-      showToast({ tone: "success", message: `Rule saved for "${matchText}". Apply it below to categorize and confirm matches.` });
+      showToast({ tone: "success", message: `Rule saved for "${matchText}". Apply it below to categorize and confirm matches.`, operationId: rule.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be saved." });
     }
@@ -1674,17 +1732,15 @@ export function App() {
       return;
     }
     try {
-      for (const transaction of selectedVisibleReviewTransactions) {
-        await api(`/api/transactions/${transaction.id}`, {
-          method: "PATCH",
-          headers: { "x-csrf-token": csrf },
-          body: JSON.stringify({ category_id: bulkReviewCategoryId, transaction_type: bulkReviewType, review_status: "confirmed" }),
-        });
-      }
+      const result = await api<{ operation_id: string }>("/api/operations/bulk-update", {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ entity_type: "transaction", ids: selectedVisibleReviewTransactions.map((transaction) => transaction.id), patch: { category_id: bulkReviewCategoryId, transaction_type: bulkReviewType, review_status: "confirmed" } }),
+      });
       setSelectedTransactionIds((current) => current.filter((id) => !selectedVisibleReviewIds.includes(id)));
-      setLastSelectedTransactionId(null);
+      resetTransactionSelectionAnchor();
       await loadData();
-      showToast({ tone: "success", message: `Confirmed ${selectedVisibleReviewTransactions.length} selected review items.` });
+      showToast({ tone: "success", message: `Confirmed ${selectedVisibleReviewTransactions.length} selected review items.`, operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Selected review items could not be confirmed." });
     }
@@ -1697,31 +1753,23 @@ export function App() {
       return;
     }
     try {
-      let created = 0;
-      for (const transaction of selectedVisibleReviewTransactions) {
+      const rules = selectedVisibleReviewTransactions.flatMap((transaction) => {
         const categoryId = transaction.category_id ?? (bulkReviewCategoryId || null);
-        if (!categoryId) {
-          continue;
-        }
-        await api<{ id: number }>("/api/rules", {
-          method: "POST",
-          headers: { "x-csrf-token": csrf },
-          body: JSON.stringify({
+        return categoryId ? [{
             category_id: categoryId,
             field_name: "raw_description",
             match_text: suggestedRuleText(transaction.raw_description),
             suggested_transaction_type: transaction.transaction_type || bulkReviewType,
             priority: 100,
-          }),
-        });
-        created += 1;
-      }
-      if (created === 0) {
+          }] : [];
+      });
+      if (rules.length === 0) {
         showToast({ tone: "error", message: "Choose a category or select rows that already have categories before saving bulk rules." });
         return;
       }
+      const result = await api<{ created: number; operation_id: string }>("/api/operations/bulk-create-rules", { method: "POST", headers: { "x-csrf-token": csrf }, body: JSON.stringify({ rules }) });
       await loadData();
-      showToast({ tone: "success", message: `Saved ${created} rules from selected review items.` });
+      showToast({ tone: "success", message: `Saved ${result.created} rules from selected review items.`, operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Bulk rules could not be saved." });
     }
@@ -1735,14 +1783,14 @@ export function App() {
 
   async function applyRule(ruleId: number, scope: "unreviewed" | "all") {
     try {
-      const result = await api<{ matched: number; updated: number }>(`/api/rules/${ruleId}/apply`, {
+      const result = await api<{ matched: number; updated: number; operation_id?: string }>(`/api/rules/${ruleId}/apply`, {
         method: "POST",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({ scope }),
       });
       await loadData();
       const scopeLabel = scope === "unreviewed" ? "unreviewed transactions" : "previous transactions";
-      showToast({ tone: "success", message: `Rule confirmed ${result.updated} of ${result.matched} matching ${scopeLabel}.` });
+      showToast({ tone: "success", message: `Rule confirmed ${result.updated} of ${result.matched} matching ${scopeLabel}.`, operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be applied." });
     }
@@ -1760,7 +1808,7 @@ export function App() {
   async function saveRuleEdit() {
     if (!editingRule || !editingRule.match_text.trim()) return;
     try {
-      await api(`/api/rules/${editingRule.id}`, {
+      const result = await api<{ operation_id: string }>(`/api/rules/${editingRule.id}`, {
         method: "PATCH",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({
@@ -1772,7 +1820,7 @@ export function App() {
       });
       setEditingRule(null);
       await loadData();
-      showToast({ tone: "success", message: "Rule updated." });
+      showToast({ tone: "success", message: "Rule updated.", operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be updated." });
     }
@@ -1780,10 +1828,10 @@ export function App() {
 
   async function deleteRule(rule: RuleSummary) {
     try {
-      await api(`/api/rules/${rule.id}`, { method: "DELETE", headers: { "x-csrf-token": csrf } });
+      const result = await api<{ operation_id: string }>(`/api/rules/${rule.id}`, { method: "DELETE", headers: { "x-csrf-token": csrf } });
       if (editingRule?.id === rule.id) setEditingRule(null);
       await loadData();
-      showToast({ tone: "success", message: `Rule “${rule.match_text}” deleted.` });
+      showToast({ tone: "success", message: `Rule “${rule.match_text}” deleted.`, operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be deleted." });
     }
@@ -1795,13 +1843,13 @@ export function App() {
       return;
     }
     try {
-      await api("/api/investments/holding-metadata", {
+      const result = await api<{ operation_id: string }>("/api/investments/holding-metadata", {
         method: "PATCH",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({ symbol, user_description: userDescription }),
       });
       await loadData();
-      showToast({ tone: "success", message: `Description saved for ${symbol}. Future uploads will use it in Holding details.` });
+      showToast({ tone: "success", message: `Description saved for ${symbol}. Future uploads will use it in Holding details.`, operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Holding description could not be saved." });
     }
@@ -1827,73 +1875,6 @@ export function App() {
     setDeleteConfirmText("");
   }
 
-  function toggleTransactionSelection(transactionId: number, visibleIds: number[], shiftKey: boolean) {
-    setSelectedTransactionIds((current) => {
-      const next = new Set(current);
-      if (shiftKey && lastSelectedTransactionId !== null) {
-        const start = visibleIds.indexOf(lastSelectedTransactionId);
-        const end = visibleIds.indexOf(transactionId);
-        if (start >= 0 && end >= 0) {
-          const [from, to] = start < end ? [start, end] : [end, start];
-          const range = visibleIds.slice(from, to + 1);
-          const rangeIsSelected = range.every((id) => next.has(id));
-          range.forEach((id) => rangeIsSelected ? next.delete(id) : next.add(id));
-          return Array.from(next);
-        }
-      }
-      if (next.has(transactionId)) {
-        next.delete(transactionId);
-      } else {
-        next.add(transactionId);
-      }
-      return Array.from(next);
-    });
-    setLastSelectedTransactionId(transactionId);
-  }
-
-  function toggleAccountSelection(accountId: number, visibleIds: number[], shiftKey: boolean) {
-    setSelectedAccountIds((current) => {
-      const next = new Set(current);
-      if (shiftKey && lastSelectedAccountId !== null) {
-        const start = visibleIds.indexOf(lastSelectedAccountId);
-        const end = visibleIds.indexOf(accountId);
-        if (start >= 0 && end >= 0) {
-          const [from, to] = start < end ? [start, end] : [end, start];
-          visibleIds.slice(from, to + 1).forEach((id) => next.add(id));
-          return Array.from(next);
-        }
-      }
-      if (next.has(accountId)) {
-        next.delete(accountId);
-      } else {
-        next.add(accountId);
-      }
-      return Array.from(next);
-    });
-    setLastSelectedAccountId(accountId);
-  }
-
-  function toggleHoldingSelection(holdingId: number, visibleIds: number[], shiftKey: boolean) {
-    setSelectedHoldingIds((current) => {
-      const next = new Set(current);
-      if (shiftKey && lastSelectedHoldingId !== null) {
-        const start = visibleIds.indexOf(lastSelectedHoldingId);
-        const end = visibleIds.indexOf(holdingId);
-        if (start >= 0 && end >= 0) {
-          const [from, to] = start < end ? [start, end] : [end, start];
-          visibleIds.slice(from, to + 1).forEach((id) => next.add(id));
-          return Array.from(next);
-        }
-      }
-      if (next.has(holdingId)) {
-        next.delete(holdingId);
-      } else {
-        next.add(holdingId);
-      }
-      return Array.from(next);
-    });
-    setLastSelectedHoldingId(holdingId);
-  }
   function requestBulkTransactionDelete(ids: number[]) {
     if (ids.length === 0) {
       showToast({ tone: "error", message: "Select at least one transaction before bulk delete." });
@@ -1947,13 +1928,14 @@ export function App() {
           body: JSON.stringify({ confirm_text: deleteConfirmText }),
         });
       } else if (deleteTarget.kind === "account_bulk") {
-        await api("/api/accounts/bulk-delete", {
+        const result = await api<{ operation_id: string }>("/api/accounts/bulk-delete", {
           method: "DELETE",
           headers: { "x-csrf-token": csrf },
           body: JSON.stringify({ ids: deleteTarget.ids, confirm_text: deleteConfirmText }),
         });
+        operationId = result.operation_id;
       } else if (deleteTarget.kind === "holding_bulk") {
-        await api("/api/investments/holdings/bulk-delete", {
+        const result = await api<{ operation_id: string }>("/api/investments/holdings/bulk-delete", {
           method: "DELETE",
           headers: { "x-csrf-token": csrf },
           body: JSON.stringify({ ids: deleteTarget.ids, confirm_text: deleteConfirmText }),
@@ -1971,19 +1953,21 @@ export function App() {
           body: JSON.stringify({ confirm_text: deleteConfirmText }),
         });
         operationId = result.operation_id;
+        operationId = result.operation_id;
       }
       const deletedKind = deleteTarget.kind;
       setDeleteTarget(null);
       setDeleteConfirmText("");
       setSelectedTransactionIds([]);
-      setLastSelectedTransactionId(null);
+      resetTransactionSelectionAnchor();
       setSelectedAccountIds([]);
-      setLastSelectedAccountId(null);
+      resetAccountSelectionAnchor();
       setSelectedHoldingIds([]);
-      setLastSelectedHoldingId(null);
+      resetHoldingSelectionAnchor();
       await loadData();
       const permanent = deletedKind.includes("permanent");
-      showToast({ tone: "success", message: permanent ? "Transaction data permanently deleted." : deletedKind.includes("bulk") ? "Selected rows moved to Trash." : "Row moved to Trash.", operationId });
+      const isTransactionDelete = deletedKind.startsWith("transaction");
+      showToast({ tone: "success", message: permanent ? "Transaction data permanently deleted." : isTransactionDelete ? deletedKind.includes("bulk") ? "Selected rows moved to Trash." : "Row moved to Trash." : deletedKind.includes("bulk") ? "Selected rows deleted. Undo is available." : "Row deleted. Undo is available.", operationId });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rows could not be deleted." });
     }
@@ -2522,18 +2506,7 @@ export function App() {
 
       <main className="workspace">
         {toast ? (
-          <div className={`toast ${toast.tone}`} style={{ margin: "16px 20px 0" }} role="status" aria-live="polite">
-            {toast.tone === "success" ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
-            <span>{toast.message}</span>
-            {toast.operationId ? (
-              <button className="toastAction" onClick={() => void undoLoggedOperation(toast.operationId!, toast.unconflictedOnly)} disabled={busyAction === `undo-${toast.operationId}`}>
-                {toast.unconflictedOnly ? "Undo safe rows" : "Undo"}
-              </button>
-            ) : null}
-            <button className="toastClose" onClick={() => setToast(null)} aria-label="Dismiss notification">
-              <X size={14} />
-            </button>
-          </div>
+          <UndoToast toast={toast} busy={busyAction === `undo-${toast.operationId}`} onUndo={(operationId, unconflictedOnly) => void undoLoggedOperation(operationId, unconflictedOnly)} onDismiss={() => setToast(null)} />
         ) : null}
 
         {(activeView === "overview" || activeView === "reports") && (
@@ -2714,7 +2687,7 @@ export function App() {
                   onRequestBulkHoldingDelete={requestBulkHoldingDelete}
                   onClearHoldingSelection={() => {
                     setSelectedHoldingIds((current) => current.filter((id) => !visibleHoldingIds.includes(id)));
-                    setLastSelectedHoldingId(null);
+                    resetHoldingSelectionAnchor();
                   }}
                   onUpdateHoldingDescription={updateHoldingDescription}
                   onViewTransactions={(fromDate, toDate) => {
@@ -2771,7 +2744,7 @@ export function App() {
                         const fields = Array.from(new Set([...Object.keys(change.before ?? {}), ...Object.keys(change.after ?? {})])).filter((field) => field !== "id");
                         return (
                           <div className="activityDiff" key={change.id}>
-                            <strong>Row {change.entity_id}</strong>
+                            <strong>{readableAccountType(change.entity_type)} row {change.entity_id}</strong>
                             {fields.length === 0 ? <span>{change.before ? "Removed" : "Created"}</span> : fields.map((field) => (
                               <div key={field}>
                                 <span>{readableAccountType(field)}</span>
@@ -3197,7 +3170,7 @@ export function App() {
                       className="secondaryButton"
                       onClick={() => {
                         setSelectedAccountIds([]);
-                        setLastSelectedAccountId(null);
+                        resetAccountSelectionAnchor();
                       }}
                     >
                       Clear
@@ -3670,14 +3643,8 @@ export function App() {
             ) : null}
           </div>
           {selectedRepositoryTransactionIds.length > 0 ? (
-            <div className="bulkSelectionBar">
-              <div className="bulkSelectionContext">
-                <div>
-                  <strong>{selectedRepositoryTransactionIds.length} selected</strong>
-                  <span>{pagedTransactions.length} shown{filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}</span>
-                </div>
-                {transactionView === "live" ? <button className="secondaryButton compactButton" onClick={() => setBulkEditorOpen((current) => !current)}>{bulkEditorOpen ? "Close bulk edit" : "Bulk edit"}</button> : null}
-              </div>
+            <BulkActionBar count={selectedRepositoryTransactionIds.length} detail={`${pagedTransactions.length} shown${filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}`} onClear={() => { setSelectedTransactionIds((current) => current.filter((id) => !repositoryTransactionIds.includes(id))); resetTransactionSelectionAnchor(); setBulkEditorOpen(false); }}>
+              {transactionView === "live" ? <button className="secondaryButton compactButton" onClick={() => setBulkEditorOpen((current) => !current)}>{bulkEditorOpen ? "Close bulk edit" : "Bulk edit"}</button> : null}
               {transactionView === "live" ? (
                 <button className="dangerTextButton" onClick={() => requestBulkTransactionDelete(selectedRepositoryTransactionIds)}>Delete selected</button>
               ) : (
@@ -3686,8 +3653,7 @@ export function App() {
                   <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction_bulk_permanent", ids: selectedRepositoryTransactionIds, label: `${selectedRepositoryTransactionIds.length} deleted transactions` })}>Delete forever</button>
                 </>
               )}
-              <button className="ghostButton compactButton" onClick={() => { setSelectedTransactionIds((current) => current.filter((id) => !repositoryTransactionIds.includes(id))); setBulkEditorOpen(false); }}>Clear</button>
-            </div>
+            </BulkActionBar>
           ) : null}
           {transactionView === "live" && bulkEditorOpen && selectedRepositoryTransactionIds.length > 0 ? (
             <div

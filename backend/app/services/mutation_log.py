@@ -16,11 +16,21 @@ class MutationChange:
     entity_id: str | int
     before: dict[str, Any] | None
     after: dict[str, Any] | None
+    entity_type: str | None = None
 
 
 def changed_values(entity: Any, fields: Iterable[str]) -> dict[str, Any]:
     """Capture only the primary key and columns changed by one logical operation."""
     return {"id": entity.id, **{field: getattr(entity, field) for field in fields}}
+
+
+def full_values(entity: Any) -> dict[str, Any]:
+    """Capture the reversible persisted state of one entity, excluding timestamps."""
+    return {
+        column.name: getattr(entity, column.name)
+        for column in entity.__table__.columns
+        if column.name not in {"created_at", "updated_at"}
+    }
 
 
 def journal_mutation(
@@ -57,6 +67,7 @@ def journal_mutation(
         db.add(
             OperationChange(
                 operation_id=operation_id,
+                entity_type=change.entity_type or entity_type,
                 entity_id=str(change.entity_id),
                 before_json=_encode_image(change.before),
                 after_json=_encode_image(change.after),

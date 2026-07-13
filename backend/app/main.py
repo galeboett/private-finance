@@ -21,18 +21,18 @@ from .bootstrap import initialize_database
 from .config import settings
 from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
-from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingSnapshot, ImportBatch, ImportPreset, Institution, SecurityMetadata, SecurityPrice, SessionToken, StagingRow, Transaction, TransactionSplit, TransferLink
+from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingSnapshot, ImportBatch, ImportPreset, Institution, NetWorthSnapshot, SecurityMetadata, SecurityPrice, SessionToken, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkIdsRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, PasswordChangeRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, OperationBulkUpdateRequest, PasswordChangeRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
 from .services.importers import commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
 from .services.import_inbox import confirm_pending_import, discard_pending_import, inbox_directory, pending_import_batches, scan_import_inbox
-from .services.mutation_log import MutationChange, changed_values, journal_mutation
+from .services.mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .services.operation_history import OperationConflict, list_operations, operation_detail, undo_operation
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
-from .services.snapshots import net_worth_series, net_worth_stats
+from .services.snapshots import net_worth_series, net_worth_stats, refresh_holding_net_worth_snapshot
 from .services.transaction_filters import parse_csv_ints, parse_csv_values, transaction_filter_conditions
 from .services.transaction_queries import get_live_transaction, live_transaction_filters, live_transaction_select
 from .services.transfers import confirm_transfer_link, create_transfer_suggestions, list_unconfirmed_transfers, reject_transfer_link
@@ -135,6 +135,46 @@ def undo_logged_operation(
     return result
 
 
+@app.post("/api/operations/bulk-update")
+def operation_bulk_update(payload: OperationBulkUpdateRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    transactions = db.scalars(live_transaction_select(Transaction.id.in_(payload.ids))).all()
+    if len(transactions) != len(set(payload.ids)):
+        raise HTTPException(status_code=404, detail="One or more transactions were not found")
+    updates = payload.patch.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="Provide at least one field to update")
+    if "account_id" in updates:
+        account = db.get(Account, updates["account_id"])
+        if not account or account.last_four == UNASSIGNED_ACCOUNT_MARKER:
+            raise HTTPException(status_code=400, detail="Choose a valid account")
+    if "category_id" in updates and updates["category_id"] is not None and not db.get(Category, updates["category_id"]):
+        raise HTTPException(status_code=400, detail="Category not found")
+    changes: list[MutationChange] = []
+    for transaction in transactions:
+        before = changed_values(transaction, updates.keys())
+        for key, value in updates.items():
+            setattr(transaction, key, value)
+        changes.append(MutationChange(transaction.id, before, changed_values(transaction, updates.keys())))
+    operation_id = journal_mutation(db, kind="bulk_update", entity_type="transaction", actor=actor_for_session(session), description=f"Updated {len(transactions)} transactions", changes=changes)
+    db.commit()
+    return {"ok": True, "updated": len(transactions), "operation_id": operation_id}
+
+
+@app.post("/api/operations/bulk-create-rules")
+def operation_bulk_create_rules(payload: BulkRuleCreateRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    category_ids = {rule.category_id for rule in payload.rules}
+    if len(db.scalars(select(Category.id).where(Category.id.in_(category_ids))).all()) != len(category_ids):
+        raise HTTPException(status_code=400, detail="One or more categories were not found")
+    rules = [CategoryRule(**rule.model_dump()) for rule in payload.rules]
+    db.add_all(rules)
+    db.flush()
+    operation_id = journal_mutation(db, kind="create", entity_type="category_rule", actor=actor_for_session(session), description=f"Created {len(rules)} category rules", changes=[MutationChange(rule.id, None, full_values(rule)) for rule in rules])
+    db.commit()
+    return {"ok": True, "created": len(rules), "operation_id": operation_id}
+
+
 @app.post("/api/setup")
 def setup(request: SetupRequest, db: Session = Depends(get_db)):
     if ensure_setup_state(db):
@@ -218,9 +258,10 @@ def create_account(payload: AccountCreate, request: Request, session: SessionTok
     )
     db.add(account)
     db.flush()
+    operation_id = journal_mutation(db, kind="create", entity_type="account", actor=actor_for_session(session), description=f'Created account "{account.display_name}"', changes=[MutationChange(account.id, None, full_values(account))])
     record_audit_event(db, "account_create", "local-user", "account", str(account.id), payload.model_dump())
     db.commit()
-    return {"id": account.id}
+    return {"id": account.id, "operation_id": operation_id}
 
 
 def upsert_institution(db: Session, name: str | None) -> Institution | None:
@@ -298,14 +339,17 @@ def update_account(account_id: int, payload: AccountUpdate, request: Request, se
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
     updates = payload.model_dump(exclude_unset=True)
+    changed_fields = {"institution_id" if key == "institution_name" else key for key in updates}
+    before = changed_values(account, changed_fields)
     if "institution_name" in updates:
         institution = upsert_institution(db, updates.pop("institution_name"))
         account.institution_id = institution.id if institution else None
     for key, value in updates.items():
         setattr(account, key, value)
+    operation_id = journal_mutation(db, kind="update", entity_type="account", actor=actor_for_session(session), description=f'Updated account "{account.display_name}"', changes=[MutationChange(account.id, before, changed_values(account, changed_fields))])
     record_audit_event(db, "account_update", "local-user", "account", str(account.id), payload.model_dump(exclude_unset=True))
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 
 @app.post("/api/accounts/{account_id}/archive")
@@ -314,10 +358,12 @@ def archive_account(account_id: int, request: Request, session: SessionToken = D
     account = db.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    before = changed_values(account, ["status"])
     account.status = "archived"
+    operation_id = journal_mutation(db, kind="update", entity_type="account", actor=actor_for_session(session), description=f'Archived account "{account.display_name}"', changes=[MutationChange(account.id, before, changed_values(account, ["status"]))])
     record_audit_event(db, "account_archive", "local-user", "account", str(account.id), {"status": "archived"})
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 
 def category_key_from_label(label: str) -> str:
@@ -337,6 +383,7 @@ def cleanup_duplicate_categories(db: Session, actor: str = "local-user") -> dict
     canonical_by_label: dict[str, Category] = {}
     merged = 0
     reassigned = 0
+    changes: list[MutationChange] = []
     for category in categories:
         normalized = normalized_category_label(category.label)
         if not normalized:
@@ -351,6 +398,16 @@ def cleanup_duplicate_categories(db: Session, actor: str = "local-user") -> dict
             "allocations": db.scalar(select(func.count(ExpenseAllocation.id)).where(ExpenseAllocation.category_id == category.id)) or 0,
             "rules": db.scalar(select(func.count(CategoryRule.id)).where(CategoryRule.category_id == category.id)) or 0,
         }
+        changes.append(MutationChange(category.id, full_values(category), None, entity_type="category"))
+        reference_groups = [
+            ("transaction", db.scalars(select(Transaction).where(Transaction.category_id == category.id)).all(), "category_id"),
+            ("transaction_split", db.scalars(select(TransactionSplit).where(TransactionSplit.category_id == category.id)).all(), "category_id"),
+            ("expense_allocation", db.scalars(select(ExpenseAllocation).where(ExpenseAllocation.category_id == category.id)).all(), "category_id"),
+            ("category_rule", db.scalars(select(CategoryRule).where(CategoryRule.category_id == category.id)).all(), "category_id"),
+            ("category", db.scalars(select(Category).where(Category.parent_id == category.id)).all(), "parent_id"),
+        ]
+        for entity_type, rows, field in reference_groups:
+            changes.extend(MutationChange(row.id, changed_values(row, [field]), {"id": row.id, field: replacement.id}, entity_type=entity_type) for row in rows)
         db.execute(update(Transaction).where(Transaction.category_id == category.id).values(category_id=replacement.id))
         db.execute(update(TransactionSplit).where(TransactionSplit.category_id == category.id).values(category_id=replacement.id))
         db.execute(update(ExpenseAllocation).where(ExpenseAllocation.category_id == category.id).values(category_id=replacement.id))
@@ -360,8 +417,9 @@ def cleanup_duplicate_categories(db: Session, actor: str = "local-user") -> dict
         db.delete(category)
         merged += 1
         reassigned += sum(reference_counts.values())
+    operation_id = journal_mutation(db, kind="merge", entity_type="mixed", actor=actor, description=f"Merged {merged} duplicate categories", changes=changes) if changes else None
     db.commit()
-    return {"merged": merged, "reassigned": reassigned}
+    return {"merged": merged, "reassigned": reassigned, "operation_id": operation_id}
 
 
 
@@ -443,10 +501,20 @@ def _restore_transactions(db: Session, transactions: list[Transaction], actor: s
     )
 
 
-def _delete_account_tree(db: Session, account: Account) -> None:
+def _delete_account_tree(db: Session, account: Account) -> list[MutationChange]:
     transactions = db.scalars(select(Transaction).where(Transaction.account_id == account.id)).all()
     if account.last_four == UNASSIGNED_ACCOUNT_MARKER:
         raise HTTPException(status_code=400, detail="The system account used for transaction review cannot be deleted")
+    presets = db.scalars(select(ImportPreset).where(ImportPreset.account_id == account.id)).all()
+    batches = db.scalars(select(ImportBatch).where(ImportBatch.account_id == account.id)).all()
+    staging_rows = db.scalars(select(StagingRow).where(StagingRow.account_id == account.id)).all()
+    holdings = db.scalars(select(HoldingSnapshot).where(HoldingSnapshot.account_id == account.id)).all()
+    changes: list[MutationChange] = [MutationChange(account.id, full_values(account), None, entity_type="account")]
+    changes.extend(MutationChange(preset.id, full_values(preset), None, entity_type="import_preset") for preset in presets)
+    changes.extend(MutationChange(batch.id, full_values(batch), None, entity_type="import_batch") for batch in batches)
+    changes.extend(MutationChange(row.id, full_values(row), None, entity_type="staging_row") for row in staging_rows)
+    changes.extend(MutationChange(holding.id, full_values(holding), None, entity_type="holding_snapshot") for holding in holdings)
+    unassigned_account = None
     if transactions:
         unassigned_account = Account(
             display_name=f"Needs account ({account.display_name})",
@@ -458,9 +526,12 @@ def _delete_account_tree(db: Session, account: Account) -> None:
         db.add(unassigned_account)
         db.flush()
         for transaction in transactions:
+            before = changed_values(transaction, ["account_id", "import_batch_id", "review_status"])
             transaction.account_id = unassigned_account.id
             transaction.import_batch_id = None
             transaction.review_status = "needs_review"
+            changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["account_id", "import_batch_id", "review_status"]), entity_type="transaction"))
+        changes.append(MutationChange(unassigned_account.id, None, full_values(unassigned_account), entity_type="account"))
     db.execute(delete(StagingRow).where(StagingRow.account_id == account.id))
     db.execute(delete(HoldingSnapshot).where(HoldingSnapshot.account_id == account.id))
     db.execute(delete(ImportBatch).where(ImportBatch.account_id == account.id))
@@ -474,6 +545,7 @@ def _delete_account_tree(db: Session, account: Account) -> None:
         {"display_name": account.display_name, "account_type": account.account_type, "preserved_transactions": len(transactions)},
     )
     db.delete(account)
+    return changes
 
 
 @app.delete("/api/accounts/bulk-delete")
@@ -487,10 +559,12 @@ def bulk_delete_accounts(payload: BulkDeleteRequest, request: Request, session: 
     missing_ids = [account_id for account_id in payload.ids if account_id not in found_ids]
     if missing_ids:
         raise HTTPException(status_code=404, detail=f"Account not found: {missing_ids[0]}")
+    changes: list[MutationChange] = []
     for account in accounts:
-        _delete_account_tree(db, account)
+        changes.extend(_delete_account_tree(db, account))
+    operation_id = journal_mutation(db, kind="delete", entity_type="mixed", actor=actor_for_session(session), description=f"Deleted {len(accounts)} accounts", changes=changes)
     db.commit()
-    return {"ok": True, "deleted": len(accounts)}
+    return {"ok": True, "deleted": len(accounts), "operation_id": operation_id}
 
 
 @app.delete("/api/accounts/{account_id}")
@@ -500,9 +574,10 @@ def delete_account(account_id: int, payload: DeleteConfirmRequest, request: Requ
     account = db.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    _delete_account_tree(db, account)
+    changes = _delete_account_tree(db, account)
+    operation_id = journal_mutation(db, kind="delete", entity_type="mixed", actor=actor_for_session(session), description=f'Deleted account "{account.display_name}"', changes=changes)
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 @app.post("/api/categories")
 def create_category(payload: CategoryCreate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
@@ -523,9 +598,10 @@ def create_category(payload: CategoryCreate, request: Request, session: SessionT
     category = Category(key=key, label=label)
     db.add(category)
     db.flush()
+    operation_id = journal_mutation(db, kind="create", entity_type="category", actor=actor_for_session(session), description=f'Created category "{category.label}"', changes=[MutationChange(category.id, None, full_values(category))])
     record_audit_event(db, "category_create", "local-user", "category", str(category.id), {"label": label, "key": key})
     db.commit()
-    return {"id": category.id, "key": category.key, "label": category.label}
+    return {"id": category.id, "key": category.key, "label": category.label, "operation_id": operation_id}
 
 
 @app.post("/api/categories/cleanup-duplicates")
@@ -543,10 +619,12 @@ def update_category(category_id: int, payload: CategoryUpdate, request: Request,
     label = payload.label.strip()
     if not label:
         raise HTTPException(status_code=400, detail="Category label is required")
+    before = changed_values(category, ["label"])
     category.label = label
+    operation_id = journal_mutation(db, kind="update", entity_type="category", actor=actor_for_session(session), description=f'Renamed category to "{label}"', changes=[MutationChange(category.id, before, changed_values(category, ["label"]))])
     record_audit_event(db, "category_update", "local-user", "category", str(category.id), {"label": label})
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 
 @app.post("/api/import-presets")
@@ -555,9 +633,10 @@ def create_import_preset(payload: ImportPresetCreate, request: Request, session:
     preset = ImportPreset(**payload.model_dump())
     db.add(preset)
     db.flush()
+    operation_id = journal_mutation(db, kind="create", entity_type="import_preset", actor=actor_for_session(session), description=f'Created import preset "{preset.name}"', changes=[MutationChange(preset.id, None, full_values(preset))])
     record_audit_event(db, "preset_create", "local-user", "import_preset", str(preset.id), payload.model_dump())
     db.commit()
-    return {"id": preset.id}
+    return {"id": preset.id, "operation_id": operation_id}
 
 
 @app.get("/api/accounts/{account_id}/import-presets")
@@ -701,7 +780,7 @@ def discard_inbox_import(batch_id: int, request: Request, session: SessionToken 
         raise HTTPException(status_code=400, detail=str(error)) from error
     record_audit_event(db, "import_inbox_discard", actor_for_session(session), "import_batch", str(batch.id), {"filename": batch.filename})
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 @app.get("/api/imports/{batch_id}/report")
 def import_report(batch_id: int, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
@@ -924,7 +1003,7 @@ def permanently_delete_transaction(transaction_id: int, payload: DeleteConfirmRe
         raise HTTPException(status_code=404, detail="Deleted transaction not found")
     _delete_transaction_row(db, transaction)
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 
 @app.patch("/api/transactions/{transaction_id}")
@@ -1009,12 +1088,25 @@ def set_splits(transaction_id: int, payload: SplitSetRequest, request: Request, 
     category_ids = {split.category_id for split in payload.splits}
     if len(db.scalars(select(Category.id).where(Category.id.in_(category_ids))).all()) != len(category_ids):
         raise HTTPException(status_code=400, detail="One or more split categories do not exist")
+    existing_splits = db.scalars(select(TransactionSplit).where(TransactionSplit.transaction_id == transaction_id)).all()
+    before_by_id = {split.id: full_values(split) for split in existing_splits}
     db.execute(delete(TransactionSplit).where(TransactionSplit.transaction_id == transaction_id))
     for split in payload.splits:
         db.add(TransactionSplit(transaction_id=transaction_id, category_id=split.category_id, amount_cents=split.amount_cents, note=split.note))
+    db.flush()
+    new_splits = db.scalars(select(TransactionSplit).where(TransactionSplit.transaction_id == transaction_id)).all()
+    after_by_id = {split.id: full_values(split) for split in new_splits}
+    operation_id = journal_mutation(
+        db,
+        kind="replace",
+        entity_type="transaction_split",
+        actor=actor_for_session(session),
+        description=f'Replaced category splits for "{transaction.raw_description}"',
+        changes=[MutationChange(split_id, before_by_id.get(split_id), after_by_id.get(split_id)) for split_id in sorted(set(before_by_id) | set(after_by_id))],
+    )
     record_audit_event(db, "transaction_split", "local-user", "transaction", str(transaction.id), {"split_count": len(payload.splits)})
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 
 @app.delete("/api/categories/{category_id}")
@@ -1037,6 +1129,17 @@ def delete_category(category_id: int, request: Request, reassign_to: int | None 
     }
     if sum(reference_counts.values()) and replacement is None:
         raise HTTPException(status_code=400, detail="This category is in use. Choose a replacement category to merge it safely.")
+    target_category_id = replacement.id if replacement else None
+    changes: list[MutationChange] = [MutationChange(category.id, full_values(category), None, entity_type="category")]
+    reference_groups = [
+        ("transaction", db.scalars(select(Transaction).where(Transaction.category_id == category_id)).all(), "category_id"),
+        ("transaction_split", db.scalars(select(TransactionSplit).where(TransactionSplit.category_id == category_id)).all(), "category_id"),
+        ("expense_allocation", db.scalars(select(ExpenseAllocation).where(ExpenseAllocation.category_id == category_id)).all(), "category_id"),
+        ("category_rule", db.scalars(select(CategoryRule).where(CategoryRule.category_id == category_id)).all(), "category_id"),
+        ("category", db.scalars(select(Category).where(Category.parent_id == category_id)).all(), "parent_id"),
+    ]
+    for entity_type, rows, field in reference_groups:
+        changes.extend(MutationChange(row.id, changed_values(row, [field]), {"id": row.id, field: target_category_id}, entity_type=entity_type) for row in rows)
     if replacement:
         db.execute(update(Transaction).where(Transaction.category_id == category_id).values(category_id=replacement.id))
         db.execute(update(TransactionSplit).where(TransactionSplit.category_id == category_id).values(category_id=replacement.id))
@@ -1047,8 +1150,9 @@ def delete_category(category_id: int, request: Request, reassign_to: int | None 
         db.execute(update(Category).where(Category.parent_id == category_id).values(parent_id=None))
     record_audit_event(db, "category_delete", "local-user", "category", str(category.id), {"label": category.label, "reassigned_to": replacement.id if replacement else None, **reference_counts})
     db.delete(category)
+    operation_id = journal_mutation(db, kind="delete", entity_type="mixed" if len(changes) > 1 else "category", actor=actor_for_session(session), description=f'Deleted category "{category.label}"', changes=changes)
     db.commit()
-    return {"ok": True, "reassigned": sum(reference_counts.values())}
+    return {"ok": True, "reassigned": sum(reference_counts.values()), "operation_id": operation_id}
 
 
 @app.get("/api/transactions/{transaction_id}/splits")
@@ -1079,6 +1183,8 @@ def set_monthly_allocation(transaction_id: int, payload: MonthlyAllocationReques
         raise HTTPException(status_code=400, detail="Category not found")
     if db.scalar(select(TransactionSplit.id).where(TransactionSplit.transaction_id == transaction_id)):
         raise HTTPException(status_code=400, detail="A split transaction cannot also be spread across months")
+    existing_allocations = db.scalars(select(ExpenseAllocation).where(ExpenseAllocation.transaction_id == transaction_id)).all()
+    before_by_id = {allocation.id: full_values(allocation) for allocation in existing_allocations}
     db.execute(delete(ExpenseAllocation).where(ExpenseAllocation.transaction_id == transaction_id))
     amount, remainder = divmod(abs(transaction.amount_cents), payload.months)
     sign = -1 if transaction.amount_cents < 0 else 1
@@ -1089,9 +1195,13 @@ def set_monthly_allocation(transaction_id: int, payload: MonthlyAllocationReques
             allocation_date=_month_start(payload.allocation_start, offset),
             amount_cents=sign * (amount + (1 if offset < remainder else 0)),
         ))
+    db.flush()
+    new_allocations = db.scalars(select(ExpenseAllocation).where(ExpenseAllocation.transaction_id == transaction_id)).all()
+    after_by_id = {allocation.id: full_values(allocation) for allocation in new_allocations}
+    operation_id = journal_mutation(db, kind="replace", entity_type="expense_allocation", actor=actor_for_session(session), description=f'Changed monthly allocation for "{transaction.raw_description}"', changes=[MutationChange(allocation_id, before_by_id.get(allocation_id), after_by_id.get(allocation_id)) for allocation_id in sorted(set(before_by_id) | set(after_by_id))])
     record_audit_event(db, "transaction_monthly_allocation", "local-user", "transaction", str(transaction.id), {"months": payload.months, "category_id": payload.category_id, "allocation_start": payload.allocation_start.isoformat()})
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 
 @app.delete("/api/transactions/{transaction_id}/monthly-allocation")
@@ -1100,10 +1210,15 @@ def delete_monthly_allocation(transaction_id: int, request: Request, session: Se
     transaction = get_live_transaction(db, transaction_id)
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    allocations = db.scalars(select(ExpenseAllocation).where(ExpenseAllocation.transaction_id == transaction_id)).all()
+    if not allocations:
+        raise HTTPException(status_code=404, detail="Monthly allocation not found")
+    changes = [MutationChange(allocation.id, full_values(allocation), None) for allocation in allocations]
     db.execute(delete(ExpenseAllocation).where(ExpenseAllocation.transaction_id == transaction_id))
+    operation_id = journal_mutation(db, kind="delete", entity_type="expense_allocation", actor=actor_for_session(session), description=f'Removed monthly allocation from "{transaction.raw_description}"', changes=changes)
     record_audit_event(db, "transaction_monthly_allocation_delete", "local-user", "transaction", str(transaction.id), {})
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 
 @app.get("/api/review")
@@ -1135,9 +1250,10 @@ def create_rule(payload: RuleCreate, request: Request, session: SessionToken = D
     rule = CategoryRule(**payload.model_dump())
     db.add(rule)
     db.flush()
+    operation_id = journal_mutation(db, kind="create", entity_type="category_rule", actor=actor_for_session(session), description=f'Created rule "{rule.match_text}"', changes=[MutationChange(rule.id, None, full_values(rule))])
     record_audit_event(db, "rule_create", "local-user", "category_rule", str(rule.id), payload.model_dump())
     db.commit()
-    return {"id": rule.id}
+    return {"id": rule.id, "operation_id": operation_id}
 
 
 @app.post("/api/rules/{rule_id}/apply")
@@ -1155,16 +1271,21 @@ def apply_rule(rule_id: int, payload: RuleApplyRequest, request: Request, sessio
 
     matched = 0
     updated = 0
+    changes: list[MutationChange] = []
     for transaction in db.scalars(query).all():
         if not rule_matches_transaction(rule, transaction):
             continue
         matched += 1
+        before = changed_values(transaction, ["category_id", "transaction_type", "review_status"])
         if apply_rule_to_transaction(rule, transaction):
             updated += 1
+            changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["category_id", "transaction_type", "review_status"])))
+
+    operation_id = journal_mutation(db, kind="bulk_update", entity_type="transaction", actor=actor_for_session(session), description=f'Applied rule "{rule.match_text}" to {updated} transactions', changes=changes) if changes else None
 
     record_audit_event(db, "rule_apply", "local-user", "category_rule", str(rule.id), {"scope": payload.scope, "matched": matched, "updated": updated})
     db.commit()
-    return {"matched": matched, "updated": updated}
+    return {"matched": matched, "updated": updated, "operation_id": operation_id}
 
 
 @app.get("/api/rules/{rule_id}/preview")
@@ -1192,11 +1313,13 @@ def update_rule(rule_id: int, payload: RuleUpdate, request: Request, session: Se
         raise HTTPException(status_code=400, detail="Category not found")
     if "match_text" in updates and not str(updates["match_text"]).strip():
         raise HTTPException(status_code=400, detail="Match text is required")
+    before = changed_values(rule, updates.keys())
     for key, value in updates.items():
         setattr(rule, key, value)
+    operation_id = journal_mutation(db, kind="update", entity_type="category_rule", actor=actor_for_session(session), description=f'Updated rule "{rule.match_text}"', changes=[MutationChange(rule.id, before, changed_values(rule, updates.keys()))])
     record_audit_event(db, "rule_update", "local-user", "category_rule", str(rule.id), updates)
     db.commit()
-    return payload_from_rule(rule)
+    return {**payload_from_rule(rule), "operation_id": operation_id}
 
 
 @app.delete("/api/rules/{rule_id}")
@@ -1205,10 +1328,11 @@ def delete_rule(rule_id: int, request: Request, session: SessionToken = Depends(
     rule = db.get(CategoryRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
+    operation_id = journal_mutation(db, kind="delete", entity_type="category_rule", actor=actor_for_session(session), description=f'Deleted rule "{rule.match_text}"', changes=[MutationChange(rule.id, full_values(rule), None)])
     record_audit_event(db, "rule_delete", "local-user", "category_rule", str(rule.id), {"match_text": rule.match_text})
     db.delete(rule)
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 
 @app.get("/api/rules")
@@ -1254,9 +1378,10 @@ def create_transfer_link(payload: TransferLinkCreate, request: Request, session:
     link = TransferLink(**payload.model_dump())
     db.add(link)
     db.flush()
+    operation_id = journal_mutation(db, kind="create", entity_type="transfer_link", actor=actor_for_session(session), description="Created transfer link", changes=[MutationChange(link.id, None, full_values(link))])
     record_audit_event(db, "transfer_link_create", "local-user", "transfer_link", str(link.id), payload.model_dump())
     db.commit()
-    return {"id": link.id}
+    return {"id": link.id, "operation_id": operation_id}
 
 
 @app.get("/api/transfers/unconfirmed")
@@ -1409,14 +1534,16 @@ def update_holding_metadata(payload: HoldingMetadataUpdate, request: Request, se
     if not symbol:
         raise HTTPException(status_code=400, detail="Symbol is required")
     metadata = db.scalar(select(SecurityMetadata).where(SecurityMetadata.symbol == symbol))
+    before = full_values(metadata) if metadata else None
     if not metadata:
         metadata = SecurityMetadata(symbol=symbol)
         db.add(metadata)
         db.flush()
     metadata.user_description = payload.user_description.strip() if payload.user_description else None
+    operation_id = journal_mutation(db, kind="update" if before else "create", entity_type="security_metadata", actor=actor_for_session(session), description=f'Updated holding description for {symbol}', changes=[MutationChange(metadata.id, before, full_values(metadata))])
     record_audit_event(db, "holding_metadata_update", "local-user", "security_metadata", symbol, {"symbol": symbol})
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 
 
@@ -1443,10 +1570,15 @@ def bulk_delete_holdings(payload: BulkDeleteRequest, request: Request, session: 
     missing_ids = [holding_id for holding_id in payload.ids if holding_id not in found_ids]
     if missing_ids:
         raise HTTPException(status_code=404, detail=f"Holding row not found: {missing_ids[0]}")
+    changes = [MutationChange(holding.id, full_values(holding), None) for holding in holdings]
+    scopes = {(holding.account_id, holding.snapshot_date) for holding in holdings}
     for holding in holdings:
         _delete_holding_row(db, holding)
+    operation_id = journal_mutation(db, kind="delete", entity_type="holding_snapshot", actor=actor_for_session(session), description=f"Deleted {len(holdings)} holding rows", changes=changes)
+    for account_id, snapshot_date in scopes:
+        refresh_holding_net_worth_snapshot(db, account_id=account_id, snapshot_date=snapshot_date)
     db.commit()
-    return {"ok": True, "deleted": len(holdings)}
+    return {"ok": True, "deleted": len(holdings), "operation_id": operation_id}
 
 @app.delete("/api/investments/holdings/{holding_id}")
 def delete_holding(holding_id: int, payload: DeleteConfirmRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
@@ -1455,9 +1587,12 @@ def delete_holding(holding_id: int, payload: DeleteConfirmRequest, request: Requ
     holding = db.get(HoldingSnapshot, holding_id)
     if not holding:
         raise HTTPException(status_code=404, detail="Holding row not found")
+    account_id, snapshot_date = holding.account_id, holding.snapshot_date
+    operation_id = journal_mutation(db, kind="delete", entity_type="holding_snapshot", actor=actor_for_session(session), description=f'Deleted holding "{holding.symbol or holding.description or holding.id}"', changes=[MutationChange(holding.id, full_values(holding), None)])
     _delete_holding_row(db, holding)
+    refresh_holding_net_worth_snapshot(db, account_id=account_id, snapshot_date=snapshot_date)
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 
 @app.get("/api/investments/allocation")
@@ -1481,11 +1616,31 @@ APP_EXPORT_TABLES = [
     CategoryRule,
     Transaction,
     TransactionSplit,
+    ExpenseAllocation,
     TransferLink,
     HoldingSnapshot,
+    NetWorthSnapshot,
     SecurityMetadata,
     SecurityPrice,
 ]
+
+APP_EXPORT_ENTITY_TYPES = {
+    Institution: "institution",
+    Account: "account",
+    Category: "category",
+    ImportPreset: "import_preset",
+    ImportBatch: "import_batch",
+    StagingRow: "staging_row",
+    CategoryRule: "category_rule",
+    Transaction: "transaction",
+    TransactionSplit: "transaction_split",
+    ExpenseAllocation: "expense_allocation",
+    TransferLink: "transfer_link",
+    HoldingSnapshot: "holding_snapshot",
+    NetWorthSnapshot: "net_worth_snapshot",
+    SecurityMetadata: "security_metadata",
+    SecurityPrice: "security_price",
+}
 
 
 def _serialize_model(row) -> dict:
@@ -1554,14 +1709,19 @@ async def import_app_data(
         raise HTTPException(status_code=400, detail="This file is not a private finance app-data export")
 
     tables = payload["tables"]
+    before_images = {(APP_EXPORT_ENTITY_TYPES[model], row.id): full_values(row) for model in APP_EXPORT_TABLES for row in db.scalars(select(model)).all()}
     for model in reversed(APP_EXPORT_TABLES):
         db.execute(delete(model))
     for model in APP_EXPORT_TABLES:
         for row in tables.get(model.__tablename__, []):
             db.add(_deserialize_model(model, row))
+    db.flush()
+    after_images = {(APP_EXPORT_ENTITY_TYPES[model], row.id): full_values(row) for model in APP_EXPORT_TABLES for row in db.scalars(select(model)).all()}
+    keys = sorted(set(before_images) | set(after_images))
+    operation_id = journal_mutation(db, kind="replace", entity_type="mixed", actor=actor_for_session(session), description=f'Restored app data from "{file.filename or "upload"}"', changes=[MutationChange(entity_id, before_images.get((entity_type, entity_id)), after_images.get((entity_type, entity_id)), entity_type=entity_type) for entity_type, entity_id in keys])
     record_audit_event(db, "app_data_import", "local-user", "app_data", file.filename or "upload", {"version": payload.get("version")})
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "operation_id": operation_id}
 
 @app.get("/api/exports/transactions.csv")
 def export_transactions(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):

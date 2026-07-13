@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.db import Base
 from app.main import _restore_transactions, _soft_delete_transactions
-from app.models import Account, HoldingSnapshot, NetWorthSnapshot, Transaction
-from app.services.mutation_log import MutationChange, changed_values, journal_mutation
+from app.models import Account, Category, CategoryRule, HoldingSnapshot, NetWorthSnapshot, Transaction
+from app.services.mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from app.services.operation_history import OperationConflict, list_operations, operation_detail, undo_operation
 
 
@@ -156,3 +156,34 @@ def test_transaction_import_undo_keeps_balance_snapshot_in_sync():
         db.commit()
         assert db.get(Transaction, transaction.id).deleted_at is None
         assert db.query(NetWorthSnapshot).one().balance_cents == 123400
+
+
+def test_mixed_operation_restores_deleted_category_and_reassigned_rows():
+    with _session() as db:
+        account = Account(display_name="Checking", account_type="checking")
+        old_category = Category(key="old", label="Old")
+        new_category = Category(key="new", label="New")
+        db.add_all([account, old_category, new_category])
+        db.flush()
+        transaction = _transaction(account.id, "mixed-category")
+        transaction.category_id = old_category.id
+        rule = CategoryRule(category_id=old_category.id, field_name="raw_description", match_text="MERCHANT", suggested_transaction_type="expense")
+        db.add_all([transaction, rule])
+        db.flush()
+        changes = [
+            MutationChange(old_category.id, full_values(old_category), None, entity_type="category"),
+            MutationChange(transaction.id, changed_values(transaction, ["category_id"]), {"id": transaction.id, "category_id": new_category.id}, entity_type="transaction"),
+            MutationChange(rule.id, changed_values(rule, ["category_id"]), {"id": rule.id, "category_id": new_category.id}, entity_type="category_rule"),
+        ]
+        transaction.category_id = new_category.id
+        rule.category_id = new_category.id
+        db.delete(old_category)
+        operation_id = journal_mutation(db, kind="delete", entity_type="mixed", actor="user:1", description="Merged category", changes=changes)
+        db.commit()
+
+        undo_operation(db, operation_id=operation_id, actor="user:1")
+        db.commit()
+
+        assert db.get(Category, old_category.id).label == "Old"
+        assert db.get(Transaction, transaction.id).category_id == old_category.id
+        assert db.get(CategoryRule, rule.id).category_id == old_category.id
