@@ -32,6 +32,7 @@ CITI_ACTIVITY_HEADER = "Status,Date,Description,Debit,Credit"
 AMEX_ACTIVITY_HEADER = "Date,Description,Amount"
 JPM_POSITIONS_HEADER = "Asset Class,Asset Strategy,Asset Strategy Detail,Description,Ticker,CUSIP,Quantity"
 GENERIC_MAPPED_HEADER = "PF Date,PF Description,PF Amount"
+IMPORT_SIGN_CONVENTIONS = {"preset", "reverse"}
 
 
 @dataclass
@@ -446,6 +447,43 @@ def _normalize_transaction_type(description: str, amount_cents: int, account_typ
     return "expense"
 
 
+def apply_import_sign_convention(preview: PreviewResult, sign_convention: str) -> PreviewResult:
+    """Optionally reverse a detected importer's normalized transaction signs.
+
+    Built-in importers remain the default source of truth. The explicit reverse
+    option is a review-time escape hatch for a bank export whose convention is
+    opposite the detected preset.
+    """
+    if sign_convention not in IMPORT_SIGN_CONVENTIONS:
+        raise ValueError("Choose either the detected amount signs or reverse them")
+    if sign_convention == "preset":
+        return preview
+    rows: list[dict] = []
+    for source_row in preview.rows:
+        row = dict(source_row)
+        if row.get("row_kind") == "transaction" and row.get("amount") not in {None, ""}:
+            row["amount"] = _negate_import_amount(str(row["amount"]))
+            if row.get("transaction_type") == "expense":
+                row["transaction_type"] = "refund"
+            elif row.get("transaction_type") == "refund":
+                row["transaction_type"] = "expense"
+        rows.append(row)
+    return PreviewResult(rows=rows, warnings=list(preview.warnings), detected_preset=preview.detected_preset)
+
+
+def annotate_import_interpretation(preview: PreviewResult, account: Account) -> PreviewResult:
+    rows: list[dict] = []
+    for source_row in preview.rows:
+        row = dict(source_row)
+        if row.get("row_kind") == "transaction":
+            amount_cents = parse_decimal_to_cents(row.get("amount")) or 0
+            row["interpreted_transaction_type"] = row.get("transaction_type") or _normalize_transaction_type(
+                str(row.get("raw_description") or ""), amount_cents, account.account_type
+            )
+        rows.append(row)
+    return PreviewResult(rows=rows, warnings=list(preview.warnings), detected_preset=preview.detected_preset)
+
+
 def _debit_credit_amount(debit: str | None, credit: str | None) -> str | None:
     debit_value = _normalize_import_amount(debit)
     credit_value = _normalize_import_amount(credit)
@@ -484,7 +522,7 @@ def _proposed_account_from_import(filename: str, preset_type: str, preview: Prev
         "citi_checking": "checking",
         "citi_card_activity": "credit_card",
         "amex_activity": "credit_card",
-        "venmo_activity": "checking",
+        "venmo_activity": "cash",
     }.get(preset_type, "checking")
     institution = _institution_from_filename(filename, preset_type)
     last_four = _last_four_from_import(filename, preview)
@@ -631,6 +669,28 @@ def _find_or_create_history_account(db: Session, account_name: str) -> tuple[Acc
     existing = db.scalar(select(Account).where(Account.display_name == cleaned))
     if not existing:
         existing = db.scalar(select(Account).where(Account.display_name.ilike(cleaned)))
+    if not existing:
+        characterization = infer_account_characterization(cleaned)
+        expected_institution = characterization.institution_name.casefold() if characterization.institution_name else None
+        expected_last_four = infer_last_four(cleaned)
+        active_accounts = db.scalars(select(Account).where(Account.status == "active")).all()
+
+        def same_institution(account: Account) -> bool:
+            account_institution = account.institution.name.casefold() if account.institution else infer_account_characterization(account.display_name, account.account_type).institution_name
+            return expected_institution is None or (account_institution or "").casefold() == expected_institution
+
+        if expected_last_four:
+            suffix_matches = [account for account in active_accounts if account.last_four == expected_last_four and same_institution(account)]
+            if len(suffix_matches) == 1:
+                existing = suffix_matches[0]
+        if not existing:
+            alias_key = _history_account_alias_key(cleaned)
+            alias_matches = [
+                account for account in active_accounts
+                if _history_account_alias_key(account.display_name) == alias_key and same_institution(account)
+            ]
+            if len(alias_matches) == 1:
+                existing = alias_matches[0]
     if existing:
         if existing.status != "active":
             existing.status = "active"
@@ -648,6 +708,12 @@ def _find_or_create_history_account(db: Session, account_name: str) -> tuple[Acc
     db.add(account)
     db.flush()
     return account, True
+
+
+def _history_account_alias_key(value: str) -> str:
+    """Conservatively ignore common card-label decoration during history matching."""
+    ignored = {"card", "premium", "reward", "rewards"}
+    return " ".join(token for token in re.findall(r"[a-z0-9]+", value.casefold()) if token not in ignored)
 
 
 def _spreadsheet_cell_to_text(value) -> str:
@@ -745,7 +811,15 @@ def review_categorized_history(filename: str, content: bytes) -> dict:
     return {"rows": reviewed_rows, "needs_review": any(row["errors"] for row in reviewed_rows)}
 
 
-def _commit_categorized_history_rows(db: Session, filename: str, rows: list[dict[str, str]], actor: str = "local-user") -> dict:
+def _commit_categorized_history_rows(
+    db: Session,
+    filename: str,
+    rows: list[dict[str, str]],
+    actor: str = "local-user",
+    sign_convention: str = "charges_positive",
+) -> dict:
+    if sign_convention not in {"charges_positive", "canonical"}:
+        raise ValueError("Choose whether categorized-history charges are positive or already normalized")
     if not rows:
         raise ValueError("The categorized history file did not contain transaction rows")
     invalid_rows = [{**row, "errors": _history_row_errors(row)} for row in rows if _history_row_errors(row)]
@@ -773,7 +847,7 @@ def _commit_categorized_history_rows(db: Session, filename: str, rows: list[dict
             categories_created.add(category.id)
 
         if account.id not in batches_by_account_id:
-            batch = ImportBatch(account_id=account.id, preset_id=None, filename=filename, file_hash=file_hash, status="committed")
+            batch = ImportBatch(account_id=account.id, preset_id=None, filename=filename, file_hash=file_hash, status="committed", sign_convention=sign_convention)
             db.add(batch)
             db.flush()
             batches_by_account_id[account.id] = batch
@@ -783,7 +857,9 @@ def _commit_categorized_history_rows(db: Session, filename: str, rows: list[dict
         amount_text = (row.get("amount") or "").strip()
         description = (row.get("payee") or "").strip()
         transaction_date = _parse_import_date(posted_date_text)
-        amount_cents = parse_decimal_to_cents(amount_text) or 0
+        source_amount_cents = parse_decimal_to_cents(amount_text) or 0
+        amount_cents = _normalize_history_amount(source_amount_cents, row.get("category"), account, sign_convention)
+        invert_history_sign = amount_cents == -source_amount_cents and source_amount_cents != 0
 
         key = (account.id, transaction_date.isoformat(), amount_text, description, row.get("category") or "")
         description_counter[key] += 1
@@ -813,7 +889,7 @@ def _commit_categorized_history_rows(db: Session, filename: str, rows: list[dict
                 amount_cents=amount_cents,
                 raw_description=description,
                 normalized_payee=description[:255],
-                transaction_type=_history_transaction_type(row.get("category"), amount_cents, account.account_type),
+                transaction_type=_history_transaction_type(row.get("category"), amount_cents, account, invert_history_sign),
                 category_id=category.id if category else None,
                 review_status="confirmed",
                 source_hash=source_hash,
@@ -857,7 +933,23 @@ def _commit_categorized_history_rows(db: Session, filename: str, rows: list[dict
         "operation_id": operation_id,
     }
 
-def _history_transaction_type(category_label: str | None, amount_cents: int, account_type: str) -> str:
+def _history_spend_account(account: Account) -> bool:
+    institution_name = account.institution.name.casefold() if account.institution else ""
+    return account.account_type == "credit_card" or account.display_name.strip().casefold() == "venmo" or institution_name == "venmo"
+
+
+def _normalize_history_amount(source_amount_cents: int, category_label: str | None, account: Account, sign_convention: str) -> int:
+    label = (category_label or "").strip().casefold()
+    if "income" in label or "refund" in label:
+        return abs(source_amount_cents)
+    if "transfer" in label or "payment" in label:
+        return source_amount_cents
+    if sign_convention == "charges_positive" and _history_spend_account(account):
+        return -source_amount_cents
+    return source_amount_cents
+
+
+def _history_transaction_type(category_label: str | None, amount_cents: int, account: Account, inverted_history_sign: bool = False) -> str:
     label = (category_label or "").strip().lower()
     if "income" in label:
         return "income"
@@ -865,19 +957,21 @@ def _history_transaction_type(category_label: str | None, amount_cents: int, acc
         return "transfer"
     if "refund" in label:
         return "refund"
-    if amount_cents > 0 and account_type == "credit_card":
-        return "expense"
-    if amount_cents > 0 and account_type in {"checking", "savings", "cash"}:
+    if inverted_history_sign and amount_cents > 0:
+        return "refund"
+    if amount_cents > 0 and account.account_type == "credit_card":
+        return "refund"
+    if amount_cents > 0 and account.account_type in {"checking", "savings", "cash"}:
         return "income"
     return "expense"
 
 
-def commit_categorized_history(db: Session, filename: str, content: bytes, actor: str = "local-user") -> dict:
+def commit_categorized_history(db: Session, filename: str, content: bytes, actor: str = "local-user", sign_convention: str = "charges_positive") -> dict:
     rows = _read_history_rows(filename, content)
-    return _commit_categorized_history_rows(db, filename, rows, actor)
+    return _commit_categorized_history_rows(db, filename, rows, actor, sign_convention)
 
 
-def commit_reviewed_categorized_history(db: Session, filename: str, rows: list[dict[str, str]], actor: str = "local-user") -> dict:
+def commit_reviewed_categorized_history(db: Session, filename: str, rows: list[dict[str, str]], actor: str = "local-user", sign_convention: str = "charges_positive") -> dict:
     cleaned_rows = [
         {
             "row_index": str(row.get("row_index") or index + 1),
@@ -889,7 +983,7 @@ def commit_reviewed_categorized_history(db: Session, filename: str, rows: list[d
         }
         for index, row in enumerate(rows)
     ]
-    return _commit_categorized_history_rows(db, filename, cleaned_rows, actor)
+    return _commit_categorized_history_rows(db, filename, cleaned_rows, actor, sign_convention)
 
 
 def preview_import(content: bytes, preset_type: str) -> PreviewResult:
@@ -920,11 +1014,11 @@ def _canonical_fingerprint_value(value):
     return value
 
 
-def commit_import(db: Session, account, preset: ImportPreset | None, filename: str, content: bytes, actor: str = "local-user", snapshot_date: date | None = None, existing_batch: ImportBatch | None = None) -> dict:
+def commit_import(db: Session, account, preset: ImportPreset | None, filename: str, content: bytes, actor: str = "local-user", snapshot_date: date | None = None, existing_batch: ImportBatch | None = None, sign_convention: str = "preset") -> dict:
     detected = preset.preset_type if preset else detect_preset_from_content(decode_text(content), filename)
     if not detected:
         raise ValueError("Unable to detect preset type")
-    preview = preview_import(content, detected)
+    preview = apply_import_sign_convention(preview_import(content, detected), sign_convention)
     file_hash = hashlib.sha256(content).hexdigest()
     semantic_hash = semantic_import_hash(content, detected, filename)
     if existing_batch:
@@ -936,9 +1030,10 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
         batch.semantic_hash = semantic_hash
         batch.status = "committed"
         batch.detected_preset = detected
+        batch.sign_convention = sign_convention
         db.execute(delete(StagingRow).where(StagingRow.import_batch_id == batch.id))
     else:
-        batch = ImportBatch(account_id=account.id, preset_id=preset.id if preset else None, filename=filename, file_hash=file_hash, semantic_hash=semantic_hash, status="committed", detected_preset=detected)
+        batch = ImportBatch(account_id=account.id, preset_id=preset.id if preset else None, filename=filename, file_hash=file_hash, semantic_hash=semantic_hash, status="committed", detected_preset=detected, sign_convention=sign_convention)
         db.add(batch)
         db.flush()
 

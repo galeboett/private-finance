@@ -12,10 +12,12 @@ The app builds a full personal finance picture by turning account exports into a
 
 2. Add downloaded CSVs to the Import Inbox.
    - Copy files into the local folder shown under Settings → Smart import → Import Inbox.
+   - When two accounts produce generic names such as `stmt.csv`, create one subfolder per account and include the last four digits: `boa-checking-1016/stmt.csv` and `boa-checking-6768/stmt.csv`. The scanner searches subfolders and uses the full relative path for account matching.
    - While the app is open, it checks that folder automatically about every 30 seconds. **Scan inbox** is still available when you want an immediate check.
    - A file selected directly in Smart import is staged in this same inbox and review flow; it is no longer committed through a separate path.
    - Files without a confident account match are left untouched and listed for manual Smart import.
    - For an unfamiliar CSV layout, choose its date, description, and amount columns once. This browser remembers the mapping for later files with the same headers.
+   - The import preview shows how each amount will be interpreted. Normally, charges/withdrawals are negative and refunds/deposits are positive. If a raw file uses the opposite convention, choose **Reverse detected signs**, preview again, and stage only after the interpretation is correct.
 
 3. Preview the normalized rows.
    - The app detects the file family from known headers.
@@ -71,6 +73,14 @@ The app builds a full personal finance picture by turning account exports into a
 - Selecting a parent category includes transactions in its direct child categories, so broad filters such as Food can include Groceries and Restaurants.
 - Transaction filters support labels. Bulk edit can change dates or replace labels, and **Select all matching** selects every row matching the current server-side filter, not only the visible page.
 - Trash keeps deleted transactions for `PF_TRASH_RETENTION_DAYS` (90 days by default), then removes expired items automatically when the app starts. Restore important mistakes before that window ends.
+
+## Categorized History Sign Cleanup
+
+- The older cleaned spreadsheet can use **charges positive; refunds negative** for credit cards and Venmo. Choose that convention before importing; the app converts it to the ledger standard of negative charges and positive refunds.
+- Checking and savings history keeps the normal bank convention: positive deposits and negative withdrawals.
+- For history imported before sign normalization was added, open **Settings → Smart import → Normalize previously imported categorized history** and select **Preview cleanup**.
+- Review each account's historical date range and any later direct-CSV range before applying. Direct CSV rows are identified by their import source and are never changed by this cleanup. A warning appears if direct rows overlap the historical range, repeat the same bank reference, or if two account records contain mostly the same historical transactions.
+- Type `NORMALIZE` and apply. The app first creates a timestamped safety backup, then adjusts active and deleted historical transaction amounts/types, dependent splits and monthly allocations, and corrects Venmo to a cash account. Including deleted history ensures a later restore does not reintroduce the old sign convention. The cleanup appears as one Activity operation and can be undone.
 
 ## Automated vs Manual
 

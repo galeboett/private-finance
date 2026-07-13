@@ -9,7 +9,16 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..models import Account, ImportBatch, StagingRow
-from .importers import commit_import, decode_text, detect_preset_from_content, preview_import, semantic_import_hash, suggest_account_for_import
+from .importers import (
+    annotate_import_interpretation,
+    apply_import_sign_convention,
+    commit_import,
+    decode_text,
+    detect_preset_from_content,
+    preview_import,
+    semantic_import_hash,
+    suggest_account_for_import,
+)
 
 
 SUPPORTED_INBOX_SUFFIXES = {".csv"}
@@ -29,27 +38,37 @@ def scan_import_inbox(db: Session) -> dict:
     needs_account: list[dict] = []
     errors: list[dict] = []
 
-    files = sorted((path for path in folder.iterdir() if path.is_file() and path.suffix.casefold() in SUPPORTED_INBOX_SUFFIXES), key=lambda path: path.name.casefold())
+    files = sorted(
+        (
+            path
+            for path in folder.rglob("*")
+            if path.is_file()
+            and path.suffix.casefold() in SUPPORTED_INBOX_SUFFIXES
+            and ".staged" not in path.relative_to(folder).parts
+        ),
+        key=lambda path: path.relative_to(folder).as_posix().casefold(),
+    )
     for path in files:
+        relative_name = path.relative_to(folder).as_posix()
         try:
             if path.stat().st_size > max_bytes:
-                errors.append({"filename": path.name, "message": f"File exceeds the {settings.import_file_size_limit_mb} MB limit."})
+                errors.append({"filename": relative_name, "message": f"File exceeds the {settings.import_file_size_limit_mb} MB limit."})
                 continue
             content = path.read_bytes()
             file_hash = hashlib.sha256(content).hexdigest()
             exact_match = db.scalar(select(ImportBatch).where(ImportBatch.file_hash == file_hash).order_by(ImportBatch.id.desc()))
             if exact_match:
-                skipped.append({"filename": path.name, "reason": f"Already recorded as {exact_match.status} (same file contents)."})
+                skipped.append({"filename": relative_name, "reason": f"Already recorded as {exact_match.status} (same file contents)."})
                 continue
-            suggestion = suggest_account_for_import(db, path.name, content)
-            semantic_hash = semantic_import_hash(content, suggestion.preset_type, path.name)
+            suggestion = suggest_account_for_import(db, relative_name, content)
+            semantic_hash = semantic_import_hash(content, suggestion.preset_type, relative_name)
             existing = db.scalar(select(ImportBatch).where(ImportBatch.semantic_hash == semantic_hash).order_by(ImportBatch.id.desc()))
             if existing:
-                skipped.append({"filename": path.name, "reason": f"Already recorded as {existing.status} (same parsed transactions)."})
+                skipped.append({"filename": relative_name, "reason": f"Already recorded as {existing.status} (same parsed transactions)."})
                 continue
             if suggestion.suggested_account_id is None:
                 needs_account.append({
-                    "filename": path.name,
+                    "filename": relative_name,
                     "preset_type": suggestion.preset_type,
                     "reason": suggestion.reason,
                     "proposed_account": suggestion.proposed_account,
@@ -58,13 +77,13 @@ def scan_import_inbox(db: Session) -> dict:
 
             account = db.get(Account, suggestion.suggested_account_id)
             if not account:
-                needs_account.append({"filename": path.name, "preset_type": suggestion.preset_type, "reason": "The matched account no longer exists.", "proposed_account": suggestion.proposed_account})
+                needs_account.append({"filename": relative_name, "preset_type": suggestion.preset_type, "reason": "The matched account no longer exists.", "proposed_account": suggestion.proposed_account})
                 continue
-            preview = preview_import(content, suggestion.preset_type)
+            preview = annotate_import_interpretation(preview_import(content, suggestion.preset_type), account)
             batch = ImportBatch(
                 account_id=account.id,
                 preset_id=None,
-                filename=path.name,
+                filename=relative_name,
                 file_hash=file_hash,
                 semantic_hash=semantic_hash,
                 status="pending",
@@ -76,6 +95,7 @@ def scan_import_inbox(db: Session) -> dict:
                 match_reason=suggestion.reason,
                 proposed_account_json=json.dumps(suggestion.proposed_account),
                 detected_preset=suggestion.preset_type,
+                sign_convention="preset",
             )
             db.add(batch)
             db.flush()
@@ -90,9 +110,9 @@ def scan_import_inbox(db: Session) -> dict:
                         normalized_json=json.dumps(row, default=str),
                     )
                 )
-            staged.append({"batch_id": batch.id, "filename": path.name, "account_id": account.id, "row_count": len(preview.rows)})
+            staged.append({"batch_id": batch.id, "filename": relative_name, "account_id": account.id, "row_count": len(preview.rows)})
         except (OSError, ValueError) as error:
-            errors.append({"filename": path.name, "message": str(error)})
+            errors.append({"filename": relative_name, "message": str(error)})
 
     return {
         "folder": str(folder),
@@ -104,7 +124,7 @@ def scan_import_inbox(db: Session) -> dict:
     }
 
 
-def stage_uploaded_import(db: Session, *, account: Account, filename: str, content: bytes) -> dict:
+def stage_uploaded_import(db: Session, *, account: Account, filename: str, content: bytes, sign_convention: str = "preset") -> dict:
     """Copy a manual upload into managed storage and stage it for the same review flow as inbox files."""
     max_bytes = settings.import_file_size_limit_mb * 1024 * 1024
     if len(content) > max_bytes:
@@ -120,7 +140,7 @@ def stage_uploaded_import(db: Session, *, account: Account, filename: str, conte
     semantic_match = db.scalar(select(ImportBatch).where(ImportBatch.semantic_hash == semantic_hash).order_by(ImportBatch.id.desc()))
     if semantic_match:
         raise ValueError(f"These transactions are already recorded as {semantic_match.status}.")
-    preview = preview_import(content, preset_type)
+    preview = annotate_import_interpretation(apply_import_sign_convention(preview_import(content, preset_type), sign_convention), account)
     managed_folder = inbox_directory() / ".staged"
     managed_folder.mkdir(parents=True, exist_ok=True)
     safe_suffix = Path(filename).suffix.casefold() if Path(filename).suffix else ".csv"
@@ -141,6 +161,7 @@ def stage_uploaded_import(db: Session, *, account: Account, filename: str, conte
         match_reason="Account selected during manual upload.",
         proposed_account_json="{}",
         detected_preset=preset_type,
+        sign_convention=sign_convention,
     )
     db.add(batch)
     db.flush()
@@ -155,7 +176,7 @@ def stage_uploaded_import(db: Session, *, account: Account, filename: str, conte
                 normalized_json=json.dumps(row, default=str),
             )
         )
-    return {"batch_id": batch.id, "filename": filename, "row_count": len(preview.rows), "preset_type": preset_type}
+    return {"batch_id": batch.id, "filename": filename, "row_count": len(preview.rows), "preset_type": preset_type, "sign_convention": sign_convention}
 
 
 def pending_import_batches(db: Session) -> list[dict]:
@@ -169,6 +190,7 @@ def pending_import_batches(db: Session) -> list[dict]:
             "id": batch.id,
             "filename": batch.filename,
             "preset_type": batch.detected_preset,
+            "sign_convention": batch.sign_convention or "preset",
             "account_id": batch.account_id,
             "account_name": account.display_name if account else "Unknown account",
             "account_last_four": account.last_four if account else None,
@@ -192,7 +214,7 @@ def confirm_pending_import(db: Session, batch: ImportBatch, actor: str) -> dict:
     account = db.get(Account, batch.account_id)
     if not account:
         raise ValueError("The matched account no longer exists")
-    return commit_import(db, account, None, batch.filename, content, actor=actor, existing_batch=batch)
+    return commit_import(db, account, None, batch.filename, content, actor=actor, existing_batch=batch, sign_convention=batch.sign_convention or "preset")
 
 
 def discard_pending_import(batch: ImportBatch) -> dict:

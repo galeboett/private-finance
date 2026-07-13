@@ -92,6 +92,7 @@ type TransferCandidate = {
 
 type ImportPreview = {
   preset_type: string;
+  sign_convention?: "preset" | "reverse";
   rows: Array<Record<string, string | number | null>>;
   warnings: string[];
 };
@@ -113,6 +114,8 @@ type ImportAnalysis = {
   sample_rows?: Array<Record<string, string>>;
 };
 type GenericCsvMapping = { date: string; description: string; amount: string };
+type ImportSignConvention = "preset" | "reverse";
+type HistorySignConvention = "charges_positive" | "canonical";
 
 type CategorizedHistoryRow = {
   row_index: string;
@@ -127,6 +130,55 @@ type CategorizedHistoryRow = {
 type CategorizedHistoryImportResponse =
   | { needs_review: true; filename: string; rows: CategorizedHistoryRow[] }
   | { needs_review?: false; inserted: number; skipped: number; accounts_created: number; categories_created: number; warnings: string[]; operation_id?: string };
+
+type HistoryCleanupPreview = {
+  candidate_transactions: number;
+  charges_to_normalize: number;
+  refunds_to_normalize: number;
+  income_sign_fixes: number;
+  gross_cents: number;
+  confirmation_text: string;
+  accounts: Array<{
+    account_id: number;
+    account: string;
+    last_four: string | null;
+    current_account_type: string;
+    next_account_type: string;
+    transactions: number;
+    gross_cents: number;
+    history_rows: number;
+    history_from: string | null;
+    history_through: string | null;
+    direct_rows: number;
+    direct_from: string | null;
+    direct_through: string | null;
+    direct_rows_after_history: number;
+    direct_rows_on_or_before_history: number;
+    possible_direct_duplicate_rows: number;
+  }>;
+  possible_duplicate_account_pairs: Array<{
+    left_account_id: number;
+    left_account: string;
+    left_last_four: string | null;
+    right_account_id: number;
+    right_account: string;
+    right_last_four: string | null;
+    matching_transactions: number;
+    overlap_percent: number;
+  }>;
+  possible_direct_import_duplicates: Array<{
+    account_id: number;
+    account: string;
+    last_four: string | null;
+    possible_duplicate_rows: number;
+  }>;
+  source_boundary_warnings: Array<{
+    account_id: number;
+    account: string;
+    last_four: string | null;
+    direct_rows_on_or_before_history: number;
+  }>;
+};
 
 type ToastState = {
   tone: "success" | "error" | "info";
@@ -386,6 +438,7 @@ type InboxBatch = {
   id: number;
   filename: string;
   preset_type: string | null;
+  sign_convention: "preset" | "reverse";
   account_id: number;
   account_name: string;
   account_last_four: string | null;
@@ -783,6 +836,7 @@ export function App() {
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importAnalysis, setImportAnalysis] = useState<ImportAnalysis | null>(null);
   const [genericCsvMapping, setGenericCsvMapping] = useState<GenericCsvMapping>({ date: "", description: "", amount: "" });
+  const [importSignConvention, setImportSignConvention] = useState<ImportSignConvention>("preset");
   const [importInbox, setImportInbox] = useState<ImportInboxState>({ folder: "", pending: [] });
   const [lastInboxScan, setLastInboxScan] = useState<ImportInboxScan | null>(null);
   const [importWorkspaceTab, setImportWorkspaceTab] = useState<"smart" | "manual">("smart");
@@ -810,6 +864,9 @@ export function App() {
   const [categorizedHistoryFile, setCategorizedHistoryFile] = useState<File | null>(null);
   const [categorizedHistoryFilename, setCategorizedHistoryFilename] = useState("");
   const [categorizedHistoryRows, setCategorizedHistoryRows] = useState<CategorizedHistoryRow[]>([]);
+  const [categorizedHistorySignConvention, setCategorizedHistorySignConvention] = useState<HistorySignConvention>("charges_positive");
+  const [historyCleanupPreview, setHistoryCleanupPreview] = useState<HistoryCleanupPreview | null>(null);
+  const [historyCleanupConfirm, setHistoryCleanupConfirm] = useState("");
   const [bulkReviewCategoryId, setBulkReviewCategoryId] = useState<number | "">("");
   const [bulkReviewType, setBulkReviewType] = useState("expense");
   const [selectedTransactionAccountFilters, setSelectedTransactionAccountFilters] = useState<number[]>(() => (initialRoute.current.filters.accounts ?? []).map(Number).filter(Number.isFinite));
@@ -1222,7 +1279,7 @@ export function App() {
     const mappedRows = [["PF Date", "PF Description", "PF Amount"], ...rows.slice(1).map((row) => indexes.map((index) => row[index] ?? ""))];
     const content = mappedRows.map((row) => row.map(csvCell).join(",")).join("\r\n");
     const signature = headers.join("\u001f");
-    window.localStorage.setItem(`privateFinance.csvMapping.${signature}`, JSON.stringify(genericCsvMapping));
+    window.localStorage.setItem(`privateFinance.csvMapping.${signature}`, JSON.stringify({ ...genericCsvMapping, signConvention: importSignConvention }));
     return new File([content], `mapped-${selectedFile.name}`, { type: "text/csv" });
   }
 
@@ -1389,7 +1446,7 @@ export function App() {
       if (!uploadFile) throw new Error("Choose a CSV file before previewing.");
       const form = new FormData();
       form.append("file", uploadFile);
-      const response = await fetch(apiUrl(`/api/imports/preview?account_id=${selectedAccountId}`), {
+      const response = await fetch(apiUrl(`/api/imports/preview?account_id=${selectedAccountId}&sign_convention=${importSignConvention}`), {
         method: "POST",
         credentials: "include",
         body: form,
@@ -1419,7 +1476,7 @@ export function App() {
       if (!uploadFile) throw new Error("Choose a CSV file before staging.");
       const form = new FormData();
       form.append("file", uploadFile);
-      const response = await fetch(apiUrl(`/api/imports/stage?account_id=${selectedAccountId}`), {
+      const response = await fetch(apiUrl(`/api/imports/stage?account_id=${selectedAccountId}&sign_convention=${importSignConvention}`), {
         method: "POST",
         credentials: "include",
         headers: { "x-csrf-token": csrf },
@@ -1649,7 +1706,14 @@ export function App() {
         const signature = (analysis.headers ?? []).join("\u001f");
         const saved = window.localStorage.getItem(`privateFinance.csvMapping.${signature}`);
         if (saved) {
-          try { setGenericCsvMapping(JSON.parse(saved) as GenericCsvMapping); } catch { setGenericCsvMapping({ date: "", description: "", amount: "" }); }
+          try {
+            const parsed = JSON.parse(saved) as GenericCsvMapping & { signConvention?: ImportSignConvention };
+            setGenericCsvMapping({ date: parsed.date, description: parsed.description, amount: parsed.amount });
+            setImportSignConvention(parsed.signConvention ?? "preset");
+          } catch {
+            setGenericCsvMapping({ date: "", description: "", amount: "" });
+            setImportSignConvention("preset");
+          }
         } else {
           setGenericCsvMapping({ date: "", description: "", amount: "" });
         }
@@ -1787,7 +1851,7 @@ export function App() {
       const result = await api<{ inserted: number; skipped: number; accounts_created: number; categories_created: number; warnings: string[]; operation_id?: string }>("/api/imports/categorized-history/reviewed", {
         method: "POST",
         headers: { "x-csrf-token": csrf },
-        body: JSON.stringify({ filename: categorizedHistoryFilename || "categorized-history", rows: categorizedHistoryRows }),
+        body: JSON.stringify({ filename: categorizedHistoryFilename || "categorized-history", rows: categorizedHistoryRows, sign_convention: categorizedHistorySignConvention }),
       });
       setCategorizedHistoryFile(null);
       setCategorizedHistoryFilename("");
@@ -1813,7 +1877,7 @@ export function App() {
     form.append("file", categorizedHistoryFile);
     setBusyAction("import");
     try {
-      const response = await fetch(apiUrl("/api/imports/categorized-history"), {
+      const response = await fetch(apiUrl(`/api/imports/categorized-history?sign_convention=${categorizedHistorySignConvention}`), {
         method: "POST",
         credentials: "include",
         headers: { "x-csrf-token": csrf },
@@ -1844,6 +1908,36 @@ export function App() {
       setBusyAction(null);
     }
   }
+
+  async function previewHistorySignCleanup() {
+    setToast(null);
+    try {
+      const result = await api<HistoryCleanupPreview>("/api/maintenance/categorized-history-signs");
+      setHistoryCleanupPreview(result);
+      setHistoryCleanupConfirm("");
+      showToast({ tone: "info", message: result.candidate_transactions > 0 ? `Found ${result.candidate_transactions} legacy transactions to normalize.` : "No legacy categorized-history sign cleanup remains." });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Historical sign cleanup preview failed." });
+    }
+  }
+
+  async function applyHistorySignCleanup() {
+    setToast(null);
+    try {
+      const result = await api<HistoryCleanupPreview & { updated: number; operation_id?: string; backup_name?: string }>("/api/maintenance/categorized-history-signs", {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ confirm_text: historyCleanupConfirm }),
+      });
+      await loadData();
+      setHistoryCleanupPreview({ ...result, candidate_transactions: 0, accounts: [] });
+      setHistoryCleanupConfirm("");
+      showToast({ tone: "success", message: `Normalized ${result.updated} categorized-history transactions.${result.backup_name ? ` Safety backup: ${result.backup_name}.` : ""}`, operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Historical sign cleanup failed." });
+    }
+  }
+
   async function detectTransfers() {
     setToast(null);
     try {
@@ -2738,7 +2832,7 @@ export function App() {
                 <option value="">Choose account</option>
                 {accounts.map((account) => (
                   <option key={account.id} value={account.id}>
-                    {account.display_name}
+                    {accountOptionLabel(account)}
                   </option>
                 ))}
               </select>
@@ -3181,7 +3275,7 @@ export function App() {
                       {busyAction === "inbox-scan" ? "Scanning…" : "Scan inbox"}
                     </button>
                   </div>
-                  <small>Files stay in place. Automatic checks run every 30 seconds, and fingerprints prevent accidental re-imports.</small>
+                  <small>Files stay in place. Automatic checks run every 30 seconds, and fingerprints prevent accidental re-imports. For generic names such as stmt.csv, use one subfolder per account and include its last four digits—for example boa-checking-1016/stmt.csv.</small>
                   {lastInboxScan && (lastInboxScan.needs_account.length > 0 || lastInboxScan.errors.length > 0) ? (
                     <div className="inboxScanIssues">
                       {lastInboxScan.needs_account.map((item) => (
@@ -3222,7 +3316,7 @@ export function App() {
                                 <div key={`${batch.id}-${index}`}>
                                   <span>{String(row.transaction_date ?? row.snapshot_date ?? `Row ${index + 1}`)}</span>
                                   <strong>{String(row.raw_description ?? row.description ?? row.symbol ?? row.account_name ?? "Imported row")}</strong>
-                                  <span>{String(row.amount ?? row.market_value ?? "")}</span>
+                                  <span>{String(row.amount ?? row.market_value ?? "")}{row.interpreted_transaction_type ? ` · ${String(row.interpreted_transaction_type).replaceAll("_", " ")}` : ""}</span>
                                 </div>
                               ))}
                             </div>
@@ -3242,8 +3336,14 @@ export function App() {
                 <div className="historyImportPanel">
                   <div>
                     <strong>Categorized history import</strong>
-                    <span>Upload an older categorized spreadsheet. Expected columns: Account, Posted Date, Payee, Amount, and Expense Category. Missing accounts and categories are created automatically.</span>
+                    <span>Upload an older categorized spreadsheet. Expected columns: Account, Posted Date, Payee, Amount, and Expense Category. Choose the spreadsheet's original sign convention before importing.</span>
                   </div>
+                  <label>Historical amount convention
+                    <select value={categorizedHistorySignConvention} onChange={(event) => setCategorizedHistorySignConvention(event.target.value as HistorySignConvention)}>
+                      <option value="charges_positive">Charges are positive; refunds are negative (your cleaned history)</option>
+                      <option value="canonical">Charges are already negative; refunds are positive</option>
+                    </select>
+                  </label>
                   <div className="buttonRow">
                     <input type="file" accept=".csv,.xlsx,.xlsm" onChange={(event) => { setCategorizedHistoryFile(event.target.files?.[0] ?? null); setCategorizedHistoryRows([]); setCategorizedHistoryFilename(""); }} />
                     <button className="primaryButton" onClick={() => void importCategorizedHistory()} disabled={!categorizedHistoryFile || busyAction !== null}>
@@ -3280,6 +3380,75 @@ export function App() {
                         );
                       })}
                     </div>
+                  </div>
+                ) : null}
+                <div className="cleanupPanel historySignCleanup">
+                  <div>
+                    <strong>Normalize previously imported categorized history</strong>
+                    <span>Preview a one-time cleanup that makes charges negative, refunds positive, and corrects Venmo to a cash account. The result is recorded as one undoable Activity operation.</span>
+                  </div>
+                  <button className="secondaryButton" onClick={() => void previewHistorySignCleanup()} disabled={busyAction !== null}>
+                    <Sparkles size={16} />
+                    Preview cleanup
+                  </button>
+                </div>
+                {historyCleanupPreview ? (
+                  <div className="historyCleanupPreview">
+                    <div className="previewMeta">
+                      <strong>{historyCleanupPreview.candidate_transactions} transactions</strong>
+                      <span>{historyCleanupPreview.charges_to_normalize} charges · {historyCleanupPreview.refunds_to_normalize} refunds · {historyCleanupPreview.income_sign_fixes} income sign fixes</span>
+                    </div>
+                    {historyCleanupPreview.possible_duplicate_account_pairs.length > 0 ? (
+                      <div className="historyCleanupWarnings" role="status">
+                        <AlertCircle size={18} />
+                        <div>
+                          <strong>Possible duplicate account names found</strong>
+                          {historyCleanupPreview.possible_duplicate_account_pairs.map((pair) => (
+                            <span key={`${pair.left_account_id}-${pair.right_account_id}`}>
+                              {pair.left_account}{pair.left_last_four ? ` (${pair.left_last_four})` : ""} and {pair.right_account}{pair.right_last_four ? ` (${pair.right_last_four})` : ""} share {pair.matching_transactions} historical transactions ({pair.overlap_percent}% overlap). Normalizing signs is safe, but these accounts should be merged separately so totals are not counted twice.
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {historyCleanupPreview.source_boundary_warnings.length > 0 ? (
+                      <div className="historyCleanupWarnings" role="status">
+                        <AlertCircle size={18} />
+                        <div>
+                          <strong>Direct CSV dates overlap historical dates</strong>
+                          {historyCleanupPreview.source_boundary_warnings.map((warning) => (
+                            <span key={warning.account_id}>{warning.account}{warning.last_four ? ` (${warning.last_four})` : ""} has {warning.direct_rows_on_or_before_history} direct-import rows on or before its historical cutoff. They will not be changed, but should be reviewed for duplicates.</span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {historyCleanupPreview.possible_direct_import_duplicates.length > 0 ? (
+                      <div className="historyCleanupWarnings" role="status">
+                        <AlertCircle size={18} />
+                        <div>
+                          <strong>Possible duplicate direct CSV rows found</strong>
+                          {historyCleanupPreview.possible_direct_import_duplicates.map((warning) => (
+                            <span key={warning.account_id}>{warning.account}{warning.last_four ? ` (${warning.last_four})` : ""} has {warning.possible_duplicate_rows} repeated bank reference {warning.possible_duplicate_rows === 1 ? "number" : "numbers"}. These rows will not be changed by sign normalization and should be deduplicated separately.</span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {historyCleanupPreview.accounts.map((account) => (
+                      <div className="matchedAccountCard" key={account.account_id}>
+                        <Landmark size={16} />
+                        <div>
+                          <strong>{account.account}{account.last_four ? ` (${account.last_four})` : ""}</strong>
+                          <span>{account.transactions} transactions · {formatMoney(account.gross_cents)} reviewed{account.current_account_type !== account.next_account_type ? ` · account type ${account.current_account_type.replaceAll("_", " ")} → ${account.next_account_type}` : ""}</span>
+                          <span>Historical file: {formatShortDate(account.history_from)}–{formatShortDate(account.history_through)} · Direct CSV: {account.direct_rows ? `${formatShortDate(account.direct_from)}–${formatShortDate(account.direct_through)} (${account.direct_rows_after_history} after cutoff)` : "none"}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {historyCleanupPreview.candidate_transactions > 0 ? (
+                      <div className="cleanupConfirmRow">
+                        <input value={historyCleanupConfirm} onChange={(event) => setHistoryCleanupConfirm(event.target.value)} placeholder='Type NORMALIZE' />
+                        <button className="primaryButton" onClick={() => void applyHistorySignCleanup()} disabled={historyCleanupConfirm.trim().toUpperCase() !== historyCleanupPreview.confirmation_text}>Apply undoable cleanup</button>
+                      </div>
+                    ) : <p className="emptyText">No legacy transactions need this cleanup.</p>}
                   </div>
                 ) : null}
                 <div className="compactForm">
@@ -3323,7 +3492,7 @@ export function App() {
                             </label>
                           ))}
                         </div>
-                        <small>Review the preview before staging. Amount signs are preserved exactly as supplied by the CSV.</small>
+                        <small>Review the preview before staging. Use the Amount signs control below if this CSV's convention needs to be reversed.</small>
                       </div>
                     ) : analyzedAccount ? (
                       <div className="matchedAccountCard">
@@ -3366,10 +3535,19 @@ export function App() {
                     <option value="">Choose existing account</option>
                     {accounts.map((account) => (
                       <option key={account.id} value={account.id}>
-                        {account.display_name}
+                        {accountOptionLabel(account)}
                       </option>
                     ))}
                   </select>
+                </div>
+
+                <div className="manualOverride">
+                  <label>Amount signs</label>
+                  <select value={importSignConvention} onChange={(event) => { setImportSignConvention(event.target.value as ImportSignConvention); setImportPreview(null); }}>
+                    <option value="preset">Use detected signs (recommended)</option>
+                    <option value="reverse">Reverse detected signs</option>
+                  </select>
+                  <small>Preview the result: charges should be negative and refunds or deposits positive. Reverse only when this file uses the opposite convention.</small>
                 </div>
 
                 <div className="previewPanel">
@@ -3383,7 +3561,7 @@ export function App() {
                         {previewRows.map((row, index) => (
                           <div className="previewRow" key={`${row.row_index ?? index}`}>
                             <span>{String(row.raw_description ?? row.description ?? row.symbol ?? "Row")}</span>
-                            <strong>{String(row.amount ?? row.market_value ?? "")}</strong>
+                            <strong>{String(row.amount ?? row.market_value ?? "")}{row.interpreted_transaction_type ? ` · ${String(row.interpreted_transaction_type).replaceAll("_", " ")}` : ""}</strong>
                           </div>
                         ))}
                       </div>
@@ -3666,7 +3844,7 @@ export function App() {
                       >
                         {!accounts.some((account) => account.id === transaction.account_id) ? <option value={transaction.account_id} disabled>{transaction.account_name}</option> : null}
                         {accounts.map((account) => (
-                          <option key={account.id} value={account.id}>{account.display_name}</option>
+                          <option key={account.id} value={account.id}>{accountOptionLabel(account)}</option>
                         ))}
                       </select>
                       <select
@@ -4322,9 +4500,16 @@ export function App() {
                       <option value="">Choose account</option>
                       {accounts.map((account) => (
                         <option key={account.id} value={account.id}>
-                          {account.display_name}
+                          {accountOptionLabel(account)}
                         </option>
                       ))}
+                    </select>
+                  </label>
+                  <label>
+                    Amount signs
+                    <select value={importSignConvention} onChange={(event) => { setImportSignConvention(event.target.value as ImportSignConvention); setImportPreview(null); }}>
+                      <option value="preset">Use detected signs</option>
+                      <option value="reverse">Reverse detected signs</option>
                     </select>
                   </label>
                   <input type="file" accept=".csv,text/csv" onChange={(event) => chooseImportFile(event.target.files?.[0] ?? null)} />
@@ -4373,7 +4558,7 @@ export function App() {
                         <div className="previewRow" key={`${String(row.date ?? "")}-${index}`}>
                           <span>{String(row.date ?? "")}</span>
                           <strong>{String(row.description ?? row.payee ?? "")}</strong>
-                          <span>{String(row.amount ?? "")}</span>
+                          <span>{String(row.amount ?? "")}{row.interpreted_transaction_type ? ` · ${String(row.interpreted_transaction_type).replaceAll("_", " ")}` : ""}</span>
                         </div>
                       ))}
                     </div>

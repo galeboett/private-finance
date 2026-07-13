@@ -28,8 +28,9 @@ from .security import clear_login_failures, create_session, enforce_login_rate_l
 from .services.accounts import cleanup_imported_accounts
 from .services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_timeseries
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
-from .services.importers import commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
+from .services.importers import annotate_import_interpretation, apply_import_sign_convention, commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
 from .services.import_inbox import confirm_pending_import, discard_pending_import, inbox_directory, pending_import_batches, scan_import_inbox, stage_uploaded_import
+from .services.history_cleanup import apply_categorized_history_sign_cleanup, preview_categorized_history_sign_cleanup
 from .services.mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .services.operation_history import OperationConflict, list_operations, operation_detail, undo_operation
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
@@ -744,7 +745,7 @@ async def imports_analyze(file: UploadFile = File(...), session: SessionToken = 
 
 
 @app.post("/api/imports/preview")
-async def imports_preview(account_id: int, file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+async def imports_preview(account_id: int, sign_convention: Literal["preset", "reverse"] = "preset", file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     account = db.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -758,14 +759,14 @@ async def imports_preview(account_id: int, file: UploadFile = File(...), session
     if not preset_type:
         raise HTTPException(status_code=400, detail="Could not detect import preset")
     try:
-        preview = preview_import(content, preset_type)
+        preview = annotate_import_interpretation(apply_import_sign_convention(preview_import(content, preset_type), sign_convention), account)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    return {"preset_type": preset_type, "rows": preview.rows[:25], "warnings": preview.warnings}
+    return {"preset_type": preset_type, "sign_convention": sign_convention, "rows": preview.rows[:25], "warnings": preview.warnings}
 
 
 @app.post("/api/imports/commit")
-async def imports_commit(request: Request, account_id: int, preset_id: int | None = None, snapshot_date: str | None = None, file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+async def imports_commit(request: Request, account_id: int, preset_id: int | None = None, snapshot_date: str | None = None, sign_convention: Literal["preset", "reverse"] = "preset", file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
     account = db.get(Account, account_id)
     if not account:
@@ -781,7 +782,7 @@ async def imports_commit(request: Request, account_id: int, preset_id: int | Non
         except ValueError as error:
             raise HTTPException(status_code=400, detail="snapshot_date must be YYYY-MM-DD") from error
     try:
-        result = commit_import(db, account, preset, file.filename or "import.csv", content, actor=actor_for_session(session), snapshot_date=parsed_snapshot_date)
+        result = commit_import(db, account, preset, file.filename or "import.csv", content, actor=actor_for_session(session), snapshot_date=parsed_snapshot_date, sign_convention=sign_convention)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     db.commit()
@@ -790,7 +791,7 @@ async def imports_commit(request: Request, account_id: int, preset_id: int | Non
 
 
 @app.post("/api/imports/categorized-history")
-async def imports_categorized_history(request: Request, file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+async def imports_categorized_history(request: Request, sign_convention: Literal["charges_positive", "canonical"] = "charges_positive", file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
     content = await file.read()
     if len(content) > settings.import_file_size_limit_mb * 1024 * 1024:
@@ -800,7 +801,7 @@ async def imports_categorized_history(request: Request, file: UploadFile = File(
         review = review_categorized_history(filename, content)
         if review["needs_review"]:
             return {"needs_review": True, "filename": filename, "rows": review["rows"]}
-        result = commit_categorized_history(db, filename, content)
+        result = commit_categorized_history(db, filename, content, actor=actor_for_session(session), sign_convention=sign_convention)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
@@ -812,7 +813,7 @@ async def imports_reviewed_categorized_history(request: Request, session: Sessio
     require_csrf(request, session)
     payload = await request.json()
     try:
-        result = commit_reviewed_categorized_history(db, payload.get("filename") or "categorized-history", payload.get("rows") or [])
+        result = commit_reviewed_categorized_history(db, payload.get("filename") or "categorized-history", payload.get("rows") or [], actor=actor_for_session(session), sign_convention=payload.get("sign_convention") or "charges_positive")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
@@ -820,18 +821,46 @@ async def imports_reviewed_categorized_history(request: Request, session: Sessio
 
 
 @app.post("/api/imports/stage")
-async def stage_manual_import(request: Request, account_id: int, file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+async def stage_manual_import(request: Request, account_id: int, sign_convention: Literal["preset", "reverse"] = "preset", file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
     account = db.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
     content = await file.read()
     try:
-        result = stage_uploaded_import(db, account=account, filename=file.filename or "import.csv", content=content)
+        result = stage_uploaded_import(db, account=account, filename=file.filename or "import.csv", content=content, sign_convention=sign_convention)
     except (UnicodeDecodeError, ValueError, OSError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     db.commit()
     return {**result, "pending": pending_import_batches(db)}
+
+
+@app.get("/api/maintenance/categorized-history-signs")
+def categorized_history_sign_cleanup_preview(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return preview_categorized_history_sign_cleanup(db)
+
+
+@app.post("/api/maintenance/categorized-history-signs")
+async def categorized_history_sign_cleanup_apply(request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    payload = await request.json()
+    confirm_text = str(payload.get("confirm_text") or "")
+    if confirm_text.strip().upper() != "NORMALIZE":
+        raise HTTPException(status_code=400, detail='Type "NORMALIZE" to apply the categorized-history cleanup')
+    preview = preview_categorized_history_sign_cleanup(db)
+    backup_name = None
+    if preview["candidate_transactions"] > 0:
+        backup_name = f"pre-history-sign-cleanup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.sqlite3"
+        try:
+            create_backup(resolve_backup_destination(backup_name))
+        except BackupError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+    try:
+        result = apply_categorized_history_sign_cleanup(db, actor=actor_for_session(session), confirm_text=confirm_text)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    db.commit()
+    return {**result, "backup_name": backup_name}
 
 
 @app.get("/api/imports/inbox")

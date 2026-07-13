@@ -2260,6 +2260,19 @@ textarea {
   gap: 12px;
 }
 
+.historyImportPanel {
+  flex-wrap: wrap;
+}
+
+.historyImportPanel > label {
+  display: grid;
+  gap: 4px;
+  min-width: min(100%, 320px);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .pendingInboxTitle > div {
   display: grid;
   gap: 2px;
@@ -3804,6 +3817,53 @@ select.editableCell {
   .transferPair {
     grid-template-columns: 1fr;
   }
+}
+
+.historyCleanupPreview {
+  display: grid;
+  gap: 8px;
+  margin: -4px 0 14px;
+  padding: 12px;
+  border: 1px solid #b9c9f4;
+  border-radius: 8px;
+  background: #f5f8ff;
+}
+
+.historyCleanupWarnings {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid #e2bd70;
+  border-radius: 8px;
+  background: #fff9e9;
+  color: #604713;
+}
+
+.historyCleanupWarnings svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.historyCleanupWarnings div {
+  display: grid;
+  gap: 4px;
+}
+
+.historyCleanupWarnings span {
+  color: #705821;
+  font-size: 12px;
+}
+
+.cleanupConfirmRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cleanupConfirmRow input {
+  min-width: 180px;
+  flex: 1;
 }
 
 .historyReviewPanel {

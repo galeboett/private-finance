@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import Base
-from app.models import Account, Category, Transaction
+from app.models import Account, Category, Institution, Transaction
 from app.services.importers import commit_categorized_history, commit_reviewed_categorized_history, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
 from app.services.operation_history import undo_operation
 
@@ -216,6 +216,10 @@ def test_commit_categorized_history_creates_accounts_categories_and_confirmed_tr
         assert [category.label for category in categories] == ["Fees & Charges", "Income"]
         assert all(transaction.review_status == "confirmed" for transaction in transactions)
         assert {transaction.transaction_type for transaction in transactions} == {"expense", "income"}
+        chase = next(transaction for transaction in transactions if transaction.raw_description == "ANNUAL MEMBERSHIP FEE")
+        venmo = next(transaction for transaction in transactions if transaction.raw_description == "Withdrew cash")
+        assert chase.amount_cents == -15000
+        assert venmo.amount_cents == 3670
         assert result["operation_id"]
 
         undo_operation(session, operation_id=result["operation_id"], actor="user:1")
@@ -238,6 +242,29 @@ def test_commit_categorized_history_skips_duplicates_on_reupload():
         assert second["inserted"] == 0
         assert second["skipped"] == 1
         assert session.query(Transaction).count() == 1
+
+
+def test_categorized_history_matches_existing_accounts_by_suffix_and_safe_alias():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        institution = Institution(name="Bank of America")
+        suffix_account = Account(institution=institution, display_name="BoA Cash", account_type="credit_card", last_four="3056")
+        alias_account = Account(institution=institution, display_name="BoA Cash USC", account_type="credit_card", last_four="0078")
+        session.add_all([suffix_account, alias_account])
+        session.commit()
+        content = (
+            b"Account,Posted Date,Payee,Amount,Expense Category\n"
+            b"BoA Cash 3056,01/24/2026,Purchase one,10.00,Shopping\n"
+            b"BoA Cash Rewards USC,01/26/2026,Purchase two,20.00,Shopping\n"
+        )
+
+        result = commit_categorized_history(session, "history.csv", content)
+        session.commit()
+
+        assert result["accounts_created"] == 0
+        assert session.query(Account).count() == 2
+        assert {transaction.account_id for transaction in session.query(Transaction).all()} == {suffix_account.id, alias_account.id}
 
 
 def test_categorized_history_surfaces_rows_missing_dates_for_review():

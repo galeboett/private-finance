@@ -197,22 +197,25 @@ def test_decode_text_rejects_non_utf8():
 
 
 @pytest.mark.parametrize(
-    ("label", "amount_cents", "account_type", "expected"),
+    ("label", "amount_cents", "account_type", "inverted_history_sign", "expected"),
     [
-        ("Income", 250000, "checking", "income"),
-        ("", 250000, "checking", "income"),
-        ("", 100000, "savings", "income"),
-        ("", -4200, "checking", "expense"),
-        ("Refund", 4200, "credit_card", "refund"),
-        ("", 4200, "credit_card", "expense"),
-        ("Credit Card Payment", -50000, "checking", "transfer"),
-        ("Transfer", 50000, "savings", "transfer"),
-        ("Groceries", -4200, "checking", "expense"),
+        ("Income", 250000, "checking", False, "income"),
+        ("", 250000, "checking", False, "income"),
+        ("", 100000, "savings", False, "income"),
+        ("", -4200, "checking", False, "expense"),
+        ("Refund", 4200, "credit_card", False, "refund"),
+        ("", 4200, "credit_card", False, "refund"),
+        ("", -4200, "credit_card", True, "expense"),
+        ("", 4200, "credit_card", True, "refund"),
+        ("Credit Card Payment", -50000, "checking", False, "transfer"),
+        ("Transfer", 50000, "savings", False, "transfer"),
+        ("Groceries", -4200, "checking", False, "expense"),
     ],
 )
-def test_history_transaction_type_matrix(label, amount_cents, account_type, expected):
+def test_history_transaction_type_matrix(label, amount_cents, account_type, inverted_history_sign, expected):
     """Regression for BUG-05: deposits into cash accounts must not be typed as expenses."""
-    assert _history_transaction_type(label, amount_cents, account_type) == expected
+    account = Account(display_name="Test", account_type=account_type)
+    assert _history_transaction_type(label, amount_cents, account, inverted_history_sign) == expected
 
 
 def test_commit_jpm_positions_uses_as_of_date_and_ignores_footnotes():

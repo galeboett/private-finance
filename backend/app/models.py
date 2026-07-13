@@ -86,6 +86,7 @@ class ImportBatch(TimestampMixin, Base):
     proposed_account_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     detected_preset: Mapped[str | None] = mapped_column(String(40))
     semantic_hash: Mapped[str | None] = mapped_column(String(128), index=True)
+    sign_convention: Mapped[str | None] = mapped_column(String(30))
 
 
 class StagingRow(TimestampMixin, Base):

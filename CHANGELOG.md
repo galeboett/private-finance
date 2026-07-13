@@ -6,6 +6,7 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Fixed
 
+- Categorized-history credit-card and Venmo amounts now normalize from the legacy Excel convention (positive charges, negative refunds) into one ledger convention (negative charges, positive refunds). A preview-first, journaled maintenance action repairs legacy imports, including soft-deleted rows, dependent splits/allocations, and Venmo's account type with one Undo operation. Its preview shows each historical cutoff and later direct-CSV range, leaves direct imports unchanged, and warns about date overlap, repeated direct-import references, or likely duplicate account aliases. Future history imports conservatively match existing accounts by institution, last four, and safe label aliases to avoid creating those duplicate account records.
 - Deleted-transaction Activity details now show a readable Active → Moved to Trash timestamp instead of blank `deleted_at` values; new deletions also journal the exact deletion timestamp.
 - **BUG-01** — Re-importing a CSV that overlaps an earlier import crashed with a 500 (`NameError` in `commit_import`) and rolled the whole import back. Duplicates are now skipped and counted correctly. Regression test: `tests/test_import_commit.py::test_commit_import_skips_duplicates_on_reupload`.
 - **BUG-02** — Re-importing a brokerage positions file double-counted net worth. Importing positions for an account/date now replaces that snapshot instead of appending to it.
@@ -23,6 +24,7 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Added
 
+- Import Inbox scanning now includes account-specific subfolders and uses the relative folder path for matching, allowing generic filenames such as `stmt.csv` to route reliably by a folder's institution/account last four. Manual import preview can reverse a detected sign convention and shows the interpreted transaction type before staging.
 - Completed the remaining user-facing B/C/D/E Tier 1 work: manual uploads now enter the same review inbox as watched files; the open app checks the import folder automatically; unknown CSV layouts can be mapped once and remembered by the browser; spending has a drag-selectable stacked monthly comparison; category parents include their child transactions; transaction tags, bulk date/label edits, and backend-powered select-all are supported; and Trash automatically purges items after the configured retention period (90 days by default).
 - Fixed Import Inbox discard and permanent single-transaction deletion responses that could fail after the requested change had already succeeded.
 - Overview now owns the Cash Flow, Spending, Income, and Net Worth analysis tabs; the duplicate Reports navigation destination was removed and old `/reports` links resolve to Overview. The analysis toolbar stays visible while scrolling, and Overview cards are limited to high-level account, cash-flow, and spending context instead of repeating review/import work or duplicating cards inside dedicated tabs.

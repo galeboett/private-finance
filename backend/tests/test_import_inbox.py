@@ -170,3 +170,51 @@ def test_similarly_named_downloads_with_different_rows_are_both_staged(tmp_path,
 
         assert len(result["staged"]) == 2
         assert result["skipped"] == []
+
+
+def test_account_subfolders_route_generic_statement_names_by_last_four(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "import_inbox_dir", tmp_path)
+    first_folder = tmp_path / "boa-checking-1016"
+    second_folder = tmp_path / "boa-checking-6768"
+    first_folder.mkdir()
+    second_folder.mkdir()
+    checking_csv = b"Date,Description,Amount,Running Bal.\n07/10/2026,Deposit,100.00,100.00\n"
+    (first_folder / "stmt.csv").write_bytes(checking_csv)
+    (second_folder / "stmt (1).csv").write_bytes(checking_csv.replace(b"100.00", b"200.00"))
+    engine = _database()
+    with Session(engine) as db:
+        institution = Institution(name="Bank of America")
+        first = Account(institution=institution, display_name="Checkings", account_type="checking", last_four="1016")
+        second = Account(institution=institution, display_name="Checkings", account_type="checking", last_four="6768")
+        db.add_all([first, second])
+        db.commit()
+
+        result = scan_import_inbox(db)
+
+        assert result["files_found"] == 2
+        assert result["needs_account"] == []
+        assert {row["filename"] for row in result["staged"]} == {"boa-checking-1016/stmt.csv", "boa-checking-6768/stmt (1).csv"}
+        batches = db.scalars(select(ImportBatch).order_by(ImportBatch.filename)).all()
+        assert [(batch.filename, batch.account_id) for batch in batches] == [
+            ("boa-checking-1016/stmt.csv", first.id),
+            ("boa-checking-6768/stmt (1).csv", second.id),
+        ]
+
+
+def test_manual_stage_can_reverse_detected_amount_signs(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "import_inbox_dir", tmp_path)
+    engine = _database()
+    with Session(engine) as db:
+        account = _matching_account(db)
+        result = stage_uploaded_import(db, account=account, filename="manual-card.csv", content=CARD_CSV, sign_convention="reverse")
+        batch = db.get(ImportBatch, result["batch_id"])
+
+        assert batch.sign_convention == "reverse"
+        assert pending_import_batches(db)[0]["preview"][0]["amount"] == "42.50"
+        assert pending_import_batches(db)[0]["preview"][0]["interpreted_transaction_type"] == "refund"
+
+        confirm_pending_import(db, batch, "user:7")
+        db.commit()
+        transaction = db.scalar(select(Transaction))
+        assert transaction.amount_cents == 4250
+        assert transaction.transaction_type == "refund"
