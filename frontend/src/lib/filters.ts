@@ -23,7 +23,7 @@ export interface TxnFilter {
   netWorthPeriod?: NetWorthPeriod;
 }
 
-export type RouteView = "overview" | "all-accounts" | "account" | "review" | "reports" | "history" | "settings";
+export type RouteView = "overview" | "all-accounts" | "account" | "review" | "history" | "settings";
 
 export type AppRoute = {
   view: RouteView;
@@ -42,7 +42,7 @@ export function readAppRoute(location: Pick<Location, "pathname" | "search">): A
       : location.pathname.startsWith("/review")
         ? "review"
         : location.pathname.startsWith("/reports")
-          ? "reports"
+          ? "overview"
           : location.pathname.startsWith("/history")
             ? "history"
           : location.pathname.startsWith("/settings")

@@ -23,6 +23,7 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Added
 
+- Overview now owns the Cash Flow, Spending, Income, and Net Worth analysis tabs; the duplicate Reports navigation destination was removed and old `/reports` links resolve to Overview. The analysis toolbar stays visible while scrolling, and Overview cards are limited to high-level account, cash-flow, and spending context instead of repeating review/import work or duplicating cards inside dedicated tabs.
 - Net Worth now uses a context-specific asset-change drawer that ranks checking, savings, brokerage, and other accounts by their contribution to a selected range. The selected gain/date/high/low summary sits above a zero-based, multi-tick chart. Spending categories and their peek transactions are ranked by largest amount, include relative-share comparisons, and use the app's blue palette.
 - Completed Problem D dashboard details: manual per-account net-worth balances are journaled and undoable, chart range selections have adjustable edge handles, account rows include six-month sparklines, and reporting-date filters preserve split and monthly-allocation spending semantics.
 - Completed Problem C drill-down coverage: canonical category/account/time-series aggregation endpoints share the transaction predicate, dashboard/report values use those aggregates, transaction-type filters round-trip in URLs, and spending, income, and cash-flow surfaces use a reusable filtered transaction peek with an exact full-ledger handoff.

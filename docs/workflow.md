@@ -34,10 +34,12 @@ The app builds a full personal finance picture by turning account exports into a
    - Corrections can become future rules.
    - Add private notes when the bank description is vague but you know what the purchase was.
 
-6. Reports update from the ledger.
+6. Overview analysis updates from the ledger.
    - Cash-flow summaries use checking, savings, income, spending, transfers, and card payments.
    - Spending summaries use expense transactions and fixed categories.
    - Net-worth views use account balances and investment snapshots.
+   - Use the Overview tabs for Cash Flow, Spending, Income, and Net Worth. The tabs, date range, refresh, and import controls remain visible while the page scrolls.
+   - The customizable finance cockpit appears only on Overview. Its account map, cash-flow trend, and top-spending cards provide a high-level summary; dedicated analysis tabs avoid repeating those same cards.
 
 ## Net Worth History
 

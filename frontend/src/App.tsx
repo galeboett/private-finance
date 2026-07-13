@@ -20,7 +20,6 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
-  TrendingUp,
   Trash2,
   WalletCards,
   X,
@@ -248,19 +247,18 @@ type AccountTaxonomyOverrides = Record<string, string>;
 type TaxonomySection = { label: string; rows: AccountSummary[]; emptyText: string };
 type TaxonomyGroup = { label: string; rows: AccountSummary[]; totalCents: number };
 type CollapsedTaxonomyGroups = Record<string, boolean>;
-type DashboardWidgetKey = "taxonomy" | "review" | "spending" | "cashflow" | "imports";
+type DashboardWidgetKey = "taxonomy" | "spending" | "cashflow";
 type DashboardWidgetConfig = Record<DashboardWidgetKey, boolean>;
 
 const primaryNavItems: Array<{ id: AppView; label: string; icon: typeof LayoutDashboard }> = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "reports", label: "Reports", icon: TrendingUp },
   { id: "all-accounts", label: "All Accounts", icon: Landmark },
   { id: "review", label: "Review", icon: ListChecks },
   { id: "history", label: "Activity", icon: History },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
-const reportTabs = ["Reports", "Cash Flow", "Spending", "Income", "Net Worth"];
+const reportTabs = ["Overview", "Cash Flow", "Spending", "Income", "Net Worth"];
 
 const monthOptions: FilterOption[] = [
   { value: "01", label: "January" },
@@ -296,17 +294,13 @@ const maxSidebarWidth = 420;
 const dashboardWidgetStorageKey = "privateFinance.dashboardWidgets.v1";
 const defaultDashboardWidgets: DashboardWidgetConfig = {
   taxonomy: true,
-  review: true,
   spending: true,
   cashflow: true,
-  imports: true,
 };
 const dashboardWidgetOptions: Array<{ key: DashboardWidgetKey; label: string; description: string }> = [
   { key: "taxonomy", label: "Account map", description: "Balances by account type and institution/custom group." },
-  { key: "review", label: "Review workload", description: "Transactions that still need categorization or duplicate review." },
   { key: "spending", label: "Top spending", description: "Largest expense categories for the selected period." },
   { key: "cashflow", label: "Cash-flow trend", description: "Recent income, expense, and net movement." },
-  { key: "imports", label: "Import readiness", description: "Quick next steps for loading new CSV files." },
 ];
 
 const reportPeriodOptions: Array<{ value: ReportPeriod; label: string }> = [
@@ -750,7 +744,7 @@ export function App() {
   const [importInbox, setImportInbox] = useState<ImportInboxState>({ folder: "", pending: [] });
   const [lastInboxScan, setLastInboxScan] = useState<ImportInboxScan | null>(null);
   const [importWorkspaceTab, setImportWorkspaceTab] = useState<"smart" | "manual">("smart");
-  const [activeTab, setActiveTab] = useState("Cash Flow");
+  const [activeTab, setActiveTab] = useState("Overview");
   const [activeView, setActiveView] = useState<AppView>(initialRoute.current.view);
   const [focusedAccountId, setFocusedAccountId] = useState<number | null>(initialRoute.current.accountId);
   const [importModalOpen, setImportModalOpen] = useState(false);
@@ -2654,7 +2648,7 @@ export function App() {
           <UndoToast toast={toast} busy={busyAction === `undo-${toast.operationId}`} onUndo={(operationId, unconflictedOnly) => void undoLoggedOperation(operationId, unconflictedOnly)} onDismiss={() => setToast(null)} />
         ) : null}
 
-        {(activeView === "overview" || activeView === "reports") && (
+        {activeView === "overview" && (
           <>
             <header className="topBar">
               <div className="reportTabs" role="tablist" aria-label="Report views">
@@ -2694,32 +2688,34 @@ export function App() {
               <DrillDownLink filter={{ ...reportPeriodFilter(reportPeriod), types: ["income", "expense", "refund"] }} title="Savings-rate transactions" onPeek={openTransactionPeek}><MetricTile label="Savings rate" value={`${savingsRate}%`} tone="neutral" /></DrillDownLink>
             </section>
 
-            <section className="dashboardControls overviewTools">
-              <div>
-                <span className="eyebrow">Custom dashboard</span>
-                <h2>Your finance cockpit</h2>
-                <p>Toggle the cards that help you decide what needs attention next.</p>
-              </div>
-              <button className="secondaryButton" onClick={() => setDashboardCustomizeOpen((current) => !current)}>
-                <Sparkles size={16} />
-                Customize
-              </button>
-            </section>
-            {dashboardCustomizeOpen ? (
-              <section className="dashboardCustomizer overviewTools">
-                {dashboardWidgetOptions.map((option) => (
-                  <label className="widgetToggle" key={option.key}>
-                    <input type="checkbox" checked={dashboardWidgets[option.key]} onChange={() => toggleDashboardWidget(option.key)} />
-                    <span>
-                      <strong>{option.label}</strong>
-                      <small>{option.description}</small>
-                    </span>
-                  </label>
-                ))}
-              </section>
-            ) : null}
+            {activeTab === "Overview" ? (
+              <>
+                <section className="dashboardControls overviewTools">
+                  <div>
+                    <span className="eyebrow">At a glance</span>
+                    <h2>Your finance cockpit</h2>
+                    <p>Keep the high-level cards that help you understand your overall financial position.</p>
+                  </div>
+                  <button className="secondaryButton" onClick={() => setDashboardCustomizeOpen((current) => !current)}>
+                    <Sparkles size={16} />
+                    Customize
+                  </button>
+                </section>
+                {dashboardCustomizeOpen ? (
+                  <section className="dashboardCustomizer overviewTools">
+                    {dashboardWidgetOptions.map((option) => (
+                      <label className="widgetToggle" key={option.key}>
+                        <input type="checkbox" checked={dashboardWidgets[option.key]} onChange={() => toggleDashboardWidget(option.key)} />
+                        <span>
+                          <strong>{option.label}</strong>
+                          <small>{option.description}</small>
+                        </span>
+                      </label>
+                    ))}
+                  </section>
+                ) : null}
 
-            <section className="dashboardWidgetGrid overviewTools" aria-label="Dashboard widgets">
+                <section className="dashboardWidgetGrid overviewTools" aria-label="Overview cards">
               {dashboardWidgets.taxonomy ? (
                 <article className="dashboardWidget wide">
                   <div className="widgetHeader">
@@ -2737,19 +2733,6 @@ export function App() {
                       </div>
                     ))}
                   </div>
-                </article>
-              ) : null}
-
-              {dashboardWidgets.review ? (
-                <article className="dashboardWidget">
-                  <div className="widgetHeader">
-                    <span className="eyebrow">Review workload</span>
-                    <strong>{reviewCount}</strong>
-                  </div>
-                  <p>{reviewCount === 0 ? "No transactions are waiting for review." : "Categorize, confirm, or resolve these before trusting reports."}</p>
-                  <button className="secondaryButton compactButton" onClick={() => navigateToView("review")}>
-                    Open Review
-                  </button>
                 </article>
               ) : null}
 
@@ -2789,20 +2772,9 @@ export function App() {
                 </article>
               ) : null}
 
-              {dashboardWidgets.imports ? (
-                <article className="dashboardWidget">
-                  <div className="widgetHeader">
-                    <span className="eyebrow">Import readiness</span>
-                    <strong>{accounts.length}</strong>
-                  </div>
-                  <p>{accounts.length === 0 ? "Start with a CSV so the app can suggest or create accounts." : "Use Smart import when you have a new bank, card, or brokerage CSV."}</p>
-                  <button className="primaryButton compactButton" onClick={() => openImportModal()}>
-                    <FileUp size={14} />
-                    Import CSV
-                  </button>
-                </article>
-              ) : null}
-            </section>
+                </section>
+              </>
+            ) : null}
 
             <section className="contentGrid overviewContent">
               <section className="reportSurface">
@@ -4421,7 +4393,7 @@ function reportTitle(activeTab: string) {
   if (activeTab === "Income") return "Income vs expenses";
   if (activeTab === "Net Worth") return "Investment-backed net worth";
   if (activeTab === "Cash Flow") return "Cash flow by month";
-  return "Financial report center";
+  return "Financial overview";
 }
 
 function ReportSurface({
