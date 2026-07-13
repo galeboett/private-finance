@@ -27,7 +27,8 @@ import {
 } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { readAppRoute, routeUrl, type NetWorthPeriod, type RouteView, type TxnFilter } from "./lib/filters";
+import { encodeTxnFilter, readAppRoute, routeUrl, type NetWorthPeriod, type RouteView, type TxnFilter } from "./lib/filters";
+import { useDrillDown } from "./lib/useDrillDown";
 
 type BootstrapCategory = { id: number; key: string; label: string };
 type DashboardSummary = {
@@ -71,6 +72,8 @@ type TransactionRow = {
   user_note: string | null;
   monthly_allocation_count: number;
   split_count: number;
+  reporting_category_ids: Array<number | null>;
+  reporting_dates: string[];
 };
 
 type SplitDraft = { category_id: number | ""; amount: string; note: string };
@@ -153,7 +156,9 @@ type RuleSummary = {
   suggested_transaction_type: string;
 };
 
-type CategoryTotal = { category: string; amount_cents: number };
+type CategoryTotal = { category_id: number | null; category: string; amount_cents: number; count: number };
+type AggregateRow = { date: string; total_cents: number; count: number };
+type CategoryAggregateRow = { category_id: number | null; category: string; total_cents: number; count: number };
 type MonthlyCashFlow = { month: string; income_cents: number; expense_cents: number; net_cents: number };
 type NetWorthAccount = { account_id: number; account: string; account_type: string; latest_date: string; market_value_cents: number };
 type NetWorthPoint = { date: string; total_cents: number; by_account: Record<string, number> };
@@ -192,9 +197,27 @@ type OperationDetail = OperationSummary & {
 
 type PeekDrawerState = {
   title: string;
+  eyebrow: string;
+  filter: TxnFilter;
+  rows: TransactionRow[];
+};
+type NetWorthContributor = {
+  account_id: number;
+  account: string;
+  account_type: string;
+  last_four: string | null;
+  start_cents: number;
+  end_cents: number;
+  change_cents: number;
+  change_pct: number | null;
+};
+type NetWorthPeekState = {
   from: string;
   to: string;
-  rows: TransactionRow[];
+  start_cents: number;
+  end_cents: number;
+  change_cents: number;
+  accounts: NetWorthContributor[];
 };
 type AllocationRow = { asset_class: string; market_value_cents: number };
 type TransactionSortKey = "date" | "amount";
@@ -255,6 +278,15 @@ const monthOptions: FilterOption[] = [
 ];
 
 const uncategorizedFilterValue = "__uncategorized__";
+const transactionTypeLabels: Record<string, string> = {
+  expense: "Expenses",
+  income: "Income",
+  refund: "Refunds",
+  transfer: "Transfers",
+  credit_card_payment: "Card payments",
+  investment_flow: "Investment flows",
+  adjustment: "Adjustments",
+};
 const TRANSACTION_PAGE_SIZE = 100;
 const taxonomyStorageKey = "privateFinance.accountTaxonomy.v1";
 const collapsedTaxonomyStorageKey = "privateFinance.collapsedTaxonomy.v1";
@@ -528,13 +560,44 @@ function isMonthInReportPeriod(month: string, period: ReportPeriod, now = new Da
   return month >= startKey && month <= thisMonth;
 }
 
-function categoryTotalsPath(period: ReportPeriod, now = new Date()): string {
-  if (period === "all") return "/api/category-totals";
+function reportPeriodFilter(period: ReportPeriod, now = new Date()): TxnFilter {
+  if (period === "all") return {};
   const year = now.getFullYear();
   const month = now.getMonth();
   const start = period === "this_month" ? new Date(year, month, 1) : period === "this_year" ? new Date(year, 0, 1) : new Date(year, month - 11, 1);
   const formatDate = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
-  return `/api/category-totals?start_date=${formatDate(start)}&end_date=${formatDate(now)}`;
+  return { dateFrom: formatDate(start), dateTo: formatDate(now) };
+}
+
+function aggregatePath(dimension: "by-category" | "by-account" | "timeseries", filter: TxnFilter, bucket?: "day" | "week" | "month"): string {
+  const params = encodeTxnFilter(filter);
+  if (bucket) params.set("bucket", bucket);
+  return `/api/aggregate/${dimension}?${params.toString()}`;
+}
+
+async function loadCategoryAggregates(period: ReportPeriod): Promise<CategoryTotal[]> {
+  const filter = { ...reportPeriodFilter(period), dateBasis: "reporting" as const, types: ["expense", "refund"] };
+  const rows = await api<CategoryAggregateRow[]>(aggregatePath("by-category", filter));
+  return rows.map((row) => ({ ...row, amount_cents: Math.abs(row.total_cents) })).sort((left, right) => right.amount_cents - left.amount_cents || left.category.localeCompare(right.category));
+}
+
+async function loadCashFlowAggregates(): Promise<MonthlyCashFlow[]> {
+  const [incomeRows, expenseRows] = await Promise.all([
+    api<AggregateRow[]>(aggregatePath("timeseries", { types: ["income"] }, "month")),
+    api<AggregateRow[]>(aggregatePath("timeseries", { types: ["expense", "refund"] }, "month")),
+  ]);
+  const months = new Map<string, MonthlyCashFlow>();
+  for (const row of incomeRows) {
+    months.set(row.date.slice(0, 7), { month: row.date.slice(0, 7), income_cents: row.total_cents, expense_cents: 0, net_cents: row.total_cents });
+  }
+  for (const row of expenseRows) {
+    const month = row.date.slice(0, 7);
+    const current = months.get(month) ?? { month, income_cents: 0, expense_cents: 0, net_cents: 0 };
+    current.expense_cents = -row.total_cents;
+    current.net_cents += row.total_cents;
+    months.set(month, current);
+  }
+  return Array.from(months.values()).sort((left, right) => left.month.localeCompare(right.month));
 }
 
 function readStoredJson<T>(key: string, fallback: T): T {
@@ -646,6 +709,15 @@ function BulkActionBar({ count, detail, onClear, children }: { count: number; de
   );
 }
 
+function DrillDownLink({ filter, title, count, className, onPeek, children }: { filter: TxnFilter; title: string; count?: number; className?: string; onPeek: (filter: TxnFilter, title: string) => void; children: ReactNode }) {
+  const drillDown = useDrillDown(filter, title, onPeek);
+  return (
+    <a className={className ? `drillDownLink ${className}` : "drillDownLink"} href={drillDown.href} onClick={drillDown.onClick} title={`Click to preview${count === undefined ? " matching" : ` ${count}`} transaction${count === 1 ? "" : "s"}`}>
+      {children}
+    </a>
+  );
+}
+
 export function App() {
   const initialRoute = useRef(readAppRoute(window.location));
   const [configured, setConfigured] = useState(false);
@@ -663,6 +735,7 @@ export function App() {
   const [expandedOperationId, setExpandedOperationId] = useState<string | null>(null);
   const [expandedOperation, setExpandedOperation] = useState<OperationDetail | null>(null);
   const [peekDrawer, setPeekDrawer] = useState<PeekDrawerState | null>(null);
+  const [netWorthPeek, setNetWorthPeek] = useState<NetWorthPeekState | null>(null);
   const [rules, setRules] = useState<RuleSummary[]>([]);
   const [categoryTotals, setCategoryTotals] = useState<CategoryTotal[]>([]);
   const [cashFlowRows, setCashFlowRows] = useState<MonthlyCashFlow[]>([]);
@@ -705,8 +778,10 @@ export function App() {
   const [selectedTransactionMonthFilters, setSelectedTransactionMonthFilters] = useState<string[]>(() => initialRoute.current.filters.months ?? []);
   const [selectedTransactionYearFilters, setSelectedTransactionYearFilters] = useState<string[]>(() => initialRoute.current.filters.years ?? []);
   const [selectedTransactionCategoryFilters, setSelectedTransactionCategoryFilters] = useState<string[]>(() => initialRoute.current.filters.categories ?? []);
+  const [selectedTransactionTypeFilters, setSelectedTransactionTypeFilters] = useState<string[]>(() => initialRoute.current.filters.types ?? []);
   const [transactionDateFrom, setTransactionDateFrom] = useState(initialRoute.current.filters.dateFrom ?? "");
   const [transactionDateTo, setTransactionDateTo] = useState(initialRoute.current.filters.dateTo ?? "");
+  const [transactionDateBasis, setTransactionDateBasis] = useState<TxnFilter["dateBasis"]>(initialRoute.current.filters.dateBasis);
   const [transactionAmountMin, setTransactionAmountMin] = useState<number | undefined>(initialRoute.current.filters.amountMin);
   const [transactionAmountMax, setTransactionAmountMax] = useState<number | undefined>(initialRoute.current.filters.amountMax);
   const [transactionDirection, setTransactionDirection] = useState<TxnFilter["direction"]>(initialRoute.current.filters.direction);
@@ -751,7 +826,7 @@ export function App() {
     if (!csrf) {
       return;
     }
-    api<CategoryTotal[]>(categoryTotalsPath(reportPeriod))
+    loadCategoryAggregates(reportPeriod)
       .then(setCategoryTotals)
       .catch(() => undefined);
   }, [csrf, reportPeriod]);
@@ -773,6 +848,8 @@ export function App() {
     setSelectedTransactionMonthFilters(routeFilters.months === undefined ? monthOptions.map((month) => month.value) : routeFilters.months);
     setSelectedTransactionYearFilters(routeFilters.years === undefined ? Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))) : routeFilters.years);
     setSelectedTransactionCategoryFilters(routeFilters.categories === undefined ? [...categories.map((category) => String(category.id)), uncategorizedFilterValue] : routeFilters.categories);
+    setSelectedTransactionTypeFilters(routeFilters.types ?? []);
+    setTransactionDateBasis(routeFilters.dateBasis);
     setTransactionFiltersInitialized(true);
   }, [accounts, categories, transactions, transactionFiltersInitialized]);
 
@@ -785,8 +862,10 @@ export function App() {
       setSelectedTransactionMonthFilters(route.filters.months === undefined ? monthOptions.map((month) => month.value) : route.filters.months);
       setSelectedTransactionYearFilters(route.filters.years === undefined ? Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))) : route.filters.years);
       setSelectedTransactionCategoryFilters(route.filters.categories === undefined ? [...categories.map((category) => String(category.id)), uncategorizedFilterValue] : route.filters.categories);
+      setSelectedTransactionTypeFilters(route.filters.types ?? []);
       setTransactionDateFrom(route.filters.dateFrom ?? "");
       setTransactionDateTo(route.filters.dateTo ?? "");
+      setTransactionDateBasis(route.filters.dateBasis);
       setTransactionAmountMin(route.filters.amountMin);
       setTransactionAmountMax(route.filters.amountMax);
       setTransactionDirection(route.filters.direction);
@@ -810,8 +889,10 @@ export function App() {
       months: sameFilterValues(selectedTransactionMonthFilters, allMonths) ? undefined : selectedTransactionMonthFilters,
       years: sameFilterValues(selectedTransactionYearFilters, allYears) ? undefined : selectedTransactionYearFilters,
       categories: sameFilterValues(selectedTransactionCategoryFilters, allCategories) ? undefined : selectedTransactionCategoryFilters,
+      types: selectedTransactionTypeFilters.length > 0 ? selectedTransactionTypeFilters : undefined,
       dateFrom: transactionDateFrom || undefined,
       dateTo: transactionDateTo || undefined,
+      dateBasis: transactionDateBasis,
       amountMin: transactionAmountMin,
       amountMax: transactionAmountMax,
       direction: transactionDirection,
@@ -831,12 +912,14 @@ export function App() {
     focusedAccountId,
     selectedTransactionAccountFilters,
     selectedTransactionCategoryFilters,
+    selectedTransactionTypeFilters,
     selectedTransactionMonthFilters,
     selectedTransactionYearFilters,
     transactionAmountMax,
     transactionAmountMin,
     transactionDateFrom,
     transactionDateTo,
+    transactionDateBasis,
     transactionDirection,
     transactionView,
     transactionFiltersInitialized,
@@ -855,10 +938,12 @@ export function App() {
     selectedTransactionMonthFilters,
     selectedTransactionYearFilters,
     selectedTransactionCategoryFilters,
+    selectedTransactionTypeFilters,
     transactionAmountMax,
     transactionAmountMin,
     transactionDateFrom,
     transactionDateTo,
+    transactionDateBasis,
     transactionDirection,
     transactionSortKey,
     transactionSortDirection,
@@ -912,8 +997,8 @@ export function App() {
       api<ReviewItem[]>("/api/review"),
       api<TransactionRow[]>(`/api/transactions?view=${transactionView}`),
       api<RuleSummary[]>("/api/rules"),
-      api<CategoryTotal[]>(categoryTotalsPath(reportPeriod)),
-      api<MonthlyCashFlow[]>("/api/cash-flow"),
+      loadCategoryAggregates(reportPeriod),
+      loadCashFlowAggregates(),
       api<NetWorthAccount[]>("/api/net-worth/accounts"),
       api<AllocationRow[]>("/api/investments/allocation"),
       api<HoldingRow[]>("/api/investments/holdings"),
@@ -1004,13 +1089,49 @@ export function App() {
     }
   }
 
-  async function openTransactionPeek(from: string, to: string) {
+  async function openTransactionPeek(filter: TxnFilter, title: string) {
     try {
-      const rows = await api<TransactionRow[]>(`/api/transactions?dateFrom=${from}&dateTo=${to}`);
-      setPeekDrawer({ title: `${formatShortDate(from)} – ${formatShortDate(to)}`, from, to, rows: rows.slice(0, 20) });
+      const normalizedFilter = { ...filter, view: "live" as const };
+      const rows = await api<TransactionRow[]>(`/api/transactions?${encodeTxnFilter(normalizedFilter).toString()}`);
+      const sortedRows = normalizedFilter.sort === "amount" ? [...rows].sort((left, right) => Math.abs(right.amount_cents) - Math.abs(left.amount_cents) || right.transaction_date.localeCompare(left.transaction_date)) : rows;
+      const types = new Set(normalizedFilter.types ?? []);
+      const eyebrow = types.has("expense") || types.has("refund") ? "Spending deep dive" : types.has("income") ? "Income deep dive" : "Transaction peek";
+      setPeekDrawer({ title, eyebrow, filter: normalizedFilter, rows: sortedRows.slice(0, 20) });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Transaction preview could not be loaded." });
     }
+  }
+
+  async function openNetWorthPeek(from: string, to: string) {
+    try {
+      const result = await api<NetWorthPeekState>(`/api/snapshots/networth/contributors?from=${from}&to=${to}`);
+      setNetWorthPeek(result);
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Asset changes could not be loaded." });
+    }
+  }
+
+  function openTransactionView(filter: TxnFilter) {
+    const nextFilter = { ...filter, view: filter.view ?? "live" as const };
+    setSelectedTransactionAccountFilters(nextFilter.accounts?.map(Number).filter(Number.isFinite) ?? accounts.map((account) => account.id));
+    setSelectedTransactionMonthFilters(nextFilter.months ?? monthOptions.map((month) => month.value));
+    setSelectedTransactionYearFilters(nextFilter.years ?? transactionYears);
+    setSelectedTransactionCategoryFilters(nextFilter.categories ?? transactionCategoryOptions.map((option) => option.value));
+    setSelectedTransactionTypeFilters(nextFilter.types ?? []);
+    setTransactionDateFrom(nextFilter.dateFrom ?? "");
+    setTransactionDateTo(nextFilter.dateTo ?? "");
+    setTransactionDateBasis(nextFilter.dateBasis);
+    setTransactionAmountMin(nextFilter.amountMin);
+    setTransactionAmountMax(nextFilter.amountMax);
+    setTransactionDirection(nextFilter.direction);
+    setTransactionSearch(nextFilter.search ?? "");
+    setTransactionView(nextFilter.view ?? "live");
+    setTransactionSortKey(nextFilter.sort ?? "date");
+    setTransactionSortDirection(nextFilter.sortDirection ?? "desc");
+    setActiveView("all-accounts");
+    setFocusedAccountId(null);
+    setCategoryEditor(null);
+    window.history.pushState({}, "", routeUrl("all-accounts", null, nextFilter));
   }
 
   function clearAccountForm() {
@@ -2127,16 +2248,19 @@ export function App() {
       .filter(transactionMatchesSearch)
       .filter((transaction) => selectedTransactionMonthFilters.includes(transaction.transaction_date.slice(5, 7)))
       .filter((transaction) => selectedTransactionYearFilters.includes(transaction.transaction_date.slice(0, 4)))
-      .filter((transaction) => selectedTransactionCategoryFilters.includes(transaction.category_id ? String(transaction.category_id) : uncategorizedFilterValue))
-      .filter((transaction) => !transactionDateFrom || transaction.transaction_date >= transactionDateFrom)
-      .filter((transaction) => !transactionDateTo || transaction.transaction_date <= transactionDateTo)
+      .filter((transaction) => transaction.reporting_category_ids.some((categoryId) => selectedTransactionCategoryFilters.includes(categoryId === null ? uncategorizedFilterValue : String(categoryId))))
+      .filter((transaction) => selectedTransactionTypeFilters.length === 0 || selectedTransactionTypeFilters.includes(transaction.transaction_type))
+      .filter((transaction) => {
+        const dates = transactionDateBasis === "reporting" ? transaction.reporting_dates : [transaction.transaction_date];
+        return dates.some((value) => (!transactionDateFrom || value >= transactionDateFrom) && (!transactionDateTo || value <= transactionDateTo));
+      })
       .filter((transaction) => transactionAmountMin === undefined || Math.abs(transaction.amount_cents) >= transactionAmountMin)
       .filter((transaction) => transactionAmountMax === undefined || Math.abs(transaction.amount_cents) <= transactionAmountMax)
       .filter((transaction) => transactionDirection === undefined || (transactionDirection === "inflow" ? transaction.amount_cents > 0 : transaction.amount_cents < 0));
     return [...rows].sort((left, right) => {
       const direction = transactionSortDirection === "asc" ? 1 : -1;
       if (transactionSortKey === "amount") {
-        return (left.amount_cents - right.amount_cents) * direction;
+        return (Math.abs(left.amount_cents) - Math.abs(right.amount_cents)) * direction;
       }
       const dateCompare = left.transaction_date.localeCompare(right.transaction_date);
       return dateCompare === 0 ? (left.id - right.id) * direction : dateCompare * direction;
@@ -2189,6 +2313,25 @@ export function App() {
     transactionFilterChips.push({ key: "accounts", label: selectionSummary("Accounts", selectedTransactionAccountFilters.map(String), accounts.map((account) => ({ value: String(account.id), label: accountOptionLabel(account) }))), onRemove: () => setSelectedTransactionAccountFilters(accounts.map((account) => account.id)) });
   }
 
+  async function saveManualNetWorthSnapshot(accountId: number, snapshotDate: string, balance: string) {
+    const balanceCents = moneyInputToCents(balance);
+    if (!accountId || !snapshotDate || balanceCents === null) {
+      showToast({ tone: "error", message: "Choose an account, date, and valid balance." });
+      return;
+    }
+    try {
+      const result = await api<{ operation_id: string }>("/api/snapshots/networth/manual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-csrf-token": csrf },
+        body: JSON.stringify({ account_id: accountId, snapshot_date: snapshotDate, balance_cents: balanceCents }),
+      });
+      await loadData();
+      showToast({ tone: "success", message: "Manual balance added to net worth history.", operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Manual balance could not be saved." });
+    }
+  }
+
   async function scanImportInbox() {
     setBusyAction("inbox-scan");
     try {
@@ -2236,8 +2379,10 @@ export function App() {
   if (!sameFilterValues(selectedTransactionMonthFilters, monthOptions.map((month) => month.value))) transactionFilterChips.push({ key: "months", label: selectionSummary("Months", selectedTransactionMonthFilters, monthOptions), onRemove: () => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value)) });
   if (!sameFilterValues(selectedTransactionYearFilters, transactionYears)) transactionFilterChips.push({ key: "years", label: selectionSummary("Years", selectedTransactionYearFilters, transactionYears.map((year) => ({ value: year, label: year }))), onRemove: () => setSelectedTransactionYearFilters(transactionYears) });
   if (!sameFilterValues(selectedTransactionCategoryFilters, transactionCategoryOptions.map((option) => option.value))) transactionFilterChips.push({ key: "categories", label: selectionSummary("Categories", selectedTransactionCategoryFilters, transactionCategoryOptions), onRemove: () => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value)) });
+  if (selectedTransactionTypeFilters.length > 0) transactionFilterChips.push({ key: "types", label: selectedTransactionTypeFilters.map((value) => transactionTypeLabels[value] ?? value).join(" + "), onRemove: () => setSelectedTransactionTypeFilters([]) });
   if (transactionDateFrom) transactionFilterChips.push({ key: "date-from", label: `From: ${formatShortDate(transactionDateFrom)}`, onRemove: () => setTransactionDateFrom("") });
   if (transactionDateTo) transactionFilterChips.push({ key: "date-to", label: `Through: ${formatShortDate(transactionDateTo)}`, onRemove: () => setTransactionDateTo("") });
+  if (transactionDateBasis === "reporting") transactionFilterChips.push({ key: "date-basis", label: "Dates: spending allocation", onRemove: () => setTransactionDateBasis(undefined) });
   if (transactionAmountMin !== undefined) transactionFilterChips.push({ key: "amount-min", label: `Minimum: ${formatMoney(transactionAmountMin)}`, onRemove: () => setTransactionAmountMin(undefined) });
   if (transactionAmountMax !== undefined) transactionFilterChips.push({ key: "amount-max", label: `Maximum: ${formatMoney(transactionAmountMax)}`, onRemove: () => setTransactionAmountMax(undefined) });
   if (transactionDirection) transactionFilterChips.push({ key: "direction", label: transactionDirection === "inflow" ? "Inflows" : "Outflows", onRemove: () => setTransactionDirection(undefined) });
@@ -2543,10 +2688,10 @@ export function App() {
             </header>
 
             <section className="metricsGrid overviewMetrics" aria-label="Financial summary">
-              <MetricTile label="Income" value={formatMoney(cashFlowRows.length > 0 ? reportIncomeCents : totalIncomeCents)} tone="green" />
-              <MetricTile label="Expenses" value={formatMoney(cashFlowRows.length > 0 ? reportExpenseCents : totalExpenseCents)} tone="red" />
-              <MetricTile label="Net" value={formatMoney(cashFlowRows.length > 0 ? reportNetCents : netIncomeCents)} tone="neutral" />
-              <MetricTile label="Savings rate" value={`${savingsRate}%`} tone="neutral" />
+              <DrillDownLink filter={{ ...reportPeriodFilter(reportPeriod), types: ["income"] }} title="Income" onPeek={openTransactionPeek}><MetricTile label="Income" value={formatMoney(cashFlowRows.length > 0 ? reportIncomeCents : totalIncomeCents)} tone="green" /></DrillDownLink>
+              <DrillDownLink filter={{ ...reportPeriodFilter(reportPeriod), types: ["expense", "refund"] }} title="Expenses" onPeek={openTransactionPeek}><MetricTile label="Expenses" value={formatMoney(cashFlowRows.length > 0 ? reportExpenseCents : totalExpenseCents)} tone="red" /></DrillDownLink>
+              <DrillDownLink filter={{ ...reportPeriodFilter(reportPeriod), types: ["income", "expense", "refund"] }} title="Net cash flow" onPeek={openTransactionPeek}><MetricTile label="Net" value={formatMoney(cashFlowRows.length > 0 ? reportNetCents : netIncomeCents)} tone="neutral" /></DrillDownLink>
+              <DrillDownLink filter={{ ...reportPeriodFilter(reportPeriod), types: ["income", "expense", "refund"] }} title="Savings-rate transactions" onPeek={openTransactionPeek}><MetricTile label="Savings rate" value={`${savingsRate}%`} tone="neutral" /></DrillDownLink>
             </section>
 
             <section className="dashboardControls overviewTools">
@@ -2616,10 +2761,10 @@ export function App() {
                   </div>
                   <div className="miniRankList">
                     {periodCategoryTotals.slice(0, 4).map((row) => (
-                      <div key={row.category}>
+                      <DrillDownLink key={row.category} filter={{ ...reportPeriodFilter(reportPeriod), dateBasis: "reporting", categories: [row.category_id === null ? uncategorizedFilterValue : String(row.category_id)], types: ["expense", "refund"], sort: "amount", sortDirection: "desc" }} title={`${row.category} spending`} count={row.count} onPeek={openTransactionPeek}>
                         <span>{row.category}</span>
                         <strong>{formatMoney(row.amount_cents)}</strong>
-                      </div>
+                      </DrillDownLink>
                     ))}
                     {periodCategoryTotals.length === 0 ? <p className="emptyText">No categorized expenses in this period yet.</p> : null}
                   </div>
@@ -2634,10 +2779,10 @@ export function App() {
                   </div>
                   <div className="miniRankList">
                     {latestCashFlowRows.map((row) => (
-                      <div key={row.month}>
+                      <DrillDownLink key={row.month} filter={{ months: [row.month.slice(5, 7)], years: [row.month.slice(0, 4)], types: ["income", "expense", "refund"] }} title={`${row.month} cash flow`} onPeek={openTransactionPeek}>
                         <span>{row.month}</span>
                         <strong className={row.net_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(row.net_cents)}</strong>
-                      </div>
+                      </DrillDownLink>
                     ))}
                     {latestCashFlowRows.length === 0 ? <p className="emptyText">Import transactions to build a monthly trend.</p> : null}
                   </div>
@@ -2676,6 +2821,7 @@ export function App() {
                   categoryTotals={periodCategoryTotals}
                   cashFlowRows={periodCashFlowRows}
                   netWorthAccounts={netWorthAccounts}
+                  allAccounts={activeAccounts}
                   allocationRows={allocationRows}
                   holdingRows={holdingRows}
                   selectedHoldingIds={selectedHoldingIds}
@@ -2690,12 +2836,11 @@ export function App() {
                     resetHoldingSelectionAnchor();
                   }}
                   onUpdateHoldingDescription={updateHoldingDescription}
-                  onViewTransactions={(fromDate, toDate) => {
-                    setTransactionDateFrom(fromDate);
-                    setTransactionDateTo(toDate);
-                    navigateToView("all-accounts");
-                  }}
-                  onPeekTransactions={openTransactionPeek}
+                  onSaveManualNetWorthSnapshot={saveManualNetWorthSnapshot}
+                  reportFilter={reportPeriodFilter(reportPeriod)}
+                  onOpenTransactionView={openTransactionView}
+                  onOpenTransactionPeek={openTransactionPeek}
+                  onOpenNetWorthPeek={openNetWorthPeek}
                   onRequestDelete={requestDelete}
                   onConfirmDelete={confirmDelete}
                   onDeleteConfirmTextChange={setDeleteConfirmText}
@@ -4117,7 +4262,7 @@ export function App() {
             <aside className="peekDrawer" aria-label="Matching transactions" onClick={(event) => event.stopPropagation()}>
               <header>
                 <div>
-                  <span className="eyebrow">Transaction peek</span>
+                  <span className="eyebrow">{peekDrawer.eyebrow}</span>
                   <h2>{peekDrawer.title}</h2>
                   <p>{peekDrawer.rows.length === 20 ? "Top 20 matching transactions" : `${peekDrawer.rows.length} matching transaction${peekDrawer.rows.length === 1 ? "" : "s"}`}</p>
                 </div>
@@ -4131,17 +4276,49 @@ export function App() {
                     <strong className={row.amount_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(row.amount_cents)}</strong>
                   </div>
                 ))}
-                {peekDrawer.rows.length === 0 ? <p className="emptyText">No transactions occurred in this range.</p> : null}
+                {peekDrawer.rows.length === 0 ? <p className="emptyText">No transactions match this selection.</p> : null}
               </div>
               <footer>
                 <button className="primaryButton" onClick={() => {
-                  setTransactionDateFrom(peekDrawer.from);
-                  setTransactionDateTo(peekDrawer.to);
-                  setTransactionView("live");
+                  openTransactionView(peekDrawer.filter);
                   setPeekDrawer(null);
-                  navigateToView("all-accounts");
                 }}>Open full view →</button>
               </footer>
+            </aside>
+          </div>
+        ) : null}
+        {netWorthPeek ? (
+          <div className="peekBackdrop" onClick={() => setNetWorthPeek(null)}>
+            <aside className="peekDrawer assetPeekDrawer" aria-label="Net worth account changes" onClick={(event) => event.stopPropagation()}>
+              <header>
+                <div>
+                  <span className="eyebrow">Asset change peek</span>
+                  <h2>{formatShortDate(netWorthPeek.from)} – {formatShortDate(netWorthPeek.to)}</h2>
+                  <p>How checking, savings, brokerage, and other account values changed in this range.</p>
+                </div>
+                <button className="ghostButton compactButton" onClick={() => setNetWorthPeek(null)} aria-label="Close asset change preview"><X size={16} /></button>
+              </header>
+              <section className="assetPeekSummary">
+                <span>Total net-worth change</span>
+                <strong className={netWorthPeek.change_cents < 0 ? "amount negative" : "amount positive"}>{netWorthPeek.change_cents >= 0 ? "+" : ""}{formatMoney(netWorthPeek.change_cents)}</strong>
+                <small>{formatMoney(netWorthPeek.start_cents)} → {formatMoney(netWorthPeek.end_cents)}</small>
+              </section>
+              <div className="assetPeekRows">
+                {netWorthPeek.accounts.map((account) => (
+                  <button type="button" className="assetPeekRow" key={account.account_id} onClick={() => {
+                    openTransactionView({ accounts: [String(account.account_id)], dateFrom: netWorthPeek.from, dateTo: netWorthPeek.to });
+                    setNetWorthPeek(null);
+                  }}>
+                    <div>
+                      <strong>{account.account}{account.last_four ? ` (${account.last_four})` : ""}</strong>
+                      <small>{account.account_type.replaceAll("_", " ")} · {formatMoney(account.start_cents)} → {formatMoney(account.end_cents)}</small>
+                    </div>
+                    <span className={account.change_cents < 0 ? "amount negative" : "amount positive"}>{account.change_cents >= 0 ? "+" : ""}{formatMoney(account.change_cents)}{account.change_pct === null ? "" : ` (${account.change_pct}%)`}</span>
+                  </button>
+                ))}
+                {netWorthPeek.accounts.length === 0 ? <p className="emptyText">No account values changed in this range.</p> : null}
+              </div>
+              <footer><span>Choose an account to open its activity for this date range.</span></footer>
             </aside>
           </div>
         ) : null}
@@ -4255,6 +4432,7 @@ function ReportSurface({
   categoryTotals,
   cashFlowRows,
   netWorthAccounts,
+  allAccounts,
   allocationRows,
   holdingRows,
   selectedHoldingIds,
@@ -4266,8 +4444,11 @@ function ReportSurface({
   onRequestBulkHoldingDelete,
   onClearHoldingSelection,
   onUpdateHoldingDescription,
-  onViewTransactions,
-  onPeekTransactions,
+  onSaveManualNetWorthSnapshot,
+  reportFilter,
+  onOpenTransactionView,
+  onOpenTransactionPeek,
+  onOpenNetWorthPeek,
   onRequestDelete,
   onConfirmDelete,
   onDeleteConfirmTextChange,
@@ -4280,6 +4461,7 @@ function ReportSurface({
   categoryTotals: CategoryTotal[];
   cashFlowRows: MonthlyCashFlow[];
   netWorthAccounts: NetWorthAccount[];
+  allAccounts: AccountSummary[];
   allocationRows: AllocationRow[];
   holdingRows: HoldingRow[];
   selectedHoldingIds: number[];
@@ -4291,52 +4473,57 @@ function ReportSurface({
   onRequestBulkHoldingDelete: (ids: number[]) => void;
   onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
-  onViewTransactions: (fromDate: string, toDate: string) => void;
-  onPeekTransactions: (fromDate: string, toDate: string) => void;
+  onSaveManualNetWorthSnapshot: (accountId: number, snapshotDate: string, balance: string) => Promise<void>;
+  reportFilter: TxnFilter;
+  onOpenTransactionView: (filter: TxnFilter) => void;
+  onOpenTransactionPeek: (filter: TxnFilter, title: string) => void;
+  onOpenNetWorthPeek: (fromDate: string, toDate: string) => void;
   onRequestDelete: (target: DeleteTarget) => void;
   onConfirmDelete: () => Promise<void>;
   onDeleteConfirmTextChange: (value: string) => void;
   onCancelDelete: () => void;
 }) {
   if (activeTab === "Spending") {
-    return <SpendingReport rows={categoryTotals} />;
+    return <SpendingReport rows={categoryTotals} reportFilter={reportFilter} onPeek={onOpenTransactionPeek} />;
   }
   if (activeTab === "Income") {
-    return <IncomeReport income={income} expenses={expenses} net={net} />;
+    return <IncomeReport income={income} expenses={expenses} net={net} reportFilter={reportFilter} onPeek={onOpenTransactionPeek} />;
   }
   if (activeTab === "Net Worth") {
-    return <NetWorthReport accounts={netWorthAccounts} allocationRows={allocationRows} holdingRows={holdingRows} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} deleteTarget={deleteTarget} deleteConfirmText={deleteConfirmText} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onViewTransactions={onViewTransactions} onPeekTransactions={onPeekTransactions} onRequestDelete={onRequestDelete} onConfirmDelete={onConfirmDelete} onDeleteConfirmTextChange={onDeleteConfirmTextChange} onCancelDelete={onCancelDelete} />;
+    return <NetWorthReport accounts={netWorthAccounts} allAccounts={allAccounts} allocationRows={allocationRows} holdingRows={holdingRows} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} deleteTarget={deleteTarget} deleteConfirmText={deleteConfirmText} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onSaveManualNetWorthSnapshot={onSaveManualNetWorthSnapshot} onViewTransactions={(fromDate, toDate) => onOpenTransactionView({ dateFrom: fromDate, dateTo: toDate })} onPeekNetWorth={onOpenNetWorthPeek} onRequestDelete={onRequestDelete} onConfirmDelete={onConfirmDelete} onDeleteConfirmTextChange={onDeleteConfirmTextChange} onCancelDelete={onCancelDelete} />;
   }
   if (activeTab === "Cash Flow") {
-    return <MonthlyCashFlowReport rows={cashFlowRows} income={income} expenses={expenses} net={net} />;
+    return <MonthlyCashFlowReport rows={cashFlowRows} income={income} expenses={expenses} net={net} reportFilter={reportFilter} onPeek={onOpenTransactionPeek} />;
   }
   return (
     <div className="reportStack">
       <CashFlowGraphic income={income} expenses={expenses} net={net} />
       <div className="reportMiniGrid">
-        <ReportStat label="Tracked income" value={formatMoney(income)} />
-        <ReportStat label="Tracked expenses" value={formatMoney(expenses)} />
-        <ReportStat label="Tracked net" value={formatMoney(net)} />
+        <DrillDownLink filter={{ ...reportFilter, types: ["income"] }} title="Tracked income" onPeek={onOpenTransactionPeek}><ReportStat label="Tracked income" value={formatMoney(income)} /></DrillDownLink>
+        <DrillDownLink filter={{ ...reportFilter, types: ["expense", "refund"] }} title="Tracked expenses" onPeek={onOpenTransactionPeek}><ReportStat label="Tracked expenses" value={formatMoney(expenses)} /></DrillDownLink>
+        <DrillDownLink filter={{ ...reportFilter, types: ["income", "expense", "refund"] }} title="Tracked cash flow" onPeek={onOpenTransactionPeek}><ReportStat label="Tracked net" value={formatMoney(net)} /></DrillDownLink>
       </div>
     </div>
   );
 }
 
-function SpendingReport({ rows }: { rows: CategoryTotal[] }) {
+function SpendingReport({ rows, reportFilter, onPeek }: { rows: CategoryTotal[]; reportFilter: TxnFilter; onPeek: (filter: TxnFilter, title: string) => void }) {
   const max = Math.max(...rows.map((row) => row.amount_cents), 1);
+  const total = rows.reduce((sum, row) => sum + row.amount_cents, 0);
   return (
     <div className="reportStack">
       <div className="barList">
-        {rows.map((row) => (
-          <div className="barRow" key={row.category}>
+        {rows.map((row, index) => (
+          <DrillDownLink className="barRow spendingBarRow" key={row.category} filter={{ ...reportFilter, dateBasis: "reporting", categories: [row.category_id === null ? uncategorizedFilterValue : String(row.category_id)], types: ["expense", "refund"], sort: "amount", sortDirection: "desc" }} title={`${row.category} spending`} count={row.count} onPeek={onPeek}>
             <div>
-              <strong>{row.category}</strong>
+              <strong>#{index + 1} {row.category}</strong>
               <span>{formatMoney(row.amount_cents)}</span>
             </div>
-            <div className="barTrack">
-              <div style={{ width: `${Math.max(4, Math.round((row.amount_cents / max) * 100))}%` }} />
+            <small className="spendingComparison">{total > 0 ? Math.round((row.amount_cents / total) * 100) : 0}% of categorized spending · {Math.round((row.amount_cents / max) * 100)}% of the largest category</small>
+            <div className="barTrack blue">
+              <div style={{ width: `${Math.max(4, Math.round((row.amount_cents / max) * 100))}%`, backgroundColor: `hsl(222 68% ${Math.min(68, 46 + index * 3)}%)` }} />
             </div>
-          </div>
+          </DrillDownLink>
         ))}
         {rows.length === 0 ? <p className="emptyText">No categorized expenses yet. Categorize and confirm transactions to populate this report.</p> : null}
       </div>
@@ -4344,7 +4531,7 @@ function SpendingReport({ rows }: { rows: CategoryTotal[] }) {
   );
 }
 
-function MonthlyCashFlowReport({ rows, income, expenses, net }: { rows: MonthlyCashFlow[]; income: number; expenses: number; net: number }) {
+function MonthlyCashFlowReport({ rows, income, expenses, net, reportFilter, onPeek }: { rows: MonthlyCashFlow[]; income: number; expenses: number; net: number; reportFilter: TxnFilter; onPeek: (filter: TxnFilter, title: string) => void }) {
   const yearly = new Map<string, { income_cents: number; expense_cents: number; net_cents: number }>();
   for (const row of rows) {
     const year = row.month.slice(0, 4);
@@ -4362,9 +4549,9 @@ function MonthlyCashFlowReport({ rows, income, expenses, net }: { rows: MonthlyC
     <div className="reportStack">
       <CashFlowGraphic income={income} expenses={expenses} net={net} />
       <div className="reportMiniGrid">
-        <ReportStat label="Period income" value={formatMoney(income)} />
-        <ReportStat label="Period expenses" value={formatMoney(expenses)} />
-        <ReportStat label="Period net" value={formatMoney(net)} />
+        <DrillDownLink filter={{ ...reportFilter, types: ["income"] }} title="Period income" onPeek={onPeek}><ReportStat label="Period income" value={formatMoney(income)} /></DrillDownLink>
+        <DrillDownLink filter={{ ...reportFilter, types: ["expense", "refund"] }} title="Period expenses" onPeek={onPeek}><ReportStat label="Period expenses" value={formatMoney(expenses)} /></DrillDownLink>
+        <DrillDownLink filter={{ ...reportFilter, types: ["income", "expense", "refund"] }} title="Period cash flow" onPeek={onPeek}><ReportStat label="Period net" value={formatMoney(net)} /></DrillDownLink>
       </div>
       <div className="reportTable">
         <div className="reportTableHeader">
@@ -4374,12 +4561,12 @@ function MonthlyCashFlowReport({ rows, income, expenses, net }: { rows: MonthlyC
           <span>Net</span>
         </div>
         {rows.slice(-12).map((row) => (
-          <div className="reportTableRow" key={row.month}>
+          <DrillDownLink className="reportTableRow" key={row.month} filter={{ months: [row.month.slice(5, 7)], years: [row.month.slice(0, 4)], types: ["income", "expense", "refund"] }} title={`${row.month} cash flow`} onPeek={onPeek}>
             <strong>{row.month}</strong>
             <span>{formatMoney(row.income_cents)}</span>
             <span>{formatMoney(row.expense_cents)}</span>
             <span className={row.net_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(row.net_cents)}</span>
-          </div>
+          </DrillDownLink>
         ))}
         {rows.length === 0 ? <p className="emptyText">No cash-flow months in this period yet.</p> : null}
       </div>
@@ -4392,12 +4579,12 @@ function MonthlyCashFlowReport({ rows, income, expenses, net }: { rows: MonthlyC
             <span>Net</span>
           </div>
           {yearlyRows.map((row) => (
-            <div className="reportTableRow" key={row.year}>
+            <DrillDownLink className="reportTableRow" key={row.year} filter={{ years: [row.year], types: ["income", "expense", "refund"] }} title={`${row.year} cash flow`} onPeek={onPeek}>
               <strong>{row.year}</strong>
               <span>{formatMoney(row.income_cents)}</span>
               <span>{formatMoney(row.expense_cents)}</span>
               <span className={row.net_cents < 0 ? "amount negative" : "amount positive"}>{formatMoney(row.net_cents)}</span>
-            </div>
+            </DrillDownLink>
           ))}
         </div>
       ) : null}
@@ -4405,21 +4592,21 @@ function MonthlyCashFlowReport({ rows, income, expenses, net }: { rows: MonthlyC
   );
 }
 
-function IncomeReport({ income, expenses, net }: { income: number; expenses: number; net: number }) {
+function IncomeReport({ income, expenses, net, reportFilter, onPeek }: { income: number; expenses: number; net: number; reportFilter: TxnFilter; onPeek: (filter: TxnFilter, title: string) => void }) {
   const max = Math.max(income, expenses, Math.abs(net), 1);
   return (
     <div className="reportStack">
       <div className="compareGrid">
-        <CompareCard label="Income" value={income} max={max} tone="green" />
-        <CompareCard label="Expenses" value={expenses} max={max} tone="red" />
-        <CompareCard label="Net" value={net} max={max} tone={net < 0 ? "red" : "green"} />
+        <DrillDownLink filter={{ ...reportFilter, types: ["income"] }} title="Income" onPeek={onPeek}><CompareCard label="Income" value={income} max={max} tone="green" /></DrillDownLink>
+        <DrillDownLink filter={{ ...reportFilter, types: ["expense", "refund"] }} title="Expenses" onPeek={onPeek}><CompareCard label="Expenses" value={expenses} max={max} tone="red" /></DrillDownLink>
+        <DrillDownLink filter={{ ...reportFilter, types: ["income", "expense", "refund"] }} title="Net cash flow" onPeek={onPeek}><CompareCard label="Net" value={net} max={max} tone={net < 0 ? "red" : "green"} /></DrillDownLink>
       </div>
       <p className="emptyText">Income uses transactions marked as income. Expenses use transactions marked as expense, with refunds reducing total expenses.</p>
     </div>
   );
 }
 
-function NetWorthHistoryChart({ onViewTransactions, onPeekTransactions }: { onViewTransactions: (fromDate: string, toDate: string) => void; onPeekTransactions: (fromDate: string, toDate: string) => void }) {
+function NetWorthHistoryChart({ onViewTransactions, onPeekNetWorth }: { onViewTransactions: (fromDate: string, toDate: string) => void; onPeekNetWorth: (fromDate: string, toDate: string) => void }) {
   const [period, setPeriod] = useState<NetWorthPeriod>(() => readAppRoute(window.location).filters.netWorthPeriod ?? "6M");
   const [data, setData] = useState<NetWorthSeriesResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -4427,6 +4614,7 @@ function NetWorthHistoryChart({ onViewTransactions, onPeekTransactions }: { onVi
   const [dragStart, setDragStart] = useState<number | null>(null);
   const [dragEnd, setDragEnd] = useState<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [dragMode, setDragMode] = useState<"new" | "start" | "end" | null>(null);
   const [selectionStats, setSelectionStats] = useState<NetWorthStats | null>(null);
 
   useEffect(() => {
@@ -4437,6 +4625,7 @@ function NetWorthHistoryChart({ onViewTransactions, onPeekTransactions }: { onVi
     setDragStart(null);
     setDragEnd(null);
     setIsDragging(false);
+    setDragMode(null);
     api<NetWorthSeriesResponse>(`/api/snapshots/networth?${range.params.toString()}`)
       .then((result) => {
         if (!cancelled) setData(result);
@@ -4459,6 +4648,7 @@ function NetWorthHistoryChart({ onViewTransactions, onPeekTransactions }: { onVi
       setDragStart(null);
       setDragEnd(null);
       setIsDragging(false);
+      setDragMode(null);
     }
     window.addEventListener("keydown", clearSelection);
     return () => window.removeEventListener("keydown", clearSelection);
@@ -4473,22 +4663,21 @@ function NetWorthHistoryChart({ onViewTransactions, onPeekTransactions }: { onVi
 
   const rows = data?.series ?? [];
   const width = 800;
-  const height = 280;
-  const left = 58;
+  const height = 300;
+  const left = 72;
   const right = 18;
   const top = 24;
-  const bottom = 36;
+  const bottom = 44;
   const chartWidth = width - left - right;
   const chartHeight = height - top - bottom;
   const values = rows.map((row) => row.total_cents);
-  const rawMinimum = values.length > 0 ? Math.min(...values) : 0;
   const rawMaximum = values.length > 0 ? Math.max(...values) : 0;
-  const chartPadding = Math.max((rawMaximum - rawMinimum) * 0.08, Math.abs(rawMaximum) * 0.01, 100);
-  const minimum = rawMinimum - chartPadding;
-  const maximum = rawMaximum + chartPadding;
+  const minimum = 0;
+  const axisStep = niceAxisStep(Math.max(rawMaximum, 100), 4);
+  const maximum = Math.max(axisStep, Math.ceil(Math.max(rawMaximum, 0) / axisStep) * axisStep);
   const span = Math.max(maximum - minimum, 1);
   const xFor = (index: number) => left + (rows.length <= 1 ? chartWidth / 2 : (index / (rows.length - 1)) * chartWidth);
-  const yFor = (value: number) => top + ((maximum - value) / span) * chartHeight;
+  const yFor = (value: number) => top + ((maximum - Math.max(0, value)) / span) * chartHeight;
   const linePath = rows.map((row, index) => `${index === 0 ? "M" : "L"} ${xFor(index)} ${yFor(row.total_cents)}`).join(" ");
   const areaPath = rows.length > 0 ? `${linePath} L ${xFor(rows.length - 1)} ${top + chartHeight} L ${xFor(0)} ${top + chartHeight} Z` : "";
   const latest = rows.at(-1)?.total_cents ?? 0;
@@ -4497,6 +4686,8 @@ function NetWorthHistoryChart({ onViewTransactions, onPeekTransactions }: { onVi
   const activeIndex = hoverIndex ?? dragEnd;
   const selectedStart = dragStart === null || dragEnd === null ? null : Math.min(dragStart, dragEnd);
   const selectedEnd = dragStart === null || dragEnd === null ? null : Math.max(dragStart, dragEnd);
+  const yTicks = Array.from({ length: Math.round(maximum / axisStep) + 1 }, (_, index) => index * axisStep);
+  const xTickIndexes = Array.from(new Set(Array.from({ length: Math.min(5, rows.length) }, (_, index) => Math.round((index / Math.max(1, Math.min(5, rows.length) - 1)) * Math.max(0, rows.length - 1)))));
 
   function pointerIndex(event: ReactPointerEvent<SVGSVGElement>) {
     if (rows.length <= 1) return 0;
@@ -4532,6 +4723,23 @@ function NetWorthHistoryChart({ onViewTransactions, onPeekTransactions }: { onVi
           ))}
         </div>
       </div>
+      {selectionStats ? (
+        <div className="netWorthSelectionBanner">
+          <div className="selectionGain">
+            <strong className={selectionStats.change_cents < 0 ? "amount negative" : "amount positive"}>{selectionStats.change_cents >= 0 ? "+" : ""}{formatMoney(selectionStats.change_cents)}{selectionStats.change_pct === null ? "" : ` (${selectionStats.change_pct}%)`}</strong>
+            <span>{formatShortDate(selectionStats.from)} – {formatShortDate(selectionStats.to)}</span>
+          </div>
+          <div className="selectionExtremes">
+            <span>High <strong>{formatMoney(selectionStats.max_cents)}</strong> · {formatShortDate(selectionStats.max_date)}</span>
+            <span>Low <strong>{formatMoney(selectionStats.min_cents)}</strong> · {formatShortDate(selectionStats.min_date)}</span>
+          </div>
+          <div className="selectionActions">
+            <button type="button" className="secondaryButton compactButton" onClick={() => onPeekNetWorth(selectionStats.from, selectionStats.to)}>See asset changes</button>
+            <button type="button" className="ghostButton compactButton" onClick={() => onViewTransactions(selectionStats.from, selectionStats.to)}>View ledger activity</button>
+            <button type="button" className="ghostButton compactButton" onClick={() => { setSelectionStats(null); setDragStart(null); setDragEnd(null); setIsDragging(false); setDragMode(null); }} aria-label="Clear selected net worth range"><X size={14} /></button>
+          </div>
+        </div>
+      ) : null}
       {loading ? <p className="emptyText">Loading net worth history…</p> : rows.length === 0 ? <p className="emptyText">Import account balances or brokerage positions to build net worth history.</p> : (
         <div className="netWorthChartWrap">
           <svg
@@ -4542,22 +4750,42 @@ function NetWorthHistoryChart({ onViewTransactions, onPeekTransactions }: { onVi
             onPointerDown={(event) => {
               const index = pointerIndex(event);
               event.currentTarget.setPointerCapture(event.pointerId);
-              setDragStart(index);
-              setDragEnd(index);
+              if (selectedStart !== null && selectedEnd !== null && Math.abs(index - selectedStart) <= 1) {
+                setDragStart(selectedStart);
+                setDragEnd(selectedEnd);
+                setDragMode("start");
+              } else if (selectedStart !== null && selectedEnd !== null && Math.abs(index - selectedEnd) <= 1) {
+                setDragStart(selectedStart);
+                setDragEnd(selectedEnd);
+                setDragMode("end");
+              } else {
+                setDragStart(index);
+                setDragEnd(index);
+                setDragMode("new");
+                setSelectionStats(null);
+              }
               setIsDragging(true);
-              setSelectionStats(null);
             }}
             onPointerMove={(event) => {
               const index = pointerIndex(event);
               setHoverIndex(index);
-              if (isDragging) setDragEnd(index);
+              if (isDragging) {
+                if (dragMode === "start") setDragStart(index);
+                else setDragEnd(index);
+              }
             }}
             onPointerUp={(event) => {
-              if (!isDragging || dragStart === null) return;
+              if (!isDragging || dragStart === null || dragEnd === null) return;
               const index = pointerIndex(event);
-              setDragEnd(index);
-              void finishSelection(dragStart, index);
+              const nextStart = dragMode === "start" ? index : dragStart;
+              const nextEnd = dragMode === "end" || dragMode === "new" ? index : dragEnd;
+              const normalizedStart = Math.min(nextStart, nextEnd);
+              const normalizedEnd = Math.max(nextStart, nextEnd);
+              setDragStart(normalizedStart);
+              setDragEnd(normalizedEnd);
+              void finishSelection(normalizedStart, normalizedEnd);
               setIsDragging(false);
+              setDragMode(null);
             }}
             onPointerLeave={() => setHoverIndex(null)}
           >
@@ -4567,14 +4795,29 @@ function NetWorthHistoryChart({ onViewTransactions, onPeekTransactions }: { onVi
                 <stop offset="100%" stopColor="#3b6ae8" stopOpacity="0.03" />
               </linearGradient>
             </defs>
-            <line x1={left} x2={width - right} y1={top + chartHeight} y2={top + chartHeight} className="chartAxis" />
-            <text x={left} y={height - 10} className="chartLabel">{formatShortDate(rows[0].date)}</text>
-            <text x={width - right} y={height - 10} textAnchor="end" className="chartLabel">{formatShortDate(rows.at(-1)?.date)}</text>
-            <text x={left - 8} y={top + 4} textAnchor="end" className="chartLabel">{formatCompactMoney(maximum)}</text>
-            <text x={left - 8} y={top + chartHeight} textAnchor="end" className="chartLabel">{formatCompactMoney(minimum)}</text>
-            {selectedStart !== null && selectedEnd !== null ? <rect x={xFor(selectedStart)} y={top} width={Math.max(2, xFor(selectedEnd) - xFor(selectedStart))} height={chartHeight} className="chartSelection" /> : null}
+            {yTicks.map((tick) => (
+              <g key={tick}>
+                <line x1={left} x2={width - right} y1={yFor(tick)} y2={yFor(tick)} className={tick === 0 ? "chartAxis" : "chartGridLine"} />
+                <text x={left - 10} y={yFor(tick) + 4} textAnchor="end" className="chartLabel">{formatCompactMoney(tick)}</text>
+              </g>
+            ))}
+            {xTickIndexes.map((index) => (
+              <g key={rows[index].date}>
+                <line x1={xFor(index)} x2={xFor(index)} y1={top + chartHeight} y2={top + chartHeight + 5} className="chartAxis" />
+                <text x={xFor(index)} y={height - 12} textAnchor={index === 0 ? "start" : index === rows.length - 1 ? "end" : "middle"} className="chartLabel">{formatChartAxisDate(rows[index].date, period)}</text>
+              </g>
+            ))}
             <path d={areaPath} fill="url(#netWorthFill)" />
             <path d={linePath} className="netWorthLine" />
+            {selectedStart !== null && selectedEnd !== null ? (
+              <g>
+                <rect x={xFor(selectedStart)} y={top} width={Math.max(2, xFor(selectedEnd) - xFor(selectedStart))} height={chartHeight} className="chartSelection" />
+                <line x1={xFor(selectedStart)} x2={xFor(selectedStart)} y1={top} y2={top + chartHeight} className="chartSelectionHandle" />
+                <line x1={xFor(selectedEnd)} x2={xFor(selectedEnd)} y1={top} y2={top + chartHeight} className="chartSelectionHandle" />
+                <circle cx={xFor(selectedStart)} cy={top + chartHeight / 2} r="7" className="chartSelectionGrip" />
+                <circle cx={xFor(selectedEnd)} cy={top + chartHeight / 2} r="7" className="chartSelectionGrip" />
+              </g>
+            ) : null}
             {activeIndex !== null && rows[activeIndex] ? (
               <g>
                 <line x1={xFor(activeIndex)} x2={xFor(activeIndex)} y1={top} y2={top + chartHeight} className="chartHoverLine" />
@@ -4590,19 +4833,6 @@ function NetWorthHistoryChart({ onViewTransactions, onPeekTransactions }: { onVi
           <small>Drag across the chart to compare a range. Balance gaps are forward-filled from the latest snapshot.</small>
         </div>
       )}
-      {selectionStats ? (
-        <div className="netWorthSelectionStats">
-          <div>
-            <strong>{formatShortDate(selectionStats.from)} – {formatShortDate(selectionStats.to)}</strong>
-            <span className={selectionStats.change_cents < 0 ? "amount negative" : "amount positive"}>{selectionStats.change_cents >= 0 ? "+" : ""}{formatMoney(selectionStats.change_cents)}{selectionStats.change_pct === null ? "" : ` (${selectionStats.change_pct}%)`}</span>
-          </div>
-          <span>High {formatMoney(selectionStats.max_cents)} ({formatShortDate(selectionStats.max_date)})</span>
-          <span>Low {formatMoney(selectionStats.min_cents)} ({formatShortDate(selectionStats.min_date)})</span>
-          <button type="button" className="secondaryButton compactButton" onClick={() => onPeekTransactions(selectionStats.from, selectionStats.to)}>Peek transactions</button>
-          <button type="button" className="secondaryButton compactButton" onClick={() => onViewTransactions(selectionStats.from, selectionStats.to)}>View transactions →</button>
-          <button type="button" className="ghostButton compactButton" onClick={() => { setSelectionStats(null); setDragStart(null); setDragEnd(null); setIsDragging(false); }}>Clear</button>
-        </div>
-      ) : null}
     </section>
   );
 }
@@ -4626,6 +4856,19 @@ function formatCompactMoney(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 }).format(cents / 100);
 }
 
+function niceAxisStep(maximum: number, targetIntervals: number): number {
+  const roughStep = maximum / Math.max(1, targetIntervals);
+  const magnitude = 10 ** Math.floor(Math.log10(Math.max(roughStep, 1)));
+  const normalized = roughStep / magnitude;
+  const niceNormalized = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return niceNormalized * magnitude;
+}
+
+function formatChartAxisDate(value: string, period: NetWorthPeriod): string {
+  const parsed = new Date(`${value}T00:00:00`);
+  return new Intl.DateTimeFormat("en-US", period === "1Y" || period === "Max" ? { month: "short", year: "2-digit" } : { month: "short", day: "numeric" }).format(parsed);
+}
+
 function formatOperationValue(value: unknown) {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "object") return JSON.stringify(value);
@@ -4644,8 +4887,17 @@ function formatOperationDiffValue(operation: OperationSummary, field: string, va
   return formatOperationValue(value);
 }
 
+function accountSparklinePoints(rows: NetWorthPoint[], accountId: number): string {
+  const values = rows.map((row) => row.by_account[String(accountId)] ?? 0);
+  if (values.length === 0) return "";
+  const minimum = Math.min(...values);
+  const span = Math.max(Math.max(...values) - minimum, 1);
+  return values.map((value, index) => `${values.length === 1 ? 50 : (index / (values.length - 1)) * 100},${28 - ((value - minimum) / span) * 24}`).join(" ");
+}
+
 function NetWorthReport({
   accounts,
+  allAccounts,
   allocationRows,
   holdingRows,
   selectedHoldingIds,
@@ -4657,14 +4909,16 @@ function NetWorthReport({
   onRequestBulkHoldingDelete,
   onClearHoldingSelection,
   onUpdateHoldingDescription,
+  onSaveManualNetWorthSnapshot,
   onViewTransactions,
-  onPeekTransactions,
+  onPeekNetWorth,
   onRequestDelete,
   onConfirmDelete,
   onDeleteConfirmTextChange,
   onCancelDelete,
 }: {
   accounts: NetWorthAccount[];
+  allAccounts: AccountSummary[];
   allocationRows: AllocationRow[];
   holdingRows: HoldingRow[];
   selectedHoldingIds: number[];
@@ -4676,8 +4930,9 @@ function NetWorthReport({
   onRequestBulkHoldingDelete: (ids: number[]) => void;
   onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
+  onSaveManualNetWorthSnapshot: (accountId: number, snapshotDate: string, balance: string) => Promise<void>;
   onViewTransactions: (fromDate: string, toDate: string) => void;
-  onPeekTransactions: (fromDate: string, toDate: string) => void;
+  onPeekNetWorth: (fromDate: string, toDate: string) => void;
   onRequestDelete: (target: DeleteTarget) => void;
   onConfirmDelete: () => Promise<void>;
   onDeleteConfirmTextChange: (value: string) => void;
@@ -4686,26 +4941,58 @@ function NetWorthReport({
   const total = accounts.reduce((sum, row) => sum + row.market_value_cents, 0);
   const max = Math.max(...accounts.map((row) => row.market_value_cents), 1);
   const sharedPriceDate = holdingRows.find((row) => row.price_date)?.price_date ?? "-";
+  const [manualAccountId, setManualAccountId] = useState<number | "">(allAccounts[0]?.id ?? "");
+  const [manualSnapshotDate, setManualSnapshotDate] = useState(localIsoDate(new Date()));
+  const [manualBalance, setManualBalance] = useState("");
+  const [accountTrendRows, setAccountTrendRows] = useState<NetWorthPoint[]>([]);
+  useEffect(() => {
+    const range = netWorthPeriodRange("6M");
+    api<NetWorthSeriesResponse>(`/api/snapshots/networth?${range.params.toString()}`).then((result) => setAccountTrendRows(result.series)).catch(() => setAccountTrendRows([]));
+  }, []);
   return (
     <div className="reportStack">
-      <NetWorthHistoryChart onViewTransactions={onViewTransactions} onPeekTransactions={onPeekTransactions} />
+      <NetWorthHistoryChart onViewTransactions={onViewTransactions} onPeekNetWorth={onPeekNetWorth} />
+      <section className="manualSnapshotPanel">
+        <div>
+          <strong>Add a manual balance</strong>
+          <span>Use this for a home, vehicle, cash account, or any account without an imported balance.</span>
+        </div>
+        <label>
+          Account
+          <select value={manualAccountId} onChange={(event) => setManualAccountId(Number(event.target.value) || "")}>
+            <option value="">Choose account</option>
+            {allAccounts.map((account) => <option value={account.id} key={account.id}>{accountOptionLabel(account)}</option>)}
+          </select>
+        </label>
+        <label>
+          Date
+          <input type="date" value={manualSnapshotDate} onChange={(event) => setManualSnapshotDate(event.target.value)} />
+        </label>
+        <label>
+          Balance
+          <input inputMode="decimal" value={manualBalance} onChange={(event) => setManualBalance(event.target.value)} placeholder="0.00" />
+        </label>
+        <button type="button" className="secondaryButton compactButton" onClick={() => { if (manualAccountId) void onSaveManualNetWorthSnapshot(manualAccountId, manualSnapshotDate, manualBalance); }}>Save balance</button>
+      </section>
       <div className="reportMiniGrid">
         <ReportStat label="Latest investment value" value={formatMoney(total)} />
         <ReportStat label="Accounts with snapshots" value={String(accounts.length)} />
         <ReportStat label="Allocation groups" value={String(allocationRows.length)} />
       </div>
       <div className="barList">
-        {accounts.map((row) => (
-          <div className="barRow" key={row.account_id}>
+        {accounts.map((row) => {
+          const sparkline = accountSparklinePoints(accountTrendRows, row.account_id);
+          return <div className="barRow" key={row.account_id}>
             <div>
               <strong>{row.account}</strong>
               <span>{formatMoney(row.market_value_cents)} / {formatShortDate(row.latest_date)}</span>
             </div>
+            {sparkline ? <svg className="accountSparkline" viewBox="0 0 100 32" role="img" aria-label={`${row.account} six-month balance trend`}><polyline points={sparkline} /></svg> : null}
             <div className="barTrack blue">
               <div style={{ width: `${Math.max(4, Math.round((row.market_value_cents / max) * 100))}%` }} />
             </div>
           </div>
-        ))}
+        })}
         {accounts.length === 0 ? <p className="emptyText">No investment snapshots yet. Commit a brokerage positions CSV to populate net worth.</p> : null}
       </div>
       <div className="holdingsPanel">

@@ -5,7 +5,12 @@ from sqlalchemy.orm import Session
 
 from app.db import Base
 from app.models import Account, HoldingSnapshot, NetWorthSnapshot, Transaction
-from app.services.snapshots import backfill_net_worth_snapshots, net_worth_series, net_worth_stats, upsert_net_worth_snapshot
+from app.services.snapshots import backfill_net_worth_snapshots, net_worth_contributors, net_worth_series, net_worth_stats, upsert_net_worth_snapshot
+from app.main import save_manual_net_worth_snapshot
+from app.models import SessionToken
+from app.schemas import NetWorthSnapshotUpsert
+from app.services.operation_history import undo_operation
+from starlette.requests import Request
 
 
 def _engine():
@@ -91,3 +96,44 @@ def test_month_bucket_edges_and_range_statistics():
         assert stats["change_cents"] == 700
         assert stats["best_day"] == {"date": "2026-01-15", "delta_cents": 1000}
         assert stats["worst_day"] == {"date": "2026-02-01", "delta_cents": -300}
+
+
+def test_manual_snapshot_is_journaled_and_undoable():
+    with Session(_engine()) as db:
+        account = Account(display_name="House", account_type="asset")
+        db.add(account)
+        db.commit()
+        request = Request({"type": "http", "headers": [(b"x-csrf-token", b"csrf")]})
+        session = SessionToken(user_id=7, csrf_token="csrf")
+
+        result = save_manual_net_worth_snapshot(NetWorthSnapshotUpsert(account_id=account.id, snapshot_date=date(2026, 7, 12), balance_cents=45000000), request, session, db)
+
+        snapshot = db.query(NetWorthSnapshot).one()
+        assert snapshot.source == "manual"
+        assert snapshot.balance_cents == 45000000
+        undo_operation(db, operation_id=result["operation_id"], actor="user:7")
+        db.commit()
+        assert db.query(NetWorthSnapshot).count() == 0
+
+
+def test_net_worth_contributors_rank_accounts_by_asset_change():
+    with Session(_engine()) as db:
+        checking = Account(display_name="Checking", account_type="checking", last_four="1234")
+        brokerage = Account(display_name="Brokerage", account_type="brokerage", last_four="9876")
+        db.add_all([checking, brokerage])
+        db.flush()
+        db.add_all([
+            NetWorthSnapshot(account_id=checking.id, snapshot_date=date(2026, 7, 1), balance_cents=10000, source="manual"),
+            NetWorthSnapshot(account_id=checking.id, snapshot_date=date(2026, 7, 3), balance_cents=13000, source="manual"),
+            NetWorthSnapshot(account_id=brokerage.id, snapshot_date=date(2026, 7, 1), balance_cents=50000, source="manual"),
+            NetWorthSnapshot(account_id=brokerage.id, snapshot_date=date(2026, 7, 3), balance_cents=58000, source="manual"),
+        ])
+        db.commit()
+
+        result = net_worth_contributors(db, from_date=date(2026, 7, 1), to_date=date(2026, 7, 3))
+
+        assert result["change_cents"] == 11000
+        assert [(row["account"], row["change_cents"], row["last_four"]) for row in result["accounts"]] == [
+            ("Brokerage", 8000, "9876"),
+            ("Checking", 3000, "1234"),
+        ]

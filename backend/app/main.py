@@ -23,16 +23,17 @@ from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
 from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingSnapshot, ImportBatch, ImportPreset, Institution, NetWorthSnapshot, SecurityMetadata, SecurityPrice, SessionToken, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, OperationBulkUpdateRequest, PasswordChangeRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
+from .services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_timeseries
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
 from .services.importers import commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
 from .services.import_inbox import confirm_pending_import, discard_pending_import, inbox_directory, pending_import_batches, scan_import_inbox
 from .services.mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .services.operation_history import OperationConflict, list_operations, operation_detail, undo_operation
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
-from .services.snapshots import net_worth_series, net_worth_stats, refresh_holding_net_worth_snapshot
+from .services.snapshots import net_worth_contributors, net_worth_series, net_worth_stats, refresh_holding_net_worth_snapshot, upsert_net_worth_snapshot
 from .services.transaction_filters import parse_csv_ints, parse_csv_values, transaction_filter_conditions
 from .services.transaction_queries import get_live_transaction, live_transaction_filters, live_transaction_select
 from .services.transfers import confirm_transfer_link, create_transfer_suggestions, list_unconfirmed_transfers, reject_transfer_link
@@ -52,6 +53,44 @@ UNASSIGNED_ACCOUNT_MARKER = "SYSTEM"
 
 def actor_for_session(session: SessionToken) -> str:
     return f"user:{session.user_id}"
+
+
+def transaction_filter_dependency(
+    accounts: str | None = None,
+    categories: str | None = None,
+    months: str | None = None,
+    years: str | None = None,
+    date_from: date | None = Query(default=None, alias="dateFrom"),
+    date_to: date | None = Query(default=None, alias="dateTo"),
+    date_basis: Literal["transaction", "reporting"] = Query(default="transaction", alias="dateBasis"),
+    amount_min: int | None = Query(default=None, alias="amountMin", ge=0),
+    amount_max: int | None = Query(default=None, alias="amountMax", ge=0),
+    direction: Literal["inflow", "outflow"] | None = None,
+    types: str | None = None,
+    search: str | None = None,
+    view: Literal["live", "trash"] = "live",
+    review_status: ReviewStatus | None = None,
+) -> TransactionFilter:
+    try:
+        transaction_types = [TransactionType(value) for value in parse_csv_values(types)]
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=f'Unknown transaction type "{error.args[0]}"') from error
+    return TransactionFilter(
+        accounts=parse_csv_ints(accounts),
+        categories=parse_csv_values(categories),
+        months=parse_csv_values(months),
+        years=parse_csv_values(years),
+        date_from=date_from,
+        date_to=date_to,
+        date_basis=date_basis,
+        amount_min=amount_min,
+        amount_max=amount_max,
+        direction=direction,
+        transaction_types=transaction_types,
+        search=search,
+        view=view,
+        review_status=review_status,
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -795,43 +834,21 @@ def import_report(batch_id: int, session: SessionToken = Depends(current_session
 @app.get("/api/transactions")
 def list_transactions(
     account_id: int | None = None,
-    review_status: ReviewStatus | None = None,
-    accounts: str | None = None,
-    categories: str | None = None,
-    months: str | None = None,
-    years: str | None = None,
-    date_from: date | None = Query(default=None, alias="dateFrom"),
-    date_to: date | None = Query(default=None, alias="dateTo"),
-    amount_min: int | None = Query(default=None, alias="amountMin", ge=0),
-    amount_max: int | None = Query(default=None, alias="amountMax", ge=0),
-    direction: Literal["inflow", "outflow"] | None = None,
-    search: str | None = None,
-    view: Literal["live", "trash"] = "live",
+    filters: TransactionFilter = Depends(transaction_filter_dependency),
     session: SessionToken = Depends(current_session),
     db: Session = Depends(get_db),
 ):
-    account_filters = parse_csv_ints(accounts)
-    if account_id is not None and account_id not in account_filters:
-        account_filters.append(account_id)
-    filters = TransactionFilter(
-        accounts=account_filters,
-        categories=parse_csv_values(categories),
-        months=parse_csv_values(months),
-        years=parse_csv_values(years),
-        date_from=date_from,
-        date_to=date_to,
-        amount_min=amount_min,
-        amount_max=amount_max,
-        direction=direction,
-        search=search,
-        view=view,
-        review_status=review_status,
-    )
+    if account_id is not None and account_id not in filters.accounts:
+        filters = filters.model_copy(update={"accounts": [*filters.accounts, account_id]})
     query = select(Transaction).where(*transaction_filter_conditions(filters)).order_by(Transaction.transaction_date.desc(), Transaction.id.desc())
     rows = db.scalars(query).all()
     accounts = {account.id: account for account in db.scalars(select(Account)).all()}
-    allocation_counts = dict(db.execute(select(ExpenseAllocation.transaction_id, func.count(ExpenseAllocation.id)).group_by(ExpenseAllocation.transaction_id)).all())
-    split_counts = dict(db.execute(select(TransactionSplit.transaction_id, func.count(TransactionSplit.id)).group_by(TransactionSplit.transaction_id)).all())
+    allocations_by_transaction: dict[int, list[ExpenseAllocation]] = {}
+    for allocation in db.scalars(select(ExpenseAllocation).order_by(ExpenseAllocation.allocation_date, ExpenseAllocation.id)).all():
+        allocations_by_transaction.setdefault(allocation.transaction_id, []).append(allocation)
+    splits_by_transaction: dict[int, list[TransactionSplit]] = {}
+    for split in db.scalars(select(TransactionSplit).order_by(TransactionSplit.id)).all():
+        splits_by_transaction.setdefault(split.transaction_id, []).append(split)
     return [
         {
             "id": row.id,
@@ -847,8 +864,20 @@ def list_transactions(
             "review_status": row.review_status,
             "category_id": row.category_id,
             "duplicate_of_transaction_id": row.duplicate_of_transaction_id,
-            "monthly_allocation_count": allocation_counts.get(row.id, 0),
-            "split_count": split_counts.get(row.id, 0),
+            "monthly_allocation_count": len(allocations_by_transaction.get(row.id, [])),
+            "split_count": len(splits_by_transaction.get(row.id, [])),
+            "reporting_category_ids": (
+                [allocation.category_id for allocation in allocations_by_transaction[row.id]]
+                if row.id in allocations_by_transaction
+                else [split.category_id for split in splits_by_transaction[row.id]]
+                if row.id in splits_by_transaction
+                else [row.category_id]
+            ),
+            "reporting_dates": (
+                [allocation.allocation_date.isoformat() for allocation in allocations_by_transaction[row.id]]
+                if row.id in allocations_by_transaction
+                else [row.transaction_date.isoformat()]
+            ),
         }
         for row in rows
     ]
@@ -1438,6 +1467,34 @@ def get_category_totals(
     return category_totals(db, start_date=start_date, end_date=end_date)
 
 
+@app.get("/api/aggregate/by-category")
+def get_aggregate_by_category(
+    filters: TransactionFilter = Depends(transaction_filter_dependency),
+    session: SessionToken = Depends(current_session),
+    db: Session = Depends(get_db),
+):
+    return aggregate_by_category(db, filters)
+
+
+@app.get("/api/aggregate/by-account")
+def get_aggregate_by_account(
+    filters: TransactionFilter = Depends(transaction_filter_dependency),
+    session: SessionToken = Depends(current_session),
+    db: Session = Depends(get_db),
+):
+    return aggregate_by_account(db, filters)
+
+
+@app.get("/api/aggregate/timeseries")
+def get_aggregate_timeseries(
+    bucket: Literal["day", "week", "month"] = "month",
+    filters: TransactionFilter = Depends(transaction_filter_dependency),
+    session: SessionToken = Depends(current_session),
+    db: Session = Depends(get_db),
+):
+    return aggregate_timeseries(db, filters, bucket)
+
+
 @app.get("/api/net-worth/timeseries")
 def get_net_worth_timeseries(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     rows = db.execute(
@@ -1480,6 +1537,41 @@ def get_net_worth_stats(
         return net_worth_stats(db, from_date=from_date, to_date=to_date)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.get("/api/snapshots/networth/contributors")
+def get_net_worth_contributors(
+    from_date: date = Query(alias="from"),
+    to_date: date = Query(alias="to"),
+    session: SessionToken = Depends(current_session),
+    db: Session = Depends(get_db),
+):
+    try:
+        return net_worth_contributors(db, from_date=from_date, to_date=to_date)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/snapshots/networth/manual")
+def save_manual_net_worth_snapshot(payload: NetWorthSnapshotUpsert, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    account = db.get(Account, payload.account_id)
+    if not account or account.status != "active" or account.last_four == UNASSIGNED_ACCOUNT_MARKER:
+        raise HTTPException(status_code=400, detail="Choose an active account")
+    snapshot = db.scalar(select(NetWorthSnapshot).where(NetWorthSnapshot.account_id == payload.account_id, NetWorthSnapshot.snapshot_date == payload.snapshot_date))
+    before = full_values(snapshot) if snapshot else None
+    snapshot = upsert_net_worth_snapshot(db, account_id=payload.account_id, snapshot_date=payload.snapshot_date, balance_cents=payload.balance_cents, source="manual")
+    db.flush()
+    operation_id = journal_mutation(
+        db,
+        kind="update" if before else "create",
+        entity_type="net_worth_snapshot",
+        actor=actor_for_session(session),
+        description=f"Recorded {account.display_name} balance for {payload.snapshot_date.isoformat()}",
+        changes=[MutationChange(snapshot.id, before, full_values(snapshot))],
+    )
+    db.commit()
+    return {"ok": True, "snapshot_id": snapshot.id, "operation_id": operation_id}
 
 
 @app.get("/api/investments/holdings")

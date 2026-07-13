@@ -4,8 +4,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import Account, Category, ExpenseAllocation, Transaction, TransactionSplit
-from app.services.reporting import category_totals
+from app.models import Account, Category, ExpenseAllocation, NetWorthSnapshot, Transaction, TransactionSplit
+from app.services.reporting import category_totals, latest_net_worth_by_account
 
 
 def test_category_totals_only_count_active_expense_splits_in_date_range():
@@ -66,3 +66,25 @@ def test_category_totals_use_monthly_allocations_instead_of_the_charge_date():
 
         assert category_totals(session, start_date=date(2026, 1, 1), end_date=date(2026, 1, 31)) == [{"category": "Insurance", "amount_cents": 334}]
         assert category_totals(session, start_date=date(2026, 2, 1), end_date=date(2026, 2, 28)) == [{"category": "Insurance", "amount_cents": 334}]
+
+
+def test_latest_net_worth_accounts_include_manual_non_investment_balances():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        house = Account(display_name="House", account_type="asset")
+        session.add(house)
+        session.flush()
+        session.add_all([
+            NetWorthSnapshot(account_id=house.id, snapshot_date=date(2026, 6, 1), balance_cents=44000000, source="manual"),
+            NetWorthSnapshot(account_id=house.id, snapshot_date=date(2026, 7, 1), balance_cents=45000000, source="manual"),
+        ])
+        session.commit()
+
+        assert latest_net_worth_by_account(session) == [{
+            "account_id": house.id,
+            "account": "House",
+            "account_type": "asset",
+            "latest_date": "2026-07-01",
+            "market_value_cents": 45000000,
+        }]

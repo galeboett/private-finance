@@ -143,6 +143,48 @@ def net_worth_stats(db: Session, *, from_date: date, to_date: date) -> dict:
     }
 
 
+def net_worth_contributors(db: Session, *, from_date: date, to_date: date) -> dict:
+    result = net_worth_series(db, from_date=from_date, to_date=to_date, bucket="day")
+    rows = result["series"]
+    if not rows:
+        return {"from": from_date.isoformat(), "to": to_date.isoformat(), "start_cents": 0, "end_cents": 0, "change_cents": 0, "accounts": []}
+    accounts = {account.id: account for account in db.scalars(select(Account)).all()}
+    start_by_account = rows[0]["by_account"]
+    end_by_account = rows[-1]["by_account"]
+    contributions = []
+    for account_id_text in sorted(set(start_by_account) | set(end_by_account), key=int):
+        account_id = int(account_id_text)
+        account = accounts.get(account_id)
+        if not account:
+            continue
+        start = start_by_account.get(account_id_text, 0)
+        end = end_by_account.get(account_id_text, 0)
+        change = end - start
+        if start == 0 and end == 0:
+            continue
+        contributions.append({
+            "account_id": account_id,
+            "account": account.display_name,
+            "account_type": account.account_type,
+            "last_four": account.last_four,
+            "start_cents": start,
+            "end_cents": end,
+            "change_cents": change,
+            "change_pct": round((change / abs(start)) * 100, 2) if start else None,
+        })
+    contributions.sort(key=lambda row: (-abs(row["change_cents"]), row["account"].casefold(), row["account_id"]))
+    start_total = rows[0]["total_cents"]
+    end_total = rows[-1]["total_cents"]
+    return {
+        "from": from_date.isoformat(),
+        "to": to_date.isoformat(),
+        "start_cents": start_total,
+        "end_cents": end_total,
+        "change_cents": end_total - start_total,
+        "accounts": contributions,
+    }
+
+
 def _account_value_at(account: Account, point_date: date, snapshots: list[NetWorthSnapshot], transactions: list[Transaction]) -> int:
     snapshot_dates = [snapshot.snapshot_date for snapshot in snapshots]
     snapshot_index = bisect_right(snapshot_dates, point_date) - 1

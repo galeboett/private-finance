@@ -151,6 +151,12 @@ class HoldingMetadataUpdate(BaseModel):
     user_description: str | None = None
 
 
+class NetWorthSnapshotUpsert(BaseModel):
+    account_id: int
+    snapshot_date: date
+    balance_cents: int
+
+
 class DeleteConfirmRequest(BaseModel):
     confirm_text: str
 
@@ -190,9 +196,11 @@ class TransactionFilter(BaseModel):
     years: list[str] = Field(default_factory=list)
     date_from: date | None = None
     date_to: date | None = None
+    date_basis: Literal["transaction", "reporting"] = "transaction"
     amount_min: int | None = None
     amount_max: int | None = None
     direction: Literal["inflow", "outflow"] | None = None
+    transaction_types: list[TransactionType] = Field(default_factory=list)
     search: str | None = None
     view: Literal["live", "trash"] = "live"
     review_status: ReviewStatus | None = None

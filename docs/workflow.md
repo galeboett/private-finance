@@ -48,6 +48,8 @@ The app builds a full personal finance picture by turning account exports into a
 - Select **View transactions** to open the transaction ledger with the chosen dates already applied.
 - Select **Clear** or press Escape to remove the range selection.
 - Imported running balances and brokerage positions create durable snapshots. Between known balances, the app reconstructs checking and savings history from ledger movements and forward-fills investment values.
+- On **Net Worth**, use **Add a manual balance** for accounts without an imported value, such as a home or vehicle. Choose the account and date, enter the balance, and save; the change supports Undo and appears in Activity.
+- After selecting a net-worth chart range, drag either circular edge handle to refine it. Account rows show six-month balance trends and open account-filtered transaction previews.
 
 ## Fixing Mistakes and Reviewing Changes
 
@@ -58,7 +60,9 @@ The app builds a full personal finance picture by turning account exports into a
 - One user action remains one Activity item even when it changes several kinds of records. For example, undoing a category merge restores the category as well as affected transactions, rules, splits, and allocations together.
 - Deleted transactions move to **All Accounts → Trash**. From there, restore one or several transactions, or permanently delete them after typing `DELETE`.
 - Permanent deletion cannot be undone. Password/session changes and database backup/restore also use their own safety controls rather than Activity undo. Ordinary finance changes remain recoverable through Activity and the undo message.
-- In the Net Worth range statistics, select **Peek transactions** for a quick side drawer. Select **Open full view** when you want the complete date-filtered ledger.
+- In a selected Net Worth range, choose **See asset changes** to open an account-level explanation of the change. It shows each checking, savings, brokerage, or other account's starting value, ending value, and gain/loss. Choose an account to inspect that account's ledger activity for the same dates.
+- Financial summary tiles, spending categories, income comparisons, and cash-flow rows use a separate transaction deep-dive drawer. **Open full view** carries the exact account/category/date/type filter into the ledger and displays it as removable chips.
+- Spending categories are ranked from largest to smallest. Each bar shows its share of categorized spending and its size relative to the largest category; the spending drawer lists the largest matching transactions first.
 
 ## Automated vs Manual
 

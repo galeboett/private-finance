@@ -846,6 +846,67 @@ button:disabled {
   white-space: nowrap;
 }
 
+.assetPeekDrawer {
+  background: #f7f9ff;
+}
+
+.assetPeekSummary {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid #cbd8ff;
+  border-radius: 9px;
+  background: var(--blue-soft);
+}
+
+.assetPeekSummary > span,
+.assetPeekSummary small,
+.assetPeekDrawer footer {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.assetPeekSummary strong {
+  font-size: 24px;
+}
+
+.assetPeekRows {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.assetPeekRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.assetPeekRow:hover {
+  border-color: var(--blue);
+  background: #f1f5ff;
+}
+
+.assetPeekRow > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.assetPeekRow small {
+  color: var(--muted);
+  text-transform: capitalize;
+}
+
 .peekDrawer footer {
   display: flex;
   justify-content: flex-end;
@@ -1163,6 +1224,18 @@ button:disabled {
   opacity: 0.12;
 }
 
+.chartSelectionHandle {
+  stroke: var(--blue);
+  stroke-width: 2;
+}
+
+.chartSelectionGrip {
+  fill: #fff;
+  stroke: var(--blue);
+  stroke-width: 3;
+  pointer-events: none;
+}
+
 .chartHoverLine {
   stroke: #8ca9f7;
   stroke-dasharray: 4 4;
@@ -1209,6 +1282,68 @@ button:disabled {
 }
 
 .netWorthSelectionStats span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.netWorthSelectionBanner {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.1fr) minmax(250px, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 11px 13px;
+  border: 1px solid #c8d6ff;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #f3f6ff, #fbfcff);
+  box-shadow: 0 4px 14px rgba(42, 73, 150, 0.08);
+}
+
+.selectionGain,
+.selectionExtremes {
+  display: grid;
+  gap: 3px;
+}
+
+.selectionGain strong {
+  font-size: 18px;
+}
+
+.selectionGain span,
+.selectionExtremes span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.selectionActions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.chartGridLine {
+  stroke: #dce3f2;
+  stroke-width: 1;
+}
+
+.manualSnapshotPanel {
+  display: grid;
+  grid-template-columns: minmax(210px, 1.4fr) repeat(3, minmax(130px, 0.7fr)) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfb;
+}
+
+.manualSnapshotPanel > div,
+.manualSnapshotPanel label {
+  display: grid;
+  gap: 4px;
+}
+
+.manualSnapshotPanel span,
+.manualSnapshotPanel label {
   color: var(--muted);
   font-size: 12px;
 }
@@ -1298,6 +1433,28 @@ button:disabled {
 
 .barRow span {
   color: var(--muted);
+}
+
+.spendingBarRow {
+  gap: 7px;
+}
+
+.spendingComparison {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.accountSparkline {
+  width: 100%;
+  height: 32px;
+  overflow: visible;
+}
+
+.accountSparkline polyline {
+  fill: none;
+  stroke: var(--blue);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
 }
 
 .reportTable {
@@ -1530,6 +1687,34 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+}
+
+.drillDownLink {
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.reportMiniGrid > .drillDownLink,
+.compareGrid > .drillDownLink,
+.metricsGrid > .drillDownLink,
+.miniRankList > .drillDownLink {
+  display: block;
+}
+
+.drillDownLink:hover .reportStat,
+.drillDownLink:hover .compareCard,
+.drillDownLink:hover .metricTile,
+.drillDownLink.barRow:hover,
+.drillDownLink.reportTableRow:hover {
+  border-color: var(--blue);
+  background: #f4f7ff;
+}
+
+.drillDownLink:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
 }
 
 .settingsWorkspace {
@@ -3229,7 +3414,8 @@ select.editableCell {
 }
 
 .taxonomySummaryRow,
-.miniRankList div {
+.miniRankList div,
+.miniRankList > .drillDownLink {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3371,6 +3557,7 @@ select.editableCell {
   .metricsGrid,
   .contentGrid,
   .dashboardWidgetGrid,
+  .manualSnapshotPanel,
   .dashboardCustomizer,
   .workGrid {
     grid-template-columns: 1fr;
@@ -3427,8 +3614,14 @@ select.editableCell {
     min-height: 200px;
   }
 
-  .netWorthSelectionStats {
+  .netWorthSelectionStats,
+  .netWorthSelectionBanner {
+    grid-template-columns: 1fr;
     align-items: flex-start;
+  }
+
+  .selectionActions {
+    flex-wrap: wrap;
   }
 
   .activityIntro,

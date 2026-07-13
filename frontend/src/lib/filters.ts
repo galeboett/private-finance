@@ -11,9 +11,11 @@ export interface TxnFilter {
   years?: string[];
   dateFrom?: string;
   dateTo?: string;
+  dateBasis?: "transaction" | "reporting";
   amountMin?: number;
   amountMax?: number;
   direction?: TransactionDirection;
+  types?: string[];
   search?: string;
   view?: TransactionView;
   sort?: TransactionSort;
@@ -29,7 +31,7 @@ export type AppRoute = {
   filters: TxnFilter;
 };
 
-const listKeys = ["accounts", "categories", "months", "years"] as const;
+const listKeys = ["accounts", "categories", "months", "years", "types"] as const;
 
 export function readAppRoute(location: Pick<Location, "pathname" | "search">): AppRoute {
   const accountMatch = location.pathname.match(/^\/accounts\/(\d+)\/transactions\/?$/);
@@ -67,6 +69,7 @@ export function decodeTxnFilter(params: URLSearchParams): TxnFilter {
   }
   setString(filter, "dateFrom", params.get("dateFrom"));
   setString(filter, "dateTo", params.get("dateTo"));
+  if (params.get("dateBasis") === "reporting") filter.dateBasis = "reporting";
   setString(filter, "search", params.get("search"));
   setNumber(filter, "amountMin", params.get("amountMin"));
   setNumber(filter, "amountMax", params.get("amountMax"));
@@ -89,6 +92,7 @@ export function encodeTxnFilter(filter: TxnFilter): URLSearchParams {
   }
   setParam(params, "dateFrom", filter.dateFrom);
   setParam(params, "dateTo", filter.dateTo);
+  if (filter.dateBasis === "reporting") params.set("dateBasis", "reporting");
   setParam(params, "amountMin", filter.amountMin);
   setParam(params, "amountMax", filter.amountMax);
   setParam(params, "direction", filter.direction);

@@ -6,7 +6,7 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import Account, Category, ExpenseAllocation, HoldingSnapshot, Transaction, TransactionSplit
+from ..models import Account, Category, ExpenseAllocation, HoldingSnapshot, NetWorthSnapshot, Transaction, TransactionSplit
 from .transaction_queries import live_transaction_filters, live_transaction_select
 
 
@@ -101,15 +101,15 @@ def cash_flow_summary(db: Session) -> list[dict]:
 
 def latest_net_worth_by_account(db: Session) -> list[dict]:
     accounts = {account.id: account for account in db.scalars(select(Account)).all()}
-    rows = db.scalars(select(HoldingSnapshot).order_by(HoldingSnapshot.snapshot_date.asc(), HoldingSnapshot.id.asc())).all()
+    rows = db.scalars(select(NetWorthSnapshot).order_by(NetWorthSnapshot.snapshot_date.asc(), NetWorthSnapshot.id.asc())).all()
     latest_dates: dict[int, date] = {}
     for row in rows:
         latest_dates[row.account_id] = max(latest_dates.get(row.account_id, row.snapshot_date), row.snapshot_date)
 
-    totals: dict[int, int] = defaultdict(int)
+    totals: dict[int, int] = {}
     for row in rows:
         if latest_dates.get(row.account_id) == row.snapshot_date:
-            totals[row.account_id] += row.market_value_cents
+            totals[row.account_id] = row.balance_cents
 
     result = []
     for account_id, total in sorted(totals.items(), key=lambda item: accounts.get(item[0]).display_name if accounts.get(item[0]) else ""):

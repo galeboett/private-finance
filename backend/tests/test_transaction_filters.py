@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db import Base
 from app.models import Account, Category, Institution, Transaction
-from app.schemas import TransactionFilter
+from app.schemas import TransactionFilter, TransactionType
 from app.services.transaction_filters import parse_csv_ints, parse_csv_values, transaction_filter_conditions
 
 
@@ -39,6 +39,7 @@ def test_canonical_filters_compose_accounts_categories_dates_amount_direction_an
         assert _filtered_ids(db, TransactionFilter(search="summer")) == [rows[1].id]
         assert _filtered_ids(db, TransactionFilter(search="bank of america")) == [rows[1].id]
         assert _filtered_ids(db, TransactionFilter(categories=["__uncategorized__"], direction="inflow")) == [rows[2].id]
+        assert _filtered_ids(db, TransactionFilter(transaction_types=[TransactionType.EXPENSE])) == [rows[0].id, rows[1].id]
 
 
 def test_live_and_trash_views_are_mutually_exclusive():
