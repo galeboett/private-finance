@@ -19,6 +19,12 @@ from ..config import settings
 from ..models import Account, Category, CategoryRule, HoldingSnapshot, ImportBatch, ImportPreset, StagingRow, Transaction
 from ..money import parse_decimal_to_cents
 from .accounts import infer_account_characterization, infer_last_four, upsert_institution_by_name
+from .dedupe import (
+    canonical_source_hash,
+    find_reference_matches,
+    is_reliable_import_reference,
+    natural_import_match_count,
+)
 from .mutation_log import MutationChange, changed_values, journal_mutation
 from .snapshots import record_imported_snapshots
 
@@ -1114,24 +1120,61 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
         key = (row.get("transaction_date") or "", row.get("amount") or "", row.get("raw_description") or "")
         description_counter[key] += 1
         ordinal = description_counter[key]
-        source_hash = _source_hash(
+        transaction_date = _parse_import_date(row.get("transaction_date"))
+        amount_cents = parse_decimal_to_cents(row.get("amount")) or 0
+        normalized = (row.get("raw_description") or "").strip()
+        source_reference = (row.get("source_reference") or "").strip() or None
+        source_hash = canonical_source_hash(
+            transaction_date,
+            amount_cents,
+            normalized,
+            source_reference,
+            ordinal,
+        )
+        legacy_source_hash = _source_hash(
             account.id,
             row.get("transaction_date") or "",
             row.get("amount") or "",
             row.get("raw_description") or "",
-            row.get("source_reference"),
+            source_reference,
             ordinal,
         )
-        existing = db.scalar(select(Transaction).where(Transaction.account_id == account.id, Transaction.source_hash == source_hash))
+        existing = db.scalar(
+            select(Transaction).where(
+                Transaction.account_id == account.id,
+                Transaction.source_hash.in_([source_hash, legacy_source_hash]),
+            )
+        )
         if existing:
             skipped += 1
             continue
 
-        amount_cents = parse_decimal_to_cents(row.get("amount")) or 0
+        reference_conflict: Transaction | None = None
+        reliable_reference = is_reliable_import_reference(detected, source_reference)
+        if reliable_reference and source_reference:
+            reference_duplicate, reference_conflict = find_reference_matches(
+                db,
+                account_id=account.id,
+                reference=source_reference,
+                transaction_date=transaction_date,
+                amount_cents=amount_cents,
+            )
+            if reference_duplicate:
+                skipped += 1
+                continue
+        elif natural_import_match_count(
+            db,
+            account_id=account.id,
+            transaction_date=transaction_date,
+            amount_cents=amount_cents,
+            description=normalized,
+        ) >= ordinal:
+            skipped += 1
+            continue
+
         review_status = "needs_review"
         category_id = None
         rule_transaction_type: str | None = None
-        normalized = (row.get("raw_description") or "").strip()
         haystack = normalized.upper()
         for rule in rules:
             if rule.field_name == "raw_description" and rule.match_text.upper() in haystack:
@@ -1143,7 +1186,7 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
         transaction = Transaction(
             account_id=account.id,
             import_batch_id=batch.id,
-            transaction_date=_parse_import_date(row.get("transaction_date")),
+            transaction_date=transaction_date,
             posted_date=_parse_import_date(row.get("posted_date")) if row.get("posted_date") else None,
             amount_cents=amount_cents,
             raw_description=normalized,
@@ -1152,14 +1195,18 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
             category_id=category_id,
             review_status=review_status,
             source_hash=source_hash,
-            source_reference=row.get("source_reference"),
+            source_reference=source_reference,
             source_ordinal=ordinal,
             running_balance_cents=parse_decimal_to_cents(row.get("running_balance")),
         )
-        duplicate_of_id = _find_possible_duplicate_id(db, account.id, transaction)
+        duplicate_of_id = reference_conflict.id if reference_conflict else _find_possible_duplicate_id(db, account.id, transaction)
         if duplicate_of_id is not None:
             transaction.review_status = "possible_duplicate"
             transaction.duplicate_of_transaction_id = duplicate_of_id
+        if reference_conflict and source_reference:
+            warning = f'Bank reference {source_reference} already exists with a different date or amount; the new row was flagged for review.'
+            if warning not in warnings:
+                warnings.append(warning)
         db.add(transaction)
         created_transactions.append(transaction)
         inserted += 1

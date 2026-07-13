@@ -9,9 +9,11 @@ from app.models import Account, Category, CategoryRule, HoldingSnapshot, NetWort
 from app.services.importers import (
     _extract_snapshot_date,
     _history_transaction_type,
+    _source_hash,
     commit_import,
     decode_text,
 )
+from app.services.accounts import merge_account_into
 
 
 CARD_CSV = (
@@ -48,6 +50,71 @@ def test_commit_import_skips_duplicates_on_reupload():
         assert first["inserted"] == 2 and first["skipped"] == 0
         assert second["inserted"] == 0 and second["skipped"] == 2
         assert session.query(Transaction).count() == 2
+
+
+def test_reimport_skips_legacy_row_after_account_merge_changes_internal_id():
+    """A legacy hash may encode the source account ID; merging must reconcile it."""
+    with _session() as session:
+        temporary = Account(display_name="BoA Cash 3056", account_type="credit_card")
+        canonical = Account(display_name="BoA Cash", account_type="credit_card", last_four="3056")
+        session.add_all([temporary, canonical])
+        session.commit()
+        content = b"Posted Date,Reference Number,Payee,Address,Amount\n05/08/2026,24692166128402310148405,Amazon,Addr,-14.81\n"
+
+        commit_import(session, temporary, None, "may.csv", content)
+        session.commit()
+        original = session.query(Transaction).one()
+        original.source_hash = _source_hash(temporary.id, "05/08/2026", "-14.81", "Amazon", "24692166128402310148405", 1)
+        session.commit()
+
+        merge_account_into(session, temporary, canonical)
+        session.commit()
+        result = commit_import(session, canonical, None, "may (1).csv", content)
+        session.commit()
+
+        assert result["inserted"] == 0
+        assert result["skipped"] == 1
+        assert session.query(Transaction).count() == 1
+        assert session.query(Transaction).one().account_id == canonical.id
+
+
+def test_reliable_bank_reference_skips_same_date_and_amount_when_description_changes():
+    with _session() as session:
+        account = Account(display_name="Card", account_type="credit_card")
+        session.add(account)
+        session.commit()
+        first = b"Posted Date,Reference Number,Payee,Address,Amount\n05/08/2026,123456789,Amazon Marketplace,Addr,-14.81\n"
+        renamed = b"Posted Date,Reference Number,Payee,Address,Amount\n05/08/2026,123456789,AMZN Mktp revised,Addr,-14.81\n"
+
+        commit_import(session, account, None, "first.csv", first)
+        session.commit()
+        result = commit_import(session, account, None, "renamed.csv", renamed)
+        session.commit()
+
+        assert result["inserted"] == 0
+        assert result["skipped"] == 1
+        assert session.query(Transaction).count() == 1
+
+
+def test_reused_bank_reference_with_conflicting_amount_is_flagged_for_review():
+    with _session() as session:
+        account = Account(display_name="Card", account_type="credit_card")
+        session.add(account)
+        session.commit()
+        first = b"Posted Date,Reference Number,Payee,Address,Amount\n05/08/2026,123456789,Amazon,Addr,-14.81\n"
+        conflict = b"Posted Date,Reference Number,Payee,Address,Amount\n05/08/2026,123456789,Amazon corrected,Addr,-18.41\n"
+
+        commit_import(session, account, None, "first.csv", first)
+        session.commit()
+        result = commit_import(session, account, None, "conflict.csv", conflict)
+        session.commit()
+
+        rows = session.query(Transaction).order_by(Transaction.id).all()
+        assert result["inserted"] == 1
+        assert result["skipped"] == 0
+        assert any("different date or amount" in warning for warning in result["warnings"])
+        assert rows[1].review_status == "possible_duplicate"
+        assert rows[1].duplicate_of_transaction_id == rows[0].id
 
 
 def test_commit_import_reimport_replaces_holdings_snapshot():

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.db import Base
 from app.main import UNASSIGNED_ACCOUNT_MARKER, _delete_account_tree
 from app.models import Account, Category, HoldingSnapshot, ImportBatch, Transaction, TransactionSplit
-from app.services.accounts import cleanup_imported_accounts, infer_account_characterization, infer_last_four
+from app.services.accounts import cleanup_imported_accounts, infer_account_characterization, infer_last_four, merge_account_into
 from app.services.operation_history import undo_operation
 from app.services.importers import _find_or_create_history_account
 
@@ -133,3 +133,70 @@ def test_account_deletion_preserves_transactions_for_account_review():
         assert review_account.display_name == "Needs account (Old Card)"
         assert session.get(ImportBatch, batch_id) is None
         assert session.get(HoldingSnapshot, holding_id) is None
+
+
+def test_account_merge_deduplicates_reliable_reference_even_when_legacy_hashes_differ():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        target = Account(display_name="BoA Cash", account_type="credit_card", last_four="3056")
+        source = Account(display_name="BoA Cash 3056", account_type="credit_card", last_four="3056")
+        session.add_all([target, source])
+        session.flush()
+        target_batch = ImportBatch(account_id=target.id, filename="first.csv", file_hash="first", status="committed", detected_preset="card_reference")
+        source_batch = ImportBatch(account_id=source.id, filename="second.csv", file_hash="second", status="committed", detected_preset="card_reference")
+        session.add_all([target_batch, source_batch])
+        session.flush()
+        shared = {
+            "transaction_date": date(2026, 5, 8),
+            "amount_cents": -1481,
+            "raw_description": "Amazon",
+            "transaction_type": "expense",
+            "review_status": "confirmed",
+            "source_reference": "24692166128402310148405",
+        }
+        session.add_all([
+            Transaction(account_id=target.id, import_batch_id=target_batch.id, source_hash="legacy-target-hash", **shared),
+            Transaction(account_id=source.id, import_batch_id=source_batch.id, source_hash="legacy-source-hash", **shared),
+        ])
+        session.commit()
+
+        moved, _changes = merge_account_into(session, source, target)
+        session.commit()
+
+        assert moved == 0
+        rows = session.query(Transaction).all()
+        assert len(rows) == 1
+        assert rows[0].account_id == target.id
+
+
+def test_account_merge_does_not_rewrite_categorized_history_fingerprint():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        target = Account(display_name="Card", account_type="credit_card")
+        source = Account(display_name="card", account_type="credit_card")
+        session.add_all([target, source])
+        session.flush()
+        batch = ImportBatch(account_id=source.id, filename="history.xlsx", file_hash="history", status="committed")
+        session.add(batch)
+        session.flush()
+        transaction = Transaction(
+            account_id=source.id,
+            import_batch_id=batch.id,
+            transaction_date=date(2026, 1, 1),
+            amount_cents=1000,
+            raw_description="History purchase",
+            transaction_type="expense",
+            review_status="confirmed",
+            source_hash="categorized-history-fingerprint",
+            source_reference="categorized-history-row-2",
+        )
+        session.add(transaction)
+        session.commit()
+
+        merge_account_into(session, source, target)
+        session.commit()
+
+        assert transaction.account_id == target.id
+        assert transaction.source_hash == "categorized-history-fingerprint"

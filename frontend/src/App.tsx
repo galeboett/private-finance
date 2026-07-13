@@ -927,19 +927,6 @@ export function App() {
   }, [csrf, reportPeriod]);
 
   useEffect(() => {
-    if (!configured || !csrf) return;
-    const scanWhenVisible = () => {
-      if (document.visibilityState === "visible") void scanImportInbox(true);
-    };
-    const firstScan = window.setTimeout(scanWhenVisible, 3000);
-    const interval = window.setInterval(scanWhenVisible, 30000);
-    return () => {
-      window.clearTimeout(firstScan);
-      window.clearInterval(interval);
-    };
-  }, [configured, csrf]);
-
-  useEffect(() => {
     if (!toast) {
       return;
     }
@@ -2548,23 +2535,21 @@ export function App() {
     }
   }
 
-  async function scanImportInbox(silent = false) {
-    if (!silent) setBusyAction("inbox-scan");
+  async function scanImportInbox() {
+    setBusyAction("inbox-scan");
     try {
       const result = await api<ImportInboxScan>("/api/imports/inbox/scan", { method: "POST", headers: { "x-csrf-token": csrf } });
       setImportInbox({ folder: result.folder, pending: result.pending });
       setLastInboxScan(result);
       const followUpCount = result.needs_account.length + result.errors.length;
-      if (!silent && (result.staged.length > 0 || followUpCount > 0)) {
-        showToast({
-          tone: followUpCount ? "info" : "success",
-          message: `${result.staged.length} file${result.staged.length === 1 ? "" : "s"} staged, ${result.skipped.length} already recorded${followUpCount ? `, ${followUpCount} need attention` : ""}.`,
-        });
-      }
+      showToast({
+        tone: followUpCount ? "info" : "success",
+        message: `${result.staged.length} file${result.staged.length === 1 ? "" : "s"} staged, ${result.skipped.length} already recorded${followUpCount ? `, ${followUpCount} need attention` : ""}.`,
+      });
     } catch (error) {
-      if (!silent) showToast({ tone: "error", message: error instanceof Error ? error.message : "Import inbox could not be scanned." });
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Import inbox could not be scanned." });
     } finally {
-      if (!silent) setBusyAction(null);
+      setBusyAction(null);
     }
   }
 
@@ -3267,7 +3252,7 @@ export function App() {
                   <div className="importInboxHeader">
                     <div>
                       <strong>Import Inbox</strong>
-                      <span>Copy statement CSVs into this private local folder. The app checks automatically while it is open, then waits for your confirmation.</span>
+                      <span>Copy statement CSVs into this private local folder, then select Scan inbox when you want the app to look for files.</span>
                       <code>{importInbox.folder || "The inbox folder will be created when the backend starts."}</code>
                     </div>
                     <button className="primaryButton" onClick={() => void scanImportInbox()} disabled={busyAction !== null}>
@@ -3275,7 +3260,7 @@ export function App() {
                       {busyAction === "inbox-scan" ? "Scanning…" : "Scan inbox"}
                     </button>
                   </div>
-                  <small>Files stay in place. Automatic checks run every 30 seconds, and fingerprints prevent accidental re-imports. For generic names such as stmt.csv, use one subfolder per account and include its last four digits—for example boa-checking-1016/stmt.csv.</small>
+                  <small>The folder is scanned only when you select Scan inbox. Files stay in place, and fingerprints prevent accidental re-imports. For generic names such as stmt.csv, use one subfolder per account and include its last four digits—for example boa-checking-1016/stmt.csv.</small>
                   {lastInboxScan && (lastInboxScan.needs_account.length > 0 || lastInboxScan.errors.length > 0) ? (
                     <div className="inboxScanIssues">
                       {lastInboxScan.needs_account.map((item) => (

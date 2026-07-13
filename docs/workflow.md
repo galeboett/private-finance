@@ -13,7 +13,7 @@ The app builds a full personal finance picture by turning account exports into a
 2. Add downloaded CSVs to the Import Inbox.
    - Copy files into the local folder shown under Settings → Smart import → Import Inbox.
    - When two accounts produce generic names such as `stmt.csv`, create one subfolder per account and include the last four digits: `boa-checking-1016/stmt.csv` and `boa-checking-6768/stmt.csv`. The scanner searches subfolders and uses the full relative path for account matching.
-   - While the app is open, it checks that folder automatically about every 30 seconds. **Scan inbox** is still available when you want an immediate check.
+   - The app does not monitor this folder automatically. Select **Scan inbox** when you want it to search for files and stage new matches.
    - A file selected directly in Smart import is staged in this same inbox and review flow; it is no longer committed through a separate path.
    - Files without a confident account match are left untouched and listed for manual Smart import.
    - For an unfamiliar CSV layout, choose its date, description, and amount columns once. This browser remembers the mapping for later files with the same headers.
@@ -27,10 +27,12 @@ The app builds a full personal finance picture by turning account exports into a
 4. Confirm the staged import.
    - Confirm or discard each pending batch from the Import Inbox.
    - The app adds new rows to the database.
-   - Exact duplicates are skipped.
-   - Ambiguous rows stay reviewable instead of being silently changed.
+   - Exact duplicates are skipped. For Bank of America reference-number exports and Venmo activity, the issuer's stable reference is checked first: the same account, reference, date, and amount is one transaction even if the bank later changes its description.
+   - If an issuer reuses a reference with a different date or amount, the row is imported as **Possible duplicate** and linked to the existing transaction for review instead of being silently discarded.
+   - Other raw CSV formats use an account-independent normalized transaction fingerprint, with compatibility checks for older fingerprints. Account cleanup reconciles ordinary CSV fingerprints when it merges account records, so a temporary internal account ID cannot defeat a later re-import check.
+   - Categorized-history importing remains a separate one-time workflow and is not included in this raw-CSV reference-matching behavior.
    - Source files are never moved or deleted, and confirmed imports are recorded in the mutation journal.
-   - Download suffixes such as `(1)` do not determine duplicates. The app compares exact bytes and normalized parsed rows, so renamed/reformatted copies are skipped while genuinely changed files are staged.
+   - Download suffixes such as `(1)` do not determine duplicates. The app compares exact bytes, normalized parsed rows, and reliable issuer references, so renamed/reformatted copies are skipped while genuinely changed files are staged.
 
 5. Review and categorize.
    - The app can suggest transaction types and categories from rules.

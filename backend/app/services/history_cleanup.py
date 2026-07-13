@@ -92,7 +92,7 @@ def preview_categorized_history_sign_cleanup(db: Session) -> dict:
                 row["direct_rows_after_history"] += 1
             else:
                 row["direct_rows_on_or_before_history"] += 1
-            if transaction.source_reference:
+            if transaction.source_reference and transaction.deleted_at is None and transaction.status == "active":
                 direct_references[transaction.account_id][transaction.source_reference] += 1
         for account_id, references in direct_references.items():
             account_rows[account_id]["possible_direct_duplicate_rows"] = sum(count - 1 for count in references.values() if count > 1)

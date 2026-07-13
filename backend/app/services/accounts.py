@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
 from ..models import Account, HoldingSnapshot, ImportBatch, ImportPreset, Institution, StagingRow, Transaction, TransactionSplit, TransferLink
+from .dedupe import canonical_source_hash, find_merge_match, is_categorized_history_reference
 from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 
 
@@ -84,17 +85,36 @@ def merge_account_into(db: Session, source: Account, target: Account, actor: str
     moved_transactions = 0
     changes: list[MutationChange] = [MutationChange(source.id, full_values(source), None, entity_type="account")]
     source_transactions = db.scalars(select(Transaction).where(Transaction.account_id == source.id)).all()
+    matched_target_ids: set[int] = set()
     for transaction in source_transactions:
-        duplicate = db.scalar(select(Transaction).where(Transaction.account_id == target.id, Transaction.source_hash == transaction.source_hash))
+        duplicate, reference_conflict = find_merge_match(
+            db,
+            target_account_id=target.id,
+            source=transaction,
+            excluded_target_ids=matched_target_ids,
+        )
         if duplicate:
+            matched_target_ids.add(duplicate.id)
             changes.append(MutationChange(transaction.id, full_values(transaction), None, entity_type="transaction"))
             changes.extend(MutationChange(split.id, full_values(split), None, entity_type="transaction_split") for split in db.scalars(select(TransactionSplit).where(TransactionSplit.transaction_id == transaction.id)).all())
             changes.extend(MutationChange(link.id, full_values(link), None, entity_type="transfer_link") for link in db.scalars(select(TransferLink).where((TransferLink.from_transaction_id == transaction.id) | (TransferLink.to_transaction_id == transaction.id))).all())
             _delete_transaction_row_for_merge(db, transaction)
             continue
-        before = changed_values(transaction, ["account_id"])
+        changed_fields = ["account_id", "source_hash", "review_status", "duplicate_of_transaction_id"]
+        before = changed_values(transaction, changed_fields)
         transaction.account_id = target.id
-        changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["account_id"]), entity_type="transaction"))
+        if (transaction.import_batch_id is not None or transaction.source_reference is not None) and not is_categorized_history_reference(transaction.source_reference):
+            transaction.source_hash = canonical_source_hash(
+                transaction.transaction_date,
+                transaction.amount_cents,
+                transaction.raw_description,
+                transaction.source_reference,
+                transaction.source_ordinal,
+            )
+        if reference_conflict:
+            transaction.review_status = "possible_duplicate"
+            transaction.duplicate_of_transaction_id = reference_conflict.id
+        changes.append(MutationChange(transaction.id, before, changed_values(transaction, changed_fields), entity_type="transaction"))
         moved_transactions += 1
 
     related_groups = [

@@ -27,8 +27,9 @@ def test_history_cleanup_previews_applies_and_undoes_dependent_sign_changes():
         deleted_charge = Transaction(account_id=account.id, import_batch_id=batch.id, transaction_date=date(2025, 1, 3), amount_cents=500, raw_description="Deleted snack", transaction_type="expense", category_id=category.id, review_status="confirmed", source_hash="deleted", source_reference="categorized-history-row-4", deleted_at=datetime(2025, 2, 1))
         direct_overlap = Transaction(account_id=account.id, import_batch_id=direct_batch.id, transaction_date=date(2025, 1, 2), amount_cents=-1200, raw_description="Direct overlap", transaction_type="expense", category_id=category.id, review_status="confirmed", source_hash="direct-overlap", source_reference="bank-reference-1")
         direct_duplicate = Transaction(account_id=account.id, import_batch_id=direct_batch.id, transaction_date=date(2025, 1, 2), amount_cents=-1200, raw_description="Direct overlap", transaction_type="expense", category_id=category.id, review_status="confirmed", source_hash="older-hash-for-same-row", source_reference="bank-reference-1")
+        deleted_direct_duplicate = Transaction(account_id=account.id, import_batch_id=direct_batch.id, transaction_date=date(2025, 1, 2), amount_cents=-1200, raw_description="Direct overlap", transaction_type="expense", category_id=category.id, review_status="confirmed", source_hash="deleted-hash-for-same-row", source_reference="bank-reference-1", deleted_at=datetime(2025, 2, 1))
         direct_after = Transaction(account_id=account.id, import_batch_id=direct_batch.id, transaction_date=date(2025, 2, 1), amount_cents=-1500, raw_description="Direct after", transaction_type="expense", category_id=category.id, review_status="confirmed", source_hash="direct-after")
-        db.add_all([charge, refund, deleted_charge, direct_overlap, direct_duplicate, direct_after])
+        db.add_all([charge, refund, deleted_charge, direct_overlap, direct_duplicate, deleted_direct_duplicate, direct_after])
         db.flush()
         split = TransactionSplit(transaction_id=charge.id, category_id=category.id, amount_cents=10000)
         allocation = ExpenseAllocation(transaction_id=charge.id, category_id=category.id, allocation_date=date(2025, 1, 1), amount_cents=10000)
@@ -42,8 +43,8 @@ def test_history_cleanup_previews_applies_and_undoes_dependent_sign_changes():
         assert preview["accounts"][0]["next_account_type"] == "cash"
         assert preview["accounts"][0]["history_through"] == "2025-01-03"
         assert preview["accounts"][0]["direct_rows_after_history"] == 1
-        assert preview["accounts"][0]["direct_rows_on_or_before_history"] == 2
-        assert preview["source_boundary_warnings"][0]["direct_rows_on_or_before_history"] == 2
+        assert preview["accounts"][0]["direct_rows_on_or_before_history"] == 3
+        assert preview["source_boundary_warnings"][0]["direct_rows_on_or_before_history"] == 3
         assert preview["possible_direct_import_duplicates"][0]["possible_duplicate_rows"] == 1
 
         result = apply_categorized_history_sign_cleanup(db, actor="user:1", confirm_text="NORMALIZE")
