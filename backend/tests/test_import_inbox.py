@@ -4,11 +4,12 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import Base
 from app.models import Account, ImportBatch, Institution, Operation, StagingRow, Transaction
-from app.services.import_inbox import confirm_pending_import, discard_pending_import, pending_import_batches, scan_import_inbox
+from app.services.import_inbox import confirm_pending_import, discard_pending_import, pending_import_batches, scan_import_inbox, stage_uploaded_import
 
 
 CARD_CSV = b"Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n07/10/2026,07/11/2026,Market,Shopping,Sale,-42.50,\n"
 CARD_CSV_FORMAT_VARIANT = b"\xef\xbb\xbfTransaction Date,Post Date,Description,Category,Type,Amount,Memo\r\n07/10/2026,07/11/2026,Market,Shopping,Sale,-42.50,\r\n\r\n"
+GENERIC_MAPPED_CSV = b"PF Date,PF Description,PF Amount\n2026-07-09,Local Cafe,-12.34\n"
 
 
 def _database():
@@ -79,12 +80,50 @@ def test_discard_keeps_source_and_prevents_the_same_fingerprint_from_restaging(t
         _matching_account(db)
         scan = scan_import_inbox(db)
         batch = db.get(ImportBatch, scan["staged"][0]["batch_id"])
-        discard_pending_import(batch)
+        assert discard_pending_import(batch) == {"ok": True}
         db.commit()
 
         assert batch.status == "discarded"
         assert source.exists()
         assert scan_import_inbox(db)["skipped"][0]["reason"] == "Already recorded as discarded (same file contents)."
+
+
+def test_manual_upload_uses_the_pending_review_pipeline(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "import_inbox_dir", tmp_path)
+    engine = _database()
+    with Session(engine) as db:
+        account = _matching_account(db)
+        result = stage_uploaded_import(db, account=account, filename="manual-card.csv", content=CARD_CSV)
+        db.commit()
+
+        batch = db.get(ImportBatch, result["batch_id"])
+        assert batch.status == "pending"
+        assert batch.match_confidence == 100
+        assert batch.source_path and (tmp_path / ".staged" / f"{batch.file_hash}.csv").exists()
+        assert pending_import_batches(db)[0]["account_name"] == "Chase Sapphire"
+        assert db.scalar(select(Transaction)) is None
+
+        committed = confirm_pending_import(db, batch, "user:7")
+        db.commit()
+        assert committed["inserted"] == 1
+        assert db.scalar(select(Transaction)).raw_description == "Market"
+
+
+def test_mapped_generic_csv_can_be_staged_and_confirmed(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "import_inbox_dir", tmp_path)
+    engine = _database()
+    with Session(engine) as db:
+        account = _matching_account(db)
+        staged = stage_uploaded_import(db, account=account, filename="mapped-custom.csv", content=GENERIC_MAPPED_CSV)
+        batch = db.get(ImportBatch, staged["batch_id"])
+        assert batch.detected_preset == "generic_mapped"
+
+        result = confirm_pending_import(db, batch, "user:7")
+        db.commit()
+        transaction = db.scalar(select(Transaction))
+        assert result["inserted"] == 1
+        assert transaction.raw_description == "Local Cafe"
+        assert transaction.amount_cents == -1234
 
 
 def test_confirmation_rejects_a_file_changed_after_staging(tmp_path, monkeypatch):

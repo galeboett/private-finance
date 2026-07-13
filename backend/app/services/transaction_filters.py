@@ -20,13 +20,14 @@ def transaction_filter_conditions(filters: TransactionFilter):
     if filters.accounts:
         conditions.append(Transaction.account_id.in_(filters.accounts))
     if filters.categories:
-        category_ids = [int(value) for value in filters.categories if value.isdigit()]
+        selected_category_ids = [int(value) for value in filters.categories if value.isdigit()]
+        category_ids = select(Category.id).where(or_(Category.id.in_(selected_category_ids), Category.parent_id.in_(selected_category_ids))) if selected_category_ids else None
         allocation_exists = select(ExpenseAllocation.id).where(ExpenseAllocation.transaction_id == Transaction.id).exists()
         split_exists = select(TransactionSplit.id).where(TransactionSplit.transaction_id == Transaction.id).exists()
-        allocation_matches = select(ExpenseAllocation.id).where(ExpenseAllocation.transaction_id == Transaction.id, ExpenseAllocation.category_id.in_(category_ids)).exists() if category_ids else False
-        split_matches = select(TransactionSplit.id).where(TransactionSplit.transaction_id == Transaction.id, TransactionSplit.category_id.in_(category_ids)).exists() if category_ids else False
+        allocation_matches = select(ExpenseAllocation.id).where(ExpenseAllocation.transaction_id == Transaction.id, ExpenseAllocation.category_id.in_(category_ids)).exists() if category_ids is not None else False
+        split_matches = select(TransactionSplit.id).where(TransactionSplit.transaction_id == Transaction.id, TransactionSplit.category_id.in_(category_ids)).exists() if category_ids is not None else False
         raw_conditions = []
-        if category_ids:
+        if category_ids is not None:
             raw_conditions.append(Transaction.category_id.in_(category_ids))
         if UNCATEGORIZED_FILTER in filters.categories:
             raw_conditions.append(Transaction.category_id.is_(None))
@@ -67,6 +68,11 @@ def transaction_filter_conditions(filters: TransactionFilter):
         conditions.append(Transaction.transaction_type.in_([value.value for value in filters.transaction_types]))
     if filters.review_status:
         conditions.append(Transaction.review_status == filters.review_status.value)
+    if filters.tags:
+        for tag in filters.tags:
+            normalized_tag = tag.strip().casefold().replace("|", "")
+            if normalized_tag:
+                conditions.append(func.lower(func.coalesce(Transaction.labels, "")).contains(f"|{normalized_tag}|"))
     if filters.search and filters.search.strip():
         needle = filters.search.strip().casefold()
         matching_account_ids = select(Account.id).outerjoin(Institution, Institution.id == Account.institution_id).where(
@@ -77,6 +83,7 @@ def transaction_filter_conditions(filters: TransactionFilter):
             or_(
                 func.lower(Transaction.raw_description).contains(needle),
                 func.lower(func.coalesce(Transaction.user_note, "")).contains(needle),
+                func.lower(func.coalesce(Transaction.labels, "")).contains(needle),
                 func.lower(Transaction.transaction_type).contains(needle),
                 Transaction.account_id.in_(matching_account_ids),
                 Transaction.category_id.in_(matching_category_ids),

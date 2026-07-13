@@ -29,7 +29,7 @@ from .services.accounts import cleanup_imported_accounts
 from .services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_timeseries
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
 from .services.importers import commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
-from .services.import_inbox import confirm_pending_import, discard_pending_import, inbox_directory, pending_import_batches, scan_import_inbox
+from .services.import_inbox import confirm_pending_import, discard_pending_import, inbox_directory, pending_import_batches, scan_import_inbox, stage_uploaded_import
 from .services.mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .services.operation_history import OperationConflict, list_operations, operation_detail, undo_operation
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
@@ -55,9 +55,23 @@ def actor_for_session(session: SessionToken) -> str:
     return f"user:{session.user_id}"
 
 
+def normalize_transaction_labels(value: object) -> str | None:
+    labels = []
+    for raw in str(value or "").split(","):
+        label = " ".join(raw.strip().casefold().replace("|", "").split())
+        if label and label not in labels:
+            labels.append(label)
+    return f"|{'|'.join(labels)}|" if labels else None
+
+
+def transaction_labels(value: str | None) -> list[str]:
+    return [label for label in (value or "").strip("|").split("|") if label]
+
+
 def transaction_filter_dependency(
     accounts: str | None = None,
     categories: str | None = None,
+    tags: str | None = None,
     months: str | None = None,
     years: str | None = None,
     date_from: date | None = Query(default=None, alias="dateFrom"),
@@ -78,6 +92,7 @@ def transaction_filter_dependency(
     return TransactionFilter(
         accounts=parse_csv_ints(accounts),
         categories=parse_csv_values(categories),
+        tags=parse_csv_values(tags),
         months=parse_csv_values(months),
         years=parse_csv_values(years),
         date_from=date_from,
@@ -275,7 +290,7 @@ def change_password(payload: PasswordChangeRequest, request: Request, session: S
 def bootstrap_state(db: Session = Depends(get_db)):
     return {
         "configured": ensure_setup_state(db),
-        "categories": [{"id": category.id, "key": category.key, "label": category.label} for category in db.scalars(select(Category).order_by(Category.label.asc())).all()],
+        "categories": [{"id": category.id, "key": category.key, "label": category.label, "parent_id": category.parent_id} for category in db.scalars(select(Category).order_by(Category.label.asc())).all()],
     }
 
 
@@ -625,22 +640,24 @@ def create_category(payload: CategoryCreate, request: Request, session: SessionT
     if not label:
         raise HTTPException(status_code=400, detail="Category label is required")
     normalized_label = normalized_category_label(label)
+    if payload.parent_id is not None and not db.get(Category, payload.parent_id):
+        raise HTTPException(status_code=400, detail="Parent category not found")
     existing = next((category for category in db.scalars(select(Category).order_by(Category.id.asc())).all() if normalized_category_label(category.label) == normalized_label), None)
     if existing:
-        return {"id": existing.id, "key": existing.key, "label": existing.label}
+        return {"id": existing.id, "key": existing.key, "label": existing.label, "parent_id": existing.parent_id}
     base_key = category_key_from_label(label)
     key = base_key
     suffix = 2
     while db.scalar(select(Category).where(Category.key == key)):
         key = f"{base_key[:55]}_{suffix}"
         suffix += 1
-    category = Category(key=key, label=label)
+    category = Category(key=key, label=label, parent_id=payload.parent_id)
     db.add(category)
     db.flush()
     operation_id = journal_mutation(db, kind="create", entity_type="category", actor=actor_for_session(session), description=f'Created category "{category.label}"', changes=[MutationChange(category.id, None, full_values(category))])
     record_audit_event(db, "category_create", "local-user", "category", str(category.id), {"label": label, "key": key})
     db.commit()
-    return {"id": category.id, "key": category.key, "label": category.label, "operation_id": operation_id}
+    return {"id": category.id, "key": category.key, "label": category.label, "parent_id": category.parent_id, "operation_id": operation_id}
 
 
 @app.post("/api/categories/cleanup-duplicates")
@@ -658,9 +675,14 @@ def update_category(category_id: int, payload: CategoryUpdate, request: Request,
     label = payload.label.strip()
     if not label:
         raise HTTPException(status_code=400, detail="Category label is required")
-    before = changed_values(category, ["label"])
+    if payload.parent_id == category_id:
+        raise HTTPException(status_code=400, detail="A category cannot be its own parent")
+    if payload.parent_id is not None and not db.get(Category, payload.parent_id):
+        raise HTTPException(status_code=400, detail="Parent category not found")
+    before = changed_values(category, ["label", "parent_id"])
     category.label = label
-    operation_id = journal_mutation(db, kind="update", entity_type="category", actor=actor_for_session(session), description=f'Renamed category to "{label}"', changes=[MutationChange(category.id, before, changed_values(category, ["label"]))])
+    category.parent_id = payload.parent_id
+    operation_id = journal_mutation(db, kind="update", entity_type="category", actor=actor_for_session(session), description=f'Updated category "{label}"', changes=[MutationChange(category.id, before, changed_values(category, ["label", "parent_id"]))])
     record_audit_event(db, "category_update", "local-user", "category", str(category.id), {"label": label})
     db.commit()
     return {"ok": True, "operation_id": operation_id}
@@ -692,7 +714,25 @@ async def imports_analyze(file: UploadFile = File(...), session: SessionToken = 
     try:
         suggestion = suggest_account_for_import(db, file.filename or "import.csv", content)
     except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        try:
+            text_content = decode_text(content)
+            reader = csv.reader(io.StringIO(text_content))
+            headers = next(reader, [])
+            samples = [dict(zip(headers, row)) for row in list(reader)[:3]]
+        except (ValueError, csv.Error) as parse_error:
+            raise HTTPException(status_code=400, detail=str(parse_error)) from parse_error
+        if len(headers) < 3:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {
+            "preset_type": None,
+            "suggested_account_id": None,
+            "match_confidence": 0,
+            "reason": "Choose the date, description, and amount columns once. This browser will remember the mapping for matching headers.",
+            "proposed_account": None,
+            "warnings": [],
+            "headers": headers,
+            "sample_rows": samples,
+        }
     return {
         "preset_type": suggestion.preset_type,
         "suggested_account_id": suggestion.suggested_account_id,
@@ -779,6 +819,21 @@ async def imports_reviewed_categorized_history(request: Request, session: Sessio
     return result
 
 
+@app.post("/api/imports/stage")
+async def stage_manual_import(request: Request, account_id: int, file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    account = db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    content = await file.read()
+    try:
+        result = stage_uploaded_import(db, account=account, filename=file.filename or "import.csv", content=content)
+    except (UnicodeDecodeError, ValueError, OSError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    db.commit()
+    return {**result, "pending": pending_import_batches(db)}
+
+
 @app.get("/api/imports/inbox")
 def get_import_inbox(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     return {"folder": str(inbox_directory()), "pending": pending_import_batches(db)}
@@ -814,12 +869,12 @@ def discard_inbox_import(batch_id: int, request: Request, session: SessionToken 
     if not batch:
         raise HTTPException(status_code=404, detail="Import batch not found")
     try:
-        discard_pending_import(batch)
+        result = discard_pending_import(batch)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     record_audit_event(db, "import_inbox_discard", actor_for_session(session), "import_batch", str(batch.id), {"filename": batch.filename})
     db.commit()
-    return {"ok": True, "operation_id": operation_id}
+    return result
 
 @app.get("/api/imports/{batch_id}/report")
 def import_report(batch_id: int, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
@@ -863,6 +918,7 @@ def list_transactions(
             "transaction_type": row.transaction_type,
             "review_status": row.review_status,
             "category_id": row.category_id,
+            "labels": transaction_labels(row.labels),
             "duplicate_of_transaction_id": row.duplicate_of_transaction_id,
             "monthly_allocation_count": len(allocations_by_transaction.get(row.id, [])),
             "split_count": len(splits_by_transaction.get(row.id, [])),
@@ -881,6 +937,18 @@ def list_transactions(
         }
         for row in rows
     ]
+
+
+@app.get("/api/transactions/ids")
+def list_transaction_ids(
+    account_id: int | None = None,
+    filters: TransactionFilter = Depends(transaction_filter_dependency),
+    session: SessionToken = Depends(current_session),
+    db: Session = Depends(get_db),
+):
+    if account_id is not None and account_id not in filters.accounts:
+        filters = filters.model_copy(update={"accounts": [*filters.accounts, account_id]})
+    return list(db.scalars(select(Transaction.id).where(*transaction_filter_conditions(filters)).order_by(Transaction.id)).all())
 
 
 @app.patch("/api/transactions/bulk-update")
@@ -954,6 +1022,21 @@ def bulk_update_transactions(payload: BulkTransactionUpdateRequest, request: Req
             before = changed_values(transaction, ["category_id"])
             transaction.category_id = category_id
             journal_changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["category_id"])))
+    elif field == "date":
+        try:
+            transaction_date = date.fromisoformat(str(value))
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="Choose a valid transaction date") from error
+        for transaction in transactions:
+            before = changed_values(transaction, ["transaction_date"])
+            transaction.transaction_date = transaction_date
+            journal_changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["transaction_date"])))
+    elif field == "labels":
+        labels = normalize_transaction_labels(value)
+        for transaction in transactions:
+            before = changed_values(transaction, ["labels"])
+            transaction.labels = labels
+            journal_changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["labels"])))
 
     actor = actor_for_session(session)
     operation_id = journal_mutation(
@@ -1032,7 +1115,7 @@ def permanently_delete_transaction(transaction_id: int, payload: DeleteConfirmRe
         raise HTTPException(status_code=404, detail="Deleted transaction not found")
     _delete_transaction_row(db, transaction)
     db.commit()
-    return {"ok": True, "operation_id": operation_id}
+    return {"ok": True}
 
 
 @app.patch("/api/transactions/{transaction_id}")

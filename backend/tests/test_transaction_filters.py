@@ -42,6 +42,26 @@ def test_canonical_filters_compose_accounts_categories_dates_amount_direction_an
         assert _filtered_ids(db, TransactionFilter(transaction_types=[TransactionType.EXPENSE])) == [rows[0].id, rows[1].id]
 
 
+def test_parent_categories_include_children_and_labels_are_filterable():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        account = Account(display_name="Card", account_type="credit_card")
+        travel = Category(key="travel", label="Travel")
+        db.add_all([account, travel])
+        db.flush()
+        airfare = Category(key="airfare", label="Airfare", parent_id=travel.id)
+        db.add(airfare)
+        db.flush()
+        row = Transaction(account_id=account.id, transaction_date=date(2026, 7, 1), amount_cents=-50000, raw_description="Airline", labels="|vacation|reimbursable|", transaction_type="expense", category_id=airfare.id, review_status="confirmed", source_hash="child-filter")
+        db.add(row)
+        db.commit()
+
+        assert _filtered_ids(db, TransactionFilter(categories=[str(travel.id)])) == [row.id]
+        assert _filtered_ids(db, TransactionFilter(tags=["Vacation", "reimbursable"])) == [row.id]
+        assert _filtered_ids(db, TransactionFilter(search="vacation")) == [row.id]
+
+
 def test_live_and_trash_views_are_mutually_exclusive():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)

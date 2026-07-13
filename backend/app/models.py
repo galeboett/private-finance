@@ -134,6 +134,7 @@ class Transaction(TimestampMixin, Base):
     raw_description: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_payee: Mapped[str | None] = mapped_column(String(255))
     user_note: Mapped[str | None] = mapped_column(Text)
+    labels: Mapped[str | None] = mapped_column(Text)
     transaction_type: Mapped[str] = mapped_column(String(40), nullable=False)
     category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"))
     review_status: Mapped[str] = mapped_column(String(40), default="needs_review", nullable=False)

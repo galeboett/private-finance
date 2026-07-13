@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     login_backoff_seconds: int = 300
     import_file_size_limit_mb: int = 10
     import_inbox_dir: Path = Path("data/import-inbox")
+    trash_retention_days: int = 90
     backup_dir: Path = Path("data/backups")
     # Display name that identifies the owner in Venmo exports ("From"/"To" columns).
     # Used only to phrase the imported description; direction still falls back to the amount sign.

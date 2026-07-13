@@ -12,8 +12,10 @@ The app builds a full personal finance picture by turning account exports into a
 
 2. Add downloaded CSVs to the Import Inbox.
    - Copy files into the local folder shown under Settings → Smart import → Import Inbox.
-   - Select **Scan inbox**. The app fingerprints each file, detects its format, and matches it to an existing account.
+   - While the app is open, it checks that folder automatically about every 30 seconds. **Scan inbox** is still available when you want an immediate check.
+   - A file selected directly in Smart import is staged in this same inbox and review flow; it is no longer committed through a separate path.
    - Files without a confident account match are left untouched and listed for manual Smart import.
+   - For an unfamiliar CSV layout, choose its date, description, and amount columns once. This browser remembers the mapping for later files with the same headers.
 
 3. Preview the normalized rows.
    - The app detects the file family from known headers.
@@ -65,6 +67,10 @@ The app builds a full personal finance picture by turning account exports into a
 - In a selected Net Worth range, choose **See asset changes** to open an account-level explanation of the change. It shows each checking, savings, brokerage, or other account's starting value, ending value, and gain/loss. Choose an account to inspect that account's ledger activity for the same dates.
 - Financial summary tiles, spending categories, income comparisons, and cash-flow rows use a separate transaction deep-dive drawer. **Open full view** carries the exact account/category/date/type filter into the ledger and displays it as removable chips.
 - Spending categories are ranked from largest to smallest. Each bar shows its share of categorized spending and its size relative to the largest category; the spending drawer lists the largest matching transactions first.
+- The Spending monthly chart stacks the largest categories in the app's blue palette. Toggle categories in the legend or drag across months to compare a period and open its matching transactions.
+- Selecting a parent category includes transactions in its direct child categories, so broad filters such as Food can include Groceries and Restaurants.
+- Transaction filters support labels. Bulk edit can change dates or replace labels, and **Select all matching** selects every row matching the current server-side filter, not only the visible page.
+- Trash keeps deleted transactions for `PF_TRASH_RETENTION_DAYS` (90 days by default), then removes expired items automatically when the app starts. Restore important mistakes before that window ends.
 
 ## Automated vs Manual
 

@@ -37,6 +37,8 @@ def test_bulk_update_supports_every_editable_transaction_field():
             ("category", category.id),
             ("account", target_account.id),
             ("institution", "New Bank"),
+            ("date", "2026-08-15"),
+            ("labels", "Vacation, Reimbursable, vacation"),
         ]:
             result = bulk_update_transactions(BulkTransactionUpdateRequest(ids=ids, field=field, value=value), request, session, db)
             assert result["updated"] == 2
@@ -48,13 +50,15 @@ def test_bulk_update_supports_every_editable_transaction_field():
             assert row.transaction_type == "refund"
             assert row.category_id == category.id
             assert row.account_id == target_account.id
+            assert row.transaction_date == date(2026, 8, 15)
+            assert row.labels == "|vacation|reimbursable|"
         db.refresh(target_account)
         assert target_account.institution.name == "New Bank"
         operations = db.query(Operation).order_by(Operation.created_at).all()
-        assert len(operations) == 6
+        assert len(operations) == 8
         assert all(operation.kind == "bulk_update" for operation in operations)
         assert all(operation.actor == "user:42" for operation in operations)
-        assert db.query(OperationChange).count() == 11
+        assert db.query(OperationChange).count() == 15
 
 
 def test_generic_bulk_operation_updates_multiple_fields_and_undoes_together():

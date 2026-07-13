@@ -79,10 +79,12 @@ class AccountUpdate(BaseModel):
 
 class CategoryCreate(BaseModel):
     label: str
+    parent_id: int | None = None
 
 
 class CategoryUpdate(BaseModel):
     label: str
+    parent_id: int | None = None
 
 
 class ImportPresetCreate(BaseModel):
@@ -181,6 +183,8 @@ class BulkTransactionField(StrEnum):
     DETAILS = "details"
     TYPE = "type"
     CATEGORY = "category"
+    DATE = "date"
+    LABELS = "labels"
 
 
 class BulkTransactionUpdateRequest(BaseModel):
@@ -192,6 +196,7 @@ class BulkTransactionUpdateRequest(BaseModel):
 class TransactionFilter(BaseModel):
     accounts: list[int] = Field(default_factory=list)
     categories: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
     months: list[str] = Field(default_factory=list)
     years: list[str] = Field(default_factory=list)
     date_from: date | None = None

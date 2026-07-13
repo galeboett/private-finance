@@ -31,6 +31,7 @@ VENMO_HEADER = ",ID,Datetime,Type,Status,Note,From,To,Amount (total),Amount (tip
 CITI_ACTIVITY_HEADER = "Status,Date,Description,Debit,Credit"
 AMEX_ACTIVITY_HEADER = "Date,Description,Amount"
 JPM_POSITIONS_HEADER = "Asset Class,Asset Strategy,Asset Strategy Detail,Description,Ticker,CUSIP,Quantity"
+GENERIC_MAPPED_HEADER = "PF Date,PF Description,PF Amount"
 
 
 @dataclass
@@ -62,6 +63,7 @@ def detect_preset_from_content(text: str, filename: str = "") -> str | None:
         normalized_filename = filename.lower()
         return "citi_checking" if normalized_filename.startswith("chk_") or "checking" in normalized_filename else "citi_card_activity"
     for marker, preset in (
+        (GENERIC_MAPPED_HEADER, "generic_mapped"),
         (JPM_POSITIONS_HEADER, "jpm_brokerage_positions"),
         (CARD_REFERENCE_HEADER, "card_reference"),
         (CHASE_ACTIVITY_HEADER, "card_activity"),
@@ -119,6 +121,26 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
     text = decode_text(content)
     reader = list(csv.reader(io.StringIO(text)))
     warnings: list[str] = []
+
+    if preset_type == "generic_mapped":
+        dict_reader = csv.DictReader(io.StringIO(text))
+        rows = []
+        for idx, row in enumerate(dict_reader, start=2):
+            if not any((value or "").strip() for value in row.values()):
+                continue
+            if not (row.get("PF Date") or "").strip() or not (row.get("PF Description") or "").strip() or not (row.get("PF Amount") or "").strip():
+                warnings.append(f"Row {idx} is missing a mapped date, description, or amount")
+                continue
+            rows.append({
+                "row_index": idx,
+                "row_kind": "transaction",
+                "transaction_date": row.get("PF Date"),
+                "raw_description": row.get("PF Description"),
+                "amount": row.get("PF Amount"),
+            })
+        if not rows:
+            raise ValueError("The mapped CSV did not contain any complete transaction rows")
+        return PreviewResult(rows=rows, warnings=warnings, detected_preset=preset_type)
 
     if preset_type == "checking_running_balance":
         header_index = next((i for i, row in enumerate(reader) if row[:4] == ["Date", "Description", "Amount", "Running Bal."]), -1)

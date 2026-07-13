@@ -23,6 +23,8 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Added
 
+- Completed the remaining user-facing B/C/D/E Tier 1 work: manual uploads now enter the same review inbox as watched files; the open app checks the import folder automatically; unknown CSV layouts can be mapped once and remembered by the browser; spending has a drag-selectable stacked monthly comparison; category parents include their child transactions; transaction tags, bulk date/label edits, and backend-powered select-all are supported; and Trash automatically purges items after the configured retention period (90 days by default).
+- Fixed Import Inbox discard and permanent single-transaction deletion responses that could fail after the requested change had already succeeded.
 - Overview now owns the Cash Flow, Spending, Income, and Net Worth analysis tabs; the duplicate Reports navigation destination was removed and old `/reports` links resolve to Overview. The analysis toolbar stays visible while scrolling, and Overview cards are limited to high-level account, cash-flow, and spending context instead of repeating review/import work or duplicating cards inside dedicated tabs.
 - Net Worth now uses a context-specific asset-change drawer that ranks checking, savings, brokerage, and other accounts by their contribution to a selected range. The selected gain/date/high/low summary sits above a zero-based, multi-tick chart. Spending categories and their peek transactions are ranked by largest amount, include relative-share comparisons, and use the app's blue palette.
 - Completed Problem D dashboard details: manual per-account net-worth balances are journaled and undoable, chart range selections have adjustable edge handles, account rows include six-month sparklines, and reporting-date filters preserve split and monthly-allocation spending semantics.
@@ -53,5 +55,4 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Notes for reviewers
 
-- The backend test suite could not be executed in the authoring environment (no package installs available); all edits were verified by compilation and static analysis. Run `pytest` in `backend/` before merging.
-- The frontend was syntax-checked with `tsc`; run `pnpm build` (or `npm run build`) to fully verify.
+- The backend suite passes (`112 passed`). The frontend passes TypeScript checking. The full Vite build still needs to be run outside the desktop filesystem sandbox because its bundled `esbuild` process could not access the required parent runtime path.

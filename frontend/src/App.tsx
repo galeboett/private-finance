@@ -29,7 +29,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { encodeTxnFilter, readAppRoute, routeUrl, type NetWorthPeriod, type RouteView, type TxnFilter } from "./lib/filters";
 import { useDrillDown } from "./lib/useDrillDown";
 
-type BootstrapCategory = { id: number; key: string; label: string };
+type BootstrapCategory = { id: number; key: string; label: string; parent_id: number | null };
 type DashboardSummary = {
   review_counts: Record<string, number>;
   month_to_date_expense_cents: number;
@@ -69,6 +69,7 @@ type TransactionRow = {
   transaction_date: string;
   category_id: number | null;
   user_note: string | null;
+  labels: string[];
   monthly_allocation_count: number;
   split_count: number;
   reporting_category_ids: Array<number | null>;
@@ -96,7 +97,7 @@ type ImportPreview = {
 };
 
 type ImportAnalysis = {
-  preset_type: string;
+  preset_type: string | null;
   suggested_account_id: number | null;
   match_confidence: number;
   reason: string;
@@ -106,9 +107,12 @@ type ImportAnalysis = {
     account_type: string;
     currency: string;
     last_four: string | null;
-  };
+  } | null;
   warnings: string[];
+  headers?: string[];
+  sample_rows?: Array<Record<string, string>>;
 };
+type GenericCsvMapping = { date: string; description: string; amount: string };
 
 type CategorizedHistoryRow = {
   row_index: string;
@@ -221,7 +225,7 @@ type NetWorthPeekState = {
 type AllocationRow = { asset_class: string; market_value_cents: number };
 type TransactionSortKey = "date" | "amount";
 type SortDirection = "asc" | "desc";
-type BulkTransactionField = "institution" | "account" | "description" | "details" | "type" | "category";
+type BulkTransactionField = "institution" | "account" | "description" | "details" | "type" | "category" | "date" | "labels";
 type ReportPeriod = "this_month" | "this_year" | "last_12_months" | "all";
 type FilterOption = { value: string; label: string };
 type HoldingRow = {
@@ -327,10 +331,47 @@ const bulkTransactionFields: Array<{ value: BulkTransactionField; label: string 
   { value: "details", label: "Details" },
   { value: "type", label: "Type" },
   { value: "category", label: "Category" },
+  { value: "date", label: "Transaction date" },
+  { value: "labels", label: "Labels" },
 ];
 
 const formatMoney = (cents: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
+
+function parseCsvText(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === '"') {
+      if (quoted && text[index + 1] === '"') { cell += '"'; index += 1; }
+      else quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      row.push(cell);
+      cell = "";
+    } else if ((character === "\n" || character === "\r") && !quoted) {
+      if (character === "\r" && text[index + 1] === "\n") index += 1;
+      row.push(cell);
+      if (row.some((value) => value.trim())) rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += character;
+    }
+  }
+  if (cell || row.length) {
+    row.push(cell);
+    if (row.some((value) => value.trim())) rows.push(row);
+  }
+  if (rows[0]?.[0]) rows[0][0] = rows[0][0].replace(/^\ufeff/, "");
+  return rows;
+}
+
+function csvCell(value: string) {
+  return /[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+}
 
 const sameFilterValues = (left: Array<string | number>, right: Array<string | number>) =>
   left.length === right.length && new Set(left.map(String)).size === new Set([...left, ...right].map(String)).size;
@@ -741,6 +782,7 @@ export function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importAnalysis, setImportAnalysis] = useState<ImportAnalysis | null>(null);
+  const [genericCsvMapping, setGenericCsvMapping] = useState<GenericCsvMapping>({ date: "", description: "", amount: "" });
   const [importInbox, setImportInbox] = useState<ImportInboxState>({ folder: "", pending: [] });
   const [lastInboxScan, setLastInboxScan] = useState<ImportInboxScan | null>(null);
   const [importWorkspaceTab, setImportWorkspaceTab] = useState<"smart" | "manual">("smart");
@@ -751,8 +793,10 @@ export function App() {
   const [categoryEditor, setCategoryEditor] = useState<{ transactionId: number; query: string } | null>(null);
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
   const [newCategoryLabel, setNewCategoryLabel] = useState("");
+  const [newCategoryParentId, setNewCategoryParentId] = useState<number | "">("");
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
   const [editingCategoryLabel, setEditingCategoryLabel] = useState("");
+  const [editingCategoryParentId, setEditingCategoryParentId] = useState<number | "">("");
   const [categoryReassignId, setCategoryReassignId] = useState<number | "">("");
   const [editingRule, setEditingRule] = useState<RuleSummary | null>(null);
   const [ruleFeedback, setRuleFeedback] = useState<{ ruleId: number; message: string } | null>(null);
@@ -824,6 +868,19 @@ export function App() {
       .then(setCategoryTotals)
       .catch(() => undefined);
   }, [csrf, reportPeriod]);
+
+  useEffect(() => {
+    if (!configured || !csrf) return;
+    const scanWhenVisible = () => {
+      if (document.visibilityState === "visible") void scanImportInbox(true);
+    };
+    const firstScan = window.setTimeout(scanWhenVisible, 3000);
+    const interval = window.setInterval(scanWhenVisible, 30000);
+    return () => {
+      window.clearTimeout(firstScan);
+      window.clearInterval(interval);
+    };
+  }, [configured, csrf]);
 
   useEffect(() => {
     if (!toast) {
@@ -1149,6 +1206,24 @@ export function App() {
     setSelectedFile(file);
     setImportPreview(null);
     setImportAnalysis(null);
+    setGenericCsvMapping({ date: "", description: "", amount: "" });
+  }
+
+  async function importFileForUpload(): Promise<File | null> {
+    if (!selectedFile) return null;
+    if (importAnalysis?.preset_type !== null) return selectedFile;
+    const headers = importAnalysis.headers ?? [];
+    if (!genericCsvMapping.date || !genericCsvMapping.description || !genericCsvMapping.amount) {
+      throw new Error("Map the date, description, and amount columns before previewing.");
+    }
+    const rows = parseCsvText(await selectedFile.text());
+    const indexes = [genericCsvMapping.date, genericCsvMapping.description, genericCsvMapping.amount].map((header) => headers.indexOf(header));
+    if (indexes.some((index) => index < 0)) throw new Error("One of the saved column mappings no longer exists in this file.");
+    const mappedRows = [["PF Date", "PF Description", "PF Amount"], ...rows.slice(1).map((row) => indexes.map((index) => row[index] ?? ""))];
+    const content = mappedRows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+    const signature = headers.join("\u001f");
+    window.localStorage.setItem(`privateFinance.csvMapping.${signature}`, JSON.stringify(genericCsvMapping));
+    return new File([content], `mapped-${selectedFile.name}`, { type: "text/csv" });
   }
 
   async function handleSetup() {
@@ -1259,10 +1334,11 @@ export function App() {
       const category = await api<BootstrapCategory & { operation_id?: string }>("/api/categories", {
         method: "POST",
         headers: { "x-csrf-token": csrf },
-        body: JSON.stringify({ label }),
+        body: JSON.stringify({ label, parent_id: newCategoryParentId || null }),
       });
       setCategories((current) => [...current, category].sort((left, right) => left.label.localeCompare(right.label)));
       setNewCategoryLabel("");
+      setNewCategoryParentId("");
       showToast({ tone: "success", message: "Category added. You can use it during review now.", operationId: category.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Category could not be added." });
@@ -1279,13 +1355,14 @@ export function App() {
       const result = await api<{ operation_id: string }>(`/api/categories/${editingCategoryId}`, {
         method: "PATCH",
         headers: { "x-csrf-token": csrf },
-        body: JSON.stringify({ label }),
+        body: JSON.stringify({ label, parent_id: editingCategoryParentId || null }),
       });
       setCategories((current) =>
-        current.map((category) => (category.id === editingCategoryId ? { ...category, label } : category)).sort((left, right) => left.label.localeCompare(right.label)),
+        current.map((category) => (category.id === editingCategoryId ? { ...category, label, parent_id: editingCategoryParentId || null } : category)).sort((left, right) => left.label.localeCompare(right.label)),
       );
       setEditingCategoryId(null);
       setEditingCategoryLabel("");
+      setEditingCategoryParentId("");
       showToast({ tone: "success", message: "Category renamed.", operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Category could not be updated." });
@@ -1306,10 +1383,12 @@ export function App() {
       showToast({ tone: "error", message: "Choose a CSV file before previewing." });
       return;
     }
-    const form = new FormData();
-    form.append("file", selectedFile);
     setBusyAction("import");
     try {
+      const uploadFile = await importFileForUpload();
+      if (!uploadFile) throw new Error("Choose a CSV file before previewing.");
+      const form = new FormData();
+      form.append("file", uploadFile);
       const response = await fetch(apiUrl(`/api/imports/preview?account_id=${selectedAccountId}`), {
         method: "POST",
         credentials: "include",
@@ -1334,24 +1413,29 @@ export function App() {
       showToast({ tone: "error", message: "Preview the file before committing it." });
       return;
     }
-    const form = new FormData();
-    form.append("file", selectedFile);
     setBusyAction("import");
     try {
-      const response = await fetch(apiUrl(`/api/imports/commit?account_id=${selectedAccountId}`), {
+      const uploadFile = await importFileForUpload();
+      if (!uploadFile) throw new Error("Choose a CSV file before staging.");
+      const form = new FormData();
+      form.append("file", uploadFile);
+      const response = await fetch(apiUrl(`/api/imports/stage?account_id=${selectedAccountId}`), {
         method: "POST",
         credentials: "include",
         headers: { "x-csrf-token": csrf },
         body: form,
       });
       if (!response.ok) {
-        throw new Error(await readableApiError(response, `/api/imports/commit?account_id=${selectedAccountId}`));
+        throw new Error(await readableApiError(response, `/api/imports/stage?account_id=${selectedAccountId}`));
       }
-      const result = (await response.json()) as { inserted: number; skipped: number; operation_id?: string };
+      const result = (await response.json()) as { batch_id: number; filename: string; row_count: number; pending: InboxBatch[] };
+      setImportInbox((current) => ({ ...current, pending: result.pending }));
       setImportPreview(null);
       setSelectedFile(null);
-      await loadData();
-      showToast({ tone: "success", message: `Imported ${result.inserted} rows. Skipped ${result.skipped} duplicates.`, operationId: result.operation_id });
+      setImportModalOpen(false);
+      setImportWorkspaceTab("smart");
+      navigateToView("settings");
+      showToast({ tone: "success", message: `${result.filename} is staged with ${result.row_count} rows. Review and confirm it in the Import Inbox.` });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Import failed." });
     } finally {
@@ -1392,6 +1476,7 @@ export function App() {
       setCategories((current) => current.filter((item) => item.id !== editingCategoryId));
       setEditingCategoryId(null);
       setEditingCategoryLabel("");
+      setEditingCategoryParentId("");
       setCategoryReassignId("");
       await loadData();
       showToast({ tone: "success", message: replacement ? `${category?.label ?? "Category"} merged into ${replacement.label}.` : "Unused category deleted.", operationId: result.operation_id });
@@ -1560,10 +1645,19 @@ export function App() {
       }
       const analysis = await parseApiJson<ImportAnalysis>(response, "/api/imports/analyze");
       setImportAnalysis(analysis);
-      if (analysis.suggested_account_id) {
+      if (analysis.preset_type === null) {
+        const signature = (analysis.headers ?? []).join("\u001f");
+        const saved = window.localStorage.getItem(`privateFinance.csvMapping.${signature}`);
+        if (saved) {
+          try { setGenericCsvMapping(JSON.parse(saved) as GenericCsvMapping); } catch { setGenericCsvMapping({ date: "", description: "", amount: "" }); }
+        } else {
+          setGenericCsvMapping({ date: "", description: "", amount: "" });
+        }
+        showToast({ tone: "info", message: saved ? "Loaded the saved column mapping for this CSV format." : "Choose the three columns once, then preview the mapped CSV." });
+      } else if (analysis.suggested_account_id) {
         setSelectedAccountId(analysis.suggested_account_id);
         showToast({ tone: "success", message: `Matched this CSV to an existing account with ${analysis.match_confidence}% confidence.` });
-      } else {
+      } else if (analysis.proposed_account) {
         setSelectedAccountId("");
         setAccountForm({
           institution_name: analysis.proposed_account.institution_name ?? "",
@@ -1580,7 +1674,7 @@ export function App() {
 
   async function createAccountFromAnalysis() {
     setToast(null);
-    if (!importAnalysis) {
+      if (!importAnalysis?.proposed_account) {
       showToast({ tone: "error", message: "Analyze a CSV before creating a suggested account." });
       return;
     }
@@ -2216,7 +2310,7 @@ export function App() {
     const category = categories.find((item) => item.id === transaction.category_id)?.label ?? "";
     const splitLabel = transaction.split_count > 0 ? `split split categories split into ${transaction.split_count} categories` : "";
     const allocationLabel = transaction.monthly_allocation_count > 0 ? `spread spread across months spread across ${transaction.monthly_allocation_count} months monthly allocation` : "";
-    return [transaction.raw_description, transaction.user_note, transaction.account_name, transaction.institution_name, transaction.transaction_type, category, splitLabel, allocationLabel, formatMoney(transaction.amount_cents), transaction.transaction_date]
+    return [transaction.raw_description, transaction.user_note, transaction.labels.join(" "), transaction.account_name, transaction.institution_name, transaction.transaction_type, category, splitLabel, allocationLabel, formatMoney(transaction.amount_cents), transaction.transaction_date]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(normalizedTransactionSearch));
   };
@@ -2231,6 +2325,40 @@ export function App() {
   const focusedAccountBalanceCents = focusedAccountId ? accountBalances.get(focusedAccountId) ?? 0 : 0;
   const transactionYears = Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))).sort((left, right) => right.localeCompare(left));
   const transactionCategoryOptions: FilterOption[] = [...categories.map((category) => ({ value: String(category.id), label: category.label })), { value: uncategorizedFilterValue, label: "Uncategorized" }];
+  const effectiveTransactionCategoryFilters = new Set(selectedTransactionCategoryFilters);
+  for (const category of categories) {
+    if (category.parent_id !== null && effectiveTransactionCategoryFilters.has(String(category.parent_id))) effectiveTransactionCategoryFilters.add(String(category.id));
+  }
+
+  async function selectAllMatchingTransactions() {
+    const allAccountIds = accounts.map((account) => account.id);
+    const allCategories = transactionCategoryOptions.map((option) => option.value);
+    const filter: TxnFilter = {
+      accounts: activeView === "account" && focusedAccountId ? [String(focusedAccountId)] : sameFilterValues(selectedTransactionAccountFilters, allAccountIds) ? undefined : selectedTransactionAccountFilters.map(String),
+      categories: sameFilterValues(selectedTransactionCategoryFilters, allCategories) ? undefined : selectedTransactionCategoryFilters,
+      months: sameFilterValues(selectedTransactionMonthFilters, monthOptions.map((month) => month.value)) ? undefined : selectedTransactionMonthFilters,
+      years: sameFilterValues(selectedTransactionYearFilters, transactionYears) ? undefined : selectedTransactionYearFilters,
+      types: selectedTransactionTypeFilters.length > 0 ? selectedTransactionTypeFilters : undefined,
+      dateFrom: transactionDateFrom || undefined,
+      dateTo: transactionDateTo || undefined,
+      dateBasis: transactionDateBasis,
+      amountMin: transactionAmountMin,
+      amountMax: transactionAmountMax,
+      direction: transactionDirection,
+      search: transactionSearch.trim() || undefined,
+      view: transactionView,
+    };
+    setBusyAction("select-all-transactions");
+    try {
+      const ids = await api<number[]>(`/api/transactions/ids?${encodeTxnFilter(filter).toString()}`);
+      setSelectedTransactionIds((current) => Array.from(new Set([...current, ...ids])));
+      showToast({ tone: "info", message: `Selected all ${ids.length} transactions matching the current filters.` });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Matching transactions could not be selected." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
   const filteredTransactions = (() => {
     let rows = transactions;
     if (activeView === "account" && focusedAccountId) {
@@ -2242,7 +2370,7 @@ export function App() {
       .filter(transactionMatchesSearch)
       .filter((transaction) => selectedTransactionMonthFilters.includes(transaction.transaction_date.slice(5, 7)))
       .filter((transaction) => selectedTransactionYearFilters.includes(transaction.transaction_date.slice(0, 4)))
-      .filter((transaction) => transaction.reporting_category_ids.some((categoryId) => selectedTransactionCategoryFilters.includes(categoryId === null ? uncategorizedFilterValue : String(categoryId))))
+      .filter((transaction) => transaction.reporting_category_ids.some((categoryId) => effectiveTransactionCategoryFilters.has(categoryId === null ? uncategorizedFilterValue : String(categoryId))))
       .filter((transaction) => selectedTransactionTypeFilters.length === 0 || selectedTransactionTypeFilters.includes(transaction.transaction_type))
       .filter((transaction) => {
         const dates = transactionDateBasis === "reporting" ? transaction.reporting_dates : [transaction.transaction_date];
@@ -2326,21 +2454,23 @@ export function App() {
     }
   }
 
-  async function scanImportInbox() {
-    setBusyAction("inbox-scan");
+  async function scanImportInbox(silent = false) {
+    if (!silent) setBusyAction("inbox-scan");
     try {
       const result = await api<ImportInboxScan>("/api/imports/inbox/scan", { method: "POST", headers: { "x-csrf-token": csrf } });
       setImportInbox({ folder: result.folder, pending: result.pending });
       setLastInboxScan(result);
       const followUpCount = result.needs_account.length + result.errors.length;
-      showToast({
-        tone: followUpCount ? "info" : "success",
-        message: `${result.staged.length} file${result.staged.length === 1 ? "" : "s"} staged, ${result.skipped.length} already recorded${followUpCount ? `, ${followUpCount} need attention` : ""}.`,
-      });
+      if (!silent && (result.staged.length > 0 || followUpCount > 0)) {
+        showToast({
+          tone: followUpCount ? "info" : "success",
+          message: `${result.staged.length} file${result.staged.length === 1 ? "" : "s"} staged, ${result.skipped.length} already recorded${followUpCount ? `, ${followUpCount} need attention` : ""}.`,
+        });
+      }
     } catch (error) {
-      showToast({ tone: "error", message: error instanceof Error ? error.message : "Import inbox could not be scanned." });
+      if (!silent) showToast({ tone: "error", message: error instanceof Error ? error.message : "Import inbox could not be scanned." });
     } finally {
-      setBusyAction(null);
+      if (!silent) setBusyAction(null);
     }
   }
 
@@ -3043,7 +3173,7 @@ export function App() {
                   <div className="importInboxHeader">
                     <div>
                       <strong>Import Inbox</strong>
-                      <span>Copy statement CSVs into this private local folder, then scan and review them before anything is imported.</span>
+                      <span>Copy statement CSVs into this private local folder. The app checks automatically while it is open, then waits for your confirmation.</span>
                       <code>{importInbox.folder || "The inbox folder will be created when the backend starts."}</code>
                     </div>
                     <button className="primaryButton" onClick={() => void scanImportInbox()} disabled={busyAction !== null}>
@@ -3051,7 +3181,7 @@ export function App() {
                       {busyAction === "inbox-scan" ? "Scanning…" : "Scan inbox"}
                     </button>
                   </div>
-                  <small>Files stay in place. Their fingerprints prevent accidental re-imports.</small>
+                  <small>Files stay in place. Automatic checks run every 30 seconds, and fingerprints prevent accidental re-imports.</small>
                   {lastInboxScan && (lastInboxScan.needs_account.length > 0 || lastInboxScan.errors.length > 0) ? (
                     <div className="inboxScanIssues">
                       {lastInboxScan.needs_account.map((item) => (
@@ -3163,9 +3293,9 @@ export function App() {
                       <Search size={16} />
                       Preview
                     </button>
-                    <button className="primaryButton" onClick={() => void commitSelectedImport()} disabled={!importPreview || busyAction !== null}>
+                    <button className="primaryButton" onClick={() => void commitSelectedImport()} disabled={!selectedAccountId || !selectedFile || !importPreview || busyAction !== null}>
                       <ArrowDownToLine size={16} />
-                      Commit
+                      Stage for review
                     </button>
                   </div>
                 </div>
@@ -3174,12 +3304,28 @@ export function App() {
                   <div className="analysisPanel">
                     <div className="analysisHeader">
                       <div>
-                        <strong>{importAnalysis.preset_type}</strong>
+                        <strong>{importAnalysis.preset_type ?? "Custom CSV mapping"}</strong>
                         <span>{importAnalysis.reason}</span>
                       </div>
                       <span className="statusBadge suggested">{importAnalysis.suggested_account_id ? `${importAnalysis.match_confidence}% match` : "Needs review"}</span>
                     </div>
-                    {analyzedAccount ? (
+                    {importAnalysis.preset_type === null ? (
+                      <div className="genericMappingPanel">
+                        <span className="eyebrow">Map columns</span>
+                        <p>Tell the app which columns contain the transaction date, description, and amount. Matching headers are remembered on this browser.</p>
+                        <div className="genericMappingGrid">
+                          {(["date", "description", "amount"] as const).map((field) => (
+                            <label key={field}>{field[0].toUpperCase() + field.slice(1)}
+                              <select value={genericCsvMapping[field]} onChange={(event) => setGenericCsvMapping((current) => ({ ...current, [field]: event.target.value }))}>
+                                <option value="">Choose column</option>
+                                {(importAnalysis.headers ?? []).map((header) => <option key={header} value={header}>{header}</option>)}
+                              </select>
+                            </label>
+                          ))}
+                        </div>
+                        <small>Review the preview before staging. Amount signs are preserved exactly as supplied by the CSV.</small>
+                      </div>
+                    ) : analyzedAccount ? (
                       <div className="matchedAccountCard">
                         <Landmark size={16} />
                         <div>
@@ -3190,7 +3336,7 @@ export function App() {
                           Use this
                         </button>
                       </div>
-                    ) : (
+                    ) : importAnalysis.proposed_account ? (
                       <div className="suggestedAccountForm">
                         <span className="eyebrow">Suggested new account</span>
                         <input value={accountForm.display_name} onChange={(event) => setAccountForm({ ...accountForm, display_name: event.target.value })} placeholder="Account name" />
@@ -3208,7 +3354,7 @@ export function App() {
                           Create and use account
                         </button>
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 ) : (
                   <p className="emptyText">Choose a CSV and click Analyze. If confidence is high, the app selects the existing account; otherwise it drafts a new account you can edit.</p>
@@ -3646,6 +3792,10 @@ export function App() {
             <div className="compactForm">
               <div className="buttonRow">
                 <input value={newCategoryLabel} onChange={(event) => setNewCategoryLabel(event.target.value)} placeholder="New category name" />
+                <select value={newCategoryParentId} onChange={(event) => setNewCategoryParentId(event.target.value ? Number(event.target.value) : "")} title="Optional parent category">
+                  <option value="">Top-level category</option>
+                  {categories.filter((category) => category.parent_id === null).map((category) => <option key={category.id} value={category.id}>Under {category.label}</option>)}
+                </select>
                 <button className="primaryButton" onClick={() => void createCategory()}>
                   <Plus size={16} />
                   Add
@@ -3655,6 +3805,10 @@ export function App() {
                 <div className="categoryManagementEditor">
                   <div className="inlineEdit">
                     <input value={editingCategoryLabel} onChange={(event) => setEditingCategoryLabel(event.target.value)} placeholder="Rename category" />
+                    <select value={editingCategoryParentId} onChange={(event) => setEditingCategoryParentId(event.target.value ? Number(event.target.value) : "")}>
+                      <option value="">Top-level category</option>
+                      {categories.filter((category) => category.id !== editingCategoryId && category.parent_id === null).map((category) => <option key={category.id} value={category.id}>Under {category.label}</option>)}
+                    </select>
                     <button className="secondaryButton" onClick={() => void updateCategory()}>Save rename</button>
                   </div>
                   <div className="categoryMergeRow">
@@ -3663,7 +3817,7 @@ export function App() {
                       {categories.filter((category) => category.id !== editingCategoryId).map((category) => <option key={category.id} value={category.id}>Merge into {category.label}</option>)}
                     </select>
                     <button className="dangerButton" onClick={() => void deleteOrMergeCategory()}>{categoryReassignId ? "Merge and delete" : "Delete unused"}</button>
-                    <button className="ghostButton" onClick={() => { setEditingCategoryId(null); setEditingCategoryLabel(""); setCategoryReassignId(""); }}>Cancel</button>
+                    <button className="ghostButton" onClick={() => { setEditingCategoryId(null); setEditingCategoryLabel(""); setEditingCategoryParentId(""); setCategoryReassignId(""); }}>Cancel</button>
                   </div>
                   <small>Deleting a category in use requires a replacement. Transactions, splits, monthly spreads, and rules will move to it.</small>
                 </div>
@@ -3677,6 +3831,7 @@ export function App() {
                   onClick={() => {
                     setEditingCategoryId(category.id);
                     setEditingCategoryLabel(category.label);
+                    setEditingCategoryParentId(category.parent_id ?? "");
                     setCategoryReassignId("");
                   }}
                 >
@@ -3734,18 +3889,17 @@ export function App() {
               <button
                 type="button"
                 className="secondaryButton compactButton"
-                disabled={repositoryTransactionIds.length === 0}
                 onClick={() => {
-                  setSelectedTransactionIds((current) => {
+                  if (allRepositoryTransactionsSelected) {
                     const repositoryIds = new Set(repositoryTransactionIds);
-                    if (allRepositoryTransactionsSelected) {
-                      return current.filter((id) => !repositoryIds.has(id));
-                    }
-                    return Array.from(new Set([...current, ...repositoryTransactionIds]));
-                  });
+                    setSelectedTransactionIds((current) => current.filter((id) => !repositoryIds.has(id)));
+                  } else {
+                    void selectAllMatchingTransactions();
+                  }
                 }}
+                disabled={repositoryTransactionIds.length === 0 || busyAction === "select-all-transactions"}
               >
-                {allRepositoryTransactionsSelected ? "Clear all" : `Select all ${repositoryTransactionIds.length}`}
+                {allRepositoryTransactionsSelected ? "Clear all" : busyAction === "select-all-transactions" ? "Selecting…" : `Select all ${filteredTransactions.length}`}
               </button>
             </div>
             {pagedTransactions.length < filteredTransactions.length ? (
@@ -3794,6 +3948,8 @@ export function App() {
                   <select value={bulkEditValue} onChange={(event) => setBulkEditValue(event.target.value)}><option value="">Choose type</option>{transactionTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}</select>
                 ) : bulkEditField === "category" ? (
                   <select value={bulkEditValue} onChange={(event) => setBulkEditValue(event.target.value)}><option value="">Choose category</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select>
+                ) : bulkEditField === "date" ? (
+                  <input type="date" value={bulkEditValue} onChange={(event) => setBulkEditValue(event.target.value)} />
                 ) : (
                   <input value={bulkEditValue} onChange={(event) => setBulkEditValue(event.target.value)} placeholder={`New ${bulkTransactionFields.find((field) => field.value === bulkEditField)?.label.toLowerCase()}`} />
                 )}
@@ -3803,6 +3959,7 @@ export function App() {
                 <button className="ghostButton" onClick={() => { setBulkEditorOpen(false); setBulkEditValue(""); }}>Cancel</button>
               </div>
               {bulkEditField === "institution" ? <small>Institution changes apply to the account records associated with the selected transactions.</small> : null}
+              {bulkEditField === "labels" ? <small>Separate labels with commas. Applying the change replaces the selected transactions' existing labels.</small> : null}
             </div>
           ) : null}
           {deleteTarget?.kind === "transaction_bulk" || deleteTarget?.kind === "transaction_bulk_permanent" ? (
@@ -3898,8 +4055,9 @@ export function App() {
                     ) : (
                       <span className="ledgerReadonlyCell">{transaction.user_note || "Add details"}</span>
                     )}
-                    {transaction.split_count > 0 || transaction.monthly_allocation_count > 0 ? (
+                    {transaction.labels.length > 0 || transaction.split_count > 0 || transaction.monthly_allocation_count > 0 ? (
                       <div className="transactionLabels">
+                        {transaction.labels.map((label) => <span key={label}>#{label}</span>)}
                         {transaction.split_count > 0 ? <span>Split into {transaction.split_count} categories</span> : null}
                         {transaction.monthly_allocation_count > 0 ? <span>Spread across {transaction.monthly_allocation_count} months</span> : null}
                       </div>
@@ -4169,7 +4327,7 @@ export function App() {
                       ))}
                     </select>
                   </label>
-                  <input type="file" accept=".csv,text/csv" onChange={(event) => { setSelectedFile(event.target.files?.[0] ?? null); setImportPreview(null); setImportAnalysis(null); }} />
+                  <input type="file" accept=".csv,text/csv" onChange={(event) => chooseImportFile(event.target.files?.[0] ?? null)} />
                   <div className="buttonRow">
                     <button className="secondaryButton" onClick={() => void analyzeSelectedImport()} disabled={!selectedFile}>
                       Analyze
@@ -4178,15 +4336,27 @@ export function App() {
                       Preview
                     </button>
                     <button className="primaryButton" onClick={() => void commitSelectedImport()} disabled={!selectedAccountId || !selectedFile || !importPreview || busyAction !== null}>
-                      Commit import
+                      Stage for review
                     </button>
                   </div>
                   {importAnalysis ? (
                     <div className="importSummary">
                       <span>
-                        Detected <strong>{importAnalysis.preset_type}</strong> · {importAnalysis.reason}
+                        Detected <strong>{importAnalysis.preset_type ?? "custom CSV"}</strong> · {importAnalysis.reason}
                       </span>
                       {analyzedAccount ? <span>Matched account: {analyzedAccount.display_name}</span> : null}
+                      {importAnalysis.preset_type === null ? (
+                        <div className="genericMappingGrid">
+                          {(["date", "description", "amount"] as const).map((field) => (
+                            <label key={field}>{field[0].toUpperCase() + field.slice(1)}
+                              <select value={genericCsvMapping[field]} onChange={(event) => setGenericCsvMapping((current) => ({ ...current, [field]: event.target.value }))}>
+                                <option value="">Choose column</option>
+                                {(importAnalysis.headers ?? []).map((header) => <option key={header} value={header}>{header}</option>)}
+                              </select>
+                            </label>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                   {importPreview ? (
@@ -4482,8 +4652,148 @@ function ReportSurface({
 function SpendingReport({ rows, reportFilter, onPeek }: { rows: CategoryTotal[]; reportFilter: TxnFilter; onPeek: (filter: TxnFilter, title: string) => void }) {
   const max = Math.max(...rows.map((row) => row.amount_cents), 1);
   const total = rows.reduce((sum, row) => sum + row.amount_cents, 0);
+  const chartCategories = useMemo(() => rows.filter((row) => row.category_id !== null).slice(0, 6), [rows]);
+  const [monthlySeries, setMonthlySeries] = useState<Record<string, AggregateRow[]>>({});
+  const [hiddenCategories, setHiddenCategories] = useState<string[]>([]);
+  const [dragStart, setDragStart] = useState<number | null>(null);
+  const [dragEnd, setDragEnd] = useState<number | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(
+      chartCategories.map(async (category) => [
+        String(category.category_id),
+        await api<AggregateRow[]>(aggregatePath("timeseries", { ...reportFilter, dateBasis: "reporting", categories: [String(category.category_id)], types: ["expense", "refund"] }, "month")),
+      ] as const),
+    )
+      .then((entries) => {
+        if (!cancelled) setMonthlySeries(Object.fromEntries(entries));
+      })
+      .catch(() => {
+        if (!cancelled) setMonthlySeries({});
+      });
+    return () => { cancelled = true; };
+  }, [chartCategories, reportFilter.dateFrom, reportFilter.dateTo, reportFilter.months?.join(","), reportFilter.years?.join(",")]);
+
+  const months = useMemo(
+    () => Array.from(new Set(Object.values(monthlySeries).flatMap((series) => series.map((point) => point.date.slice(0, 7))))).sort(),
+    [monthlySeries],
+  );
+  const visibleCategories = chartCategories.filter((category) => !hiddenCategories.includes(String(category.category_id)));
+  const monthlyValues = months.map((month) => ({
+    month,
+    values: visibleCategories.map((category) => ({
+      category,
+      amount: Math.abs(monthlySeries[String(category.category_id)]?.find((point) => point.date.startsWith(month))?.total_cents ?? 0),
+    })),
+  }));
+  const maxMonth = Math.max(...monthlyValues.map((month) => month.values.reduce((sum, value) => sum + value.amount, 0)), 1);
+  const selectedStart = dragStart === null || dragEnd === null ? null : Math.min(dragStart, dragEnd);
+  const selectedEnd = dragStart === null || dragEnd === null ? null : Math.max(dragStart, dragEnd);
+  const selectedMonths = selectedStart === null || selectedEnd === null ? [] : monthlyValues.slice(selectedStart, selectedEnd + 1);
+  const selectedTotal = selectedMonths.reduce((sum, month) => sum + month.values.reduce((monthSum, value) => monthSum + value.amount, 0), 0);
+
+  function monthEnd(month: string) {
+    const [year, monthNumber] = month.split("-").map(Number);
+    return new Date(Date.UTC(year, monthNumber, 0)).toISOString().slice(0, 10);
+  }
+
+  function pointerMonth(event: ReactPointerEvent<SVGSVGElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(0.9999, (event.clientX - bounds.left) / bounds.width));
+    return Math.min(months.length - 1, Math.floor(ratio * months.length));
+  }
+
+  const selectedFilter: TxnFilter | null = selectedMonths.length > 0 ? {
+    ...reportFilter,
+    months: undefined,
+    years: undefined,
+    dateBasis: "reporting",
+    dateFrom: `${selectedMonths[0].month}-01`,
+    dateTo: monthEnd(selectedMonths[selectedMonths.length - 1].month),
+    categories: visibleCategories.map((category) => String(category.category_id)),
+    types: ["expense", "refund"],
+    sort: "amount",
+    sortDirection: "desc",
+  } : null;
+
   return (
     <div className="reportStack">
+      {months.length > 0 ? (
+        <section className="spendingTrendPanel">
+          <div className="spendingTrendHeader">
+            <div>
+              <span className="eyebrow">Monthly comparison</span>
+              <h3>Spending by category over time</h3>
+              <p>Drag across months to total a period. Toggle categories to focus the comparison.</p>
+            </div>
+            {selectedFilter ? (
+              <button className="ghostButton compactButton" onClick={() => { setDragStart(null); setDragEnd(null); }}>Clear range</button>
+            ) : null}
+          </div>
+          {selectedFilter ? (
+            <div className="spendingRangeSummary">
+              <div><span>Selected period</span><strong>{formatShortDate(selectedFilter.dateFrom)} – {formatShortDate(selectedFilter.dateTo)}</strong></div>
+              <div><span>Visible-category spending</span><strong>{formatMoney(selectedTotal)}</strong></div>
+              <button className="secondaryButton compactButton" onClick={() => onPeek(selectedFilter, "Selected spending period")}>View transactions</button>
+            </div>
+          ) : null}
+          <div className="spendingLegend" aria-label="Spending categories">
+            {chartCategories.map((category, index) => {
+              const id = String(category.category_id);
+              const hidden = hiddenCategories.includes(id);
+              return (
+                <button key={id} className={hidden ? "spendingLegendItem muted" : "spendingLegendItem"} onClick={() => setHiddenCategories((current) => hidden ? current.filter((value) => value !== id) : [...current, id])}>
+                  <span style={{ backgroundColor: `hsl(222 68% ${Math.min(68, 44 + index * 4)}%)` }} />
+                  {category.category}
+                </button>
+              );
+            })}
+          </div>
+          <svg
+            className="spendingTrendChart"
+            viewBox="0 0 900 300"
+            role="img"
+            aria-label="Monthly stacked spending chart. Drag across months to select a range."
+            onPointerDown={(event) => {
+              if (months.length === 0) return;
+              const index = pointerMonth(event);
+              setDragStart(index);
+              setDragEnd(index);
+              setDragging(true);
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={(event) => { if (dragging) setDragEnd(pointerMonth(event)); }}
+            onPointerUp={(event) => { setDragging(false); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
+          >
+            {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+              const y = 250 - ratio * 220;
+              return <g key={ratio}><line x1="58" x2="890" y1={y} y2={y} className="spendingGridLine" /><text x="52" y={y + 4} textAnchor="end" className="spendingAxisLabel">{formatMoney(Math.round(maxMonth * ratio))}</text></g>;
+            })}
+            {monthlyValues.map((month, monthIndex) => {
+              const slot = 832 / Math.max(monthlyValues.length, 1);
+              const width = Math.max(8, Math.min(46, slot * 0.66));
+              const x = 58 + monthIndex * slot + (slot - width) / 2;
+              let stackedHeight = 0;
+              const selected = selectedStart !== null && selectedEnd !== null && monthIndex >= selectedStart && monthIndex <= selectedEnd;
+              return (
+                <g key={month.month}>
+                  {selected ? <rect x={58 + monthIndex * slot} y="30" width={slot} height="220" className="spendingSelection" /> : null}
+                  {month.values.map((value) => {
+                    const height = (value.amount / maxMonth) * 220;
+                    const y = 250 - stackedHeight - height;
+                    stackedHeight += height;
+                    const categoryIndex = chartCategories.findIndex((category) => category.category_id === value.category.category_id);
+                    return <rect key={String(value.category.category_id)} x={x} y={y} width={width} height={height} rx="2" fill={`hsl(222 68% ${Math.min(68, 44 + categoryIndex * 4)}%)`}><title>{value.category.category}: {formatMoney(value.amount)}</title></rect>;
+                  })}
+                  <text x={x + width / 2} y="272" textAnchor="middle" className="spendingMonthLabel">{new Date(`${month.month}-01T00:00:00`).toLocaleDateString(undefined, { month: "short", year: monthlyValues.length <= 8 ? "2-digit" : undefined })}</text>
+                </g>
+              );
+            })}
+          </svg>
+        </section>
+      ) : null}
       <div className="barList">
         {rows.map((row, index) => (
           <DrillDownLink className="barRow spendingBarRow" key={row.category} filter={{ ...reportFilter, dateBasis: "reporting", categories: [row.category_id === null ? uncategorizedFilterValue : String(row.category_id)], types: ["expense", "refund"], sort: "amount", sortDirection: "desc" }} title={`${row.category} spending`} count={row.count} onPeek={onPeek}>

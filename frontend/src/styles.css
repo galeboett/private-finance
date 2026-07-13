@@ -1451,6 +1451,104 @@ button:disabled {
   font-size: 11px;
 }
 
+.spendingTrendPanel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfcff;
+}
+
+.spendingTrendHeader,
+.spendingRangeSummary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.spendingTrendHeader h3 {
+  margin: 3px 0;
+}
+
+.spendingTrendHeader p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.spendingRangeSummary {
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #cbd8ff;
+  border-radius: 8px;
+  background: var(--blue-soft);
+}
+
+.spendingRangeSummary > div {
+  display: grid;
+  gap: 2px;
+}
+
+.spendingRangeSummary span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.spendingLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.spendingLegendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.spendingLegendItem > span {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+}
+
+.spendingLegendItem.muted {
+  opacity: 0.42;
+}
+
+.spendingTrendChart {
+  width: 100%;
+  min-width: 620px;
+  touch-action: none;
+  user-select: none;
+  cursor: crosshair;
+}
+
+.spendingGridLine {
+  stroke: #dce3ee;
+  stroke-width: 1;
+}
+
+.spendingAxisLabel,
+.spendingMonthLabel {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+.spendingSelection {
+  fill: rgba(72, 101, 201, 0.12);
+  stroke: rgba(72, 101, 201, 0.32);
+}
+
 .accountSparkline {
   width: 100%;
   height: 32px;
@@ -2199,6 +2297,36 @@ textarea {
 
 .suggestedAccountForm {
   padding-top: 4px;
+}
+
+.genericMappingPanel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #cbd8ff;
+  border-radius: 8px;
+  background: #f5f7ff;
+}
+
+.genericMappingPanel p,
+.genericMappingPanel small {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.genericMappingGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.genericMappingGrid label {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: capitalize;
 }
 
 .manualOverride {
@@ -3598,6 +3726,10 @@ select.editableCell {
   }
 
   .bulkEditPanel {
+    grid-template-columns: 1fr;
+  }
+
+  .genericMappingGrid {
     grid-template-columns: 1fr;
   }
 

@@ -7,6 +7,7 @@ export type NetWorthPeriod = "1M" | "6M" | "1Y" | "Max";
 export interface TxnFilter {
   accounts?: string[];
   categories?: string[];
+  tags?: string[];
   months?: string[];
   years?: string[];
   dateFrom?: string;
@@ -31,7 +32,7 @@ export type AppRoute = {
   filters: TxnFilter;
 };
 
-const listKeys = ["accounts", "categories", "months", "years", "types"] as const;
+const listKeys = ["accounts", "categories", "tags", "months", "years", "types"] as const;
 
 export function readAppRoute(location: Pick<Location, "pathname" | "search">): AppRoute {
   const accountMatch = location.pathname.match(/^\/accounts\/(\d+)\/transactions\/?$/);
