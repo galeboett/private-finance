@@ -109,6 +109,10 @@ class OperationBulkUpdateRequest(BaseModel):
     patch: TransactionReviewUpdate
 
 
+class DuplicateResolutionRequest(BaseModel):
+    action: Literal["remove_new", "keep_both", "replace_old"]
+
+
 class RuleCreate(BaseModel):
     category_id: int
     field_name: str

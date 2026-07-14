@@ -48,6 +48,9 @@ The app builds a full personal finance picture by turning account exports into a
    - Download suffixes such as `(1)` do not determine duplicates. The app compares exact bytes, normalized parsed rows, and reliable issuer references, so renamed/reformatted copies are skipped while genuinely changed files are staged.
 
 5. Review and categorize.
+   - Open **Review → Duplicates** for transactions linked to an existing ledger row. Differing fields are highlighted side by side.
+   - **Remove new copy** moves the newly imported row to Trash. **Keep both** clears the duplicate link and returns the new row to ordinary category review. **Replace old bank details** updates the existing row's bank-sourced date, amount, description, and reference while preserving its category, notes, labels, and splits.
+   - Exact matches can be resolved together as one Activity operation and one Undo.
    - The app can suggest transaction types and categories from rules.
    - The user confirms or corrects those suggestions.
    - Corrections can become future rules.

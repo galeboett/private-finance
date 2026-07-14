@@ -2192,6 +2192,117 @@ textarea {
   background: #fbfcfb;
 }
 
+.duplicateReviewPanel {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.duplicateReviewSummary,
+.duplicatePairHeader,
+.duplicateActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.duplicateReviewSummary > div,
+.duplicatePairHeader > div {
+  display: grid;
+  gap: 3px;
+}
+
+.duplicateReviewSummary span,
+.duplicatePairHeader span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.duplicatePairList {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.duplicatePair {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.transactionCompareGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.transactionCompareCard {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.transactionCompareCard.candidate {
+  border-color: #9bb8e8;
+}
+
+.transactionCompareHeader {
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.transactionCompareHeader small,
+.compareField dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.transactionCompareCard dl {
+  margin: 0;
+}
+
+.compareField {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.compareField:last-child {
+  border-bottom: 0;
+}
+
+.compareField dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.compareField.different {
+  background: #fff2c9;
+}
+
+.compareField.different dd {
+  font-weight: 800;
+}
+
+.duplicateActions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
 .importInboxPanel {
   display: grid;
   gap: 10px;
@@ -3717,6 +3828,16 @@ select.editableCell {
 
   .reviewWorkspaceNav {
     overflow-x: auto;
+  }
+
+  .transactionCompareGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .duplicateReviewSummary,
+  .duplicatePairHeader {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .transferReviewPanel,

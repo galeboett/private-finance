@@ -30,6 +30,8 @@ import { api, apiUrl, parseApiJson, readableApiError } from "./api/client";
 import { readAppRoute, routeUrl, type RouteView } from "./app/router";
 import { ImportReview, type InboxBatch, type ImportInboxScan, type ImportInboxState, type SignDecision } from "./features/imports/ImportReview";
 import { SignConventionPrompt, type ImportSignConvention } from "./features/imports/SignConventionPrompt";
+import { DuplicateReview, type DuplicateAction, type DuplicatePair } from "./features/review/DuplicateReview";
+import { TransferReview, type TransferCandidate } from "./features/review/TransferReview";
 import { encodeTxnFilter, type NetWorthPeriod, type TxnFilter } from "./lib/filters";
 import { useDrillDown } from "./lib/useDrillDown";
 
@@ -54,13 +56,6 @@ type AccountSummary = {
   sidebar_balance_as_of: string | null;
 };
 
-type ReviewItem = {
-  id: number;
-  description: string;
-  amount_cents: number;
-  review_status: string;
-};
-
 type TransactionRow = {
   id: number;
   account_id: number;
@@ -82,17 +77,6 @@ type TransactionRow = {
 
 type SplitDraft = { category_id: number | ""; amount: string; note: string };
 type MonthlyAllocationDraft = { transactionId: number; category_id: number | ""; start_month: string; end_month: string };
-
-type TransferTransaction = Pick<TransactionRow, "id" | "account_id" | "raw_description" | "amount_cents" | "transaction_type" | "review_status" | "transaction_date">;
-
-type TransferCandidate = {
-  id: number;
-  from_transaction: TransferTransaction;
-  to_transaction: TransferTransaction;
-  match_confidence: number;
-  confirmed: boolean;
-  suggested_type: string;
-};
 
 type ImportPreview = {
   preset_type: string;
@@ -746,7 +730,6 @@ export function App() {
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
   const [categories, setCategories] = useState<BootstrapCategory[]>([]);
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
-  const [review, setReview] = useState<ReviewItem[]>([]);
   const [transactions, setTransactions] = useState<TransactionRow[]>([]);
   const [operations, setOperations] = useState<OperationSummary[]>([]);
   const [expandedOperationId, setExpandedOperationId] = useState<string | null>(null);
@@ -760,6 +743,7 @@ export function App() {
   const [allocationRows, setAllocationRows] = useState<AllocationRow[]>([]);
   const [holdingRows, setHoldingRows] = useState<HoldingRow[]>([]);
   const [transferCandidates, setTransferCandidates] = useState<TransferCandidate[]>([]);
+  const [duplicatePairs, setDuplicatePairs] = useState<DuplicatePair[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | "">("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
@@ -1015,10 +999,9 @@ export function App() {
   }
 
   async function loadData() {
-    const [dashboardData, accountsData, reviewData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData, transferData, inboxData, operationData] = await Promise.all([
+    const [dashboardData, accountsData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData, transferData, duplicateData, inboxData, operationData] = await Promise.all([
       api<DashboardSummary>("/api/dashboard/summary"),
       api<AccountSummary[]>("/api/accounts"),
-      api<ReviewItem[]>("/api/review"),
       api<TransactionRow[]>(`/api/transactions?view=${transactionView}`),
       api<RuleSummary[]>("/api/rules"),
       loadCategoryAggregates(reportPeriod),
@@ -1027,12 +1010,12 @@ export function App() {
       api<AllocationRow[]>("/api/investments/allocation"),
       api<HoldingRow[]>("/api/investments/holdings"),
       api<TransferCandidate[]>("/api/transfers/unconfirmed"),
+      api<DuplicatePair[]>("/api/duplicates/pending"),
       api<ImportInboxState>("/api/imports/inbox"),
       api<OperationSummary[]>("/api/operations?limit=100"),
     ]);
     setDashboard(dashboardData);
     setAccounts(accountsData);
-    setReview(reviewData);
     setTransactions(transactionData);
     setRules(rulesData);
     setCategoryTotals(categoryData);
@@ -1041,6 +1024,7 @@ export function App() {
     setAllocationRows(allocationData);
     setHoldingRows(holdingsData);
     setTransferCandidates(transferData);
+    setDuplicatePairs(duplicateData);
     setImportInbox(inboxData);
     setOperations(operationData);
   }
@@ -1427,7 +1411,6 @@ export function App() {
       setTransactions((current) =>
         current.map((transaction) => (transaction.id === transactionId ? { ...transaction, ...patch } : transaction)),
       );
-      setReview((current) => (patch.review_status === "confirmed" ? current.filter((item) => item.id !== transactionId) : current));
       if (refreshAfterSave) {
         await loadData();
       }
@@ -1924,6 +1907,40 @@ export function App() {
     }
   }
 
+  async function resolveDuplicateCandidate(transactionId: number, action: DuplicateAction) {
+    setBusyAction(`duplicate-${transactionId}-${action}`);
+    try {
+      const result = await api<{ operation_id: string }>(`/api/duplicates/${transactionId}/resolve`, {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ action }),
+      });
+      await loadData();
+      const message = action === "remove_new" ? "Removed the new duplicate copy." : action === "keep_both" ? "Kept both transactions; the new row remains in category review." : "Updated the original with the new bank details and preserved your annotations.";
+      showToast({ tone: "success", message, operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "The duplicate could not be resolved." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function resolveAllExactDuplicates() {
+    setBusyAction("duplicates-exact");
+    try {
+      const result = await api<{ resolved: number; operation_id: string | null }>("/api/duplicates/resolve-exact", {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+      });
+      await loadData();
+      showToast({ tone: "success", message: `Removed ${result.resolved} exact duplicate cop${result.resolved === 1 ? "y" : "ies"}.`, operationId: result.operation_id ?? undefined });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Exact duplicates could not be resolved." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function confirmTransaction(transaction: TransactionRow) {
     if (!accounts.some((account) => account.id === transaction.account_id)) {
       showToast({ tone: "error", message: "Choose an account before confirming this transaction." });
@@ -2348,7 +2365,8 @@ export function App() {
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(normalizedTransactionSearch));
   };
-  const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status) && transactionMatchesSearch(transaction));
+  const duplicateCandidateIds = new Set(duplicatePairs.map((pair) => pair.candidate.id));
+  const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status) && !duplicateCandidateIds.has(transaction.id) && transactionMatchesSearch(transaction));
   const visibleReviewTransactions = reviewTransactions.slice(0, 5);
   const activeAccounts = accounts.filter((account) => account.status === "active");
   const archivedAccounts = accounts.filter((account) => account.status === "archived");
@@ -3587,64 +3605,27 @@ export function App() {
           {activeView === "review" ? (
           <>
           <nav className="reviewWorkspaceNav" aria-label="Review workspace sections">
+            <a href="#duplicate-review">Duplicates <span>{duplicatePairs.length}</span></a>
             <a href="#transfer-review">Transfers <span>{transferCandidates.length}</span></a>
             <a href="#review-inbox">Inbox <span>{reviewTransactions.length}</span></a>
             <a href="#saved-rules">Rules <span>{rules.length}</span></a>
           </nav>
-          <section className="toolPanel transferReviewPanel" id="transfer-review">
-            <PanelTitle icon={WalletCards} title="Transfer Review" subtitle="Find bank transfers and credit card payments so reports do not count them as spending." />
-            <div className="transferIntro">
-              <div>
-                <strong>{transferCandidates.length} open matches</strong>
-                <span>Matches use equal-and-opposite amounts across accounts within five days.</span>
-              </div>
-              <button className="primaryButton" onClick={() => void detectTransfers()}>
-                <RefreshCw size={16} />
-                Find transfers/payments
-              </button>
-            </div>
-            <div className="transferList">
-              {transferCandidates.map((candidate) => {
-                const fromAccount = accounts.find((account) => account.id === candidate.from_transaction.account_id);
-                const toAccount = accounts.find((account) => account.id === candidate.to_transaction.account_id);
-                return (
-                  <article className="transferCard" key={candidate.id}>
-                    <div className="transferCardTop">
-                      <div>
-                        <strong>{readableAccountType(candidate.suggested_type)}</strong>
-                        <span>{candidate.match_confidence}% confidence</span>
-                      </div>
-                      <span className="statusBadge suggested">Suggested</span>
-                    </div>
-                    <div className="transferPair">
-                      <div>
-                        <small>Money out</small>
-                        <strong>{fromAccount?.display_name ?? `Account ${candidate.from_transaction.account_id}`}</strong>
-                        <span>{formatShortDate(candidate.from_transaction.transaction_date)} / {candidate.from_transaction.raw_description}</span>
-                        <b>{formatMoney(candidate.from_transaction.amount_cents)}</b>
-                      </div>
-                      <div>
-                        <small>Money in</small>
-                        <strong>{toAccount?.display_name ?? `Account ${candidate.to_transaction.account_id}`}</strong>
-                        <span>{formatShortDate(candidate.to_transaction.transaction_date)} / {candidate.to_transaction.raw_description}</span>
-                        <b>{formatMoney(candidate.to_transaction.amount_cents)}</b>
-                      </div>
-                    </div>
-                    <div className="reviewActions">
-                      <button className="dangerTextButton" onClick={() => void rejectTransferCandidate(candidate.id)}>
-                        Reject
-                      </button>
-                      <button className="primaryButton" onClick={() => void confirmTransferCandidate(candidate.id)}>
-                        <CheckCircle2 size={16} />
-                        Confirm match
-                      </button>
-                    </div>
-                  </article>
-                );
-              })}
-              {transferCandidates.length === 0 ? <p className="emptyText">No transfer suggestions yet. Import the matching bank/card files, then run the finder.</p> : null}
-            </div>
-          </section>
+          <DuplicateReview
+            pairs={duplicatePairs}
+            busyAction={busyAction}
+            onResolve={(transactionId, action) => void resolveDuplicateCandidate(transactionId, action)}
+            onResolveExact={() => void resolveAllExactDuplicates()}
+          />
+          <TransferReview
+            candidates={transferCandidates}
+            accountName={(accountId) => accounts.find((account) => account.id === accountId)?.display_name ?? `Account ${accountId}`}
+            formatDate={formatShortDate}
+            formatMoney={formatMoney}
+            typeLabel={readableAccountType}
+            onDetect={() => void detectTransfers()}
+            onConfirm={(candidateId) => void confirmTransferCandidate(candidateId)}
+            onReject={(candidateId) => void rejectTransferCandidate(candidateId)}
+          />
 
           <section className="toolPanel reviewInboxPanel" id="review-inbox">
             <PanelTitle icon={ListChecks} title="Review Inbox" subtitle={`${reviewTransactions.length} items need a human decision.`} />
