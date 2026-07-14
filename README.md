@@ -105,6 +105,8 @@ npm run dev
 
 Settings can be provided via a `.env` file in `backend/` or environment variables prefixed with `PF_`:
 
+- `PF_IMPORT_INBOX` — where statement files are scanned and staged (default `~/PrivateFinance/import-inbox`, outside the repository; the older `PF_IMPORT_INBOX_DIR` name is also accepted).
+
 - `PF_VENMO_SELF_NAME` — your display name as it appears in Venmo statement `From`/`To` columns. When set, imported Venmo descriptions correctly phrase who paid whom; when unset, descriptions keep the statement's own From/To order.
 - `PF_BACKUP_DIR` — where database backups are stored (default `data/backups`).
 - `PF_ABSOLUTE_SESSION_HOURS` — maximum session lifetime regardless of activity (default 12).

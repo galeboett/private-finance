@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..models import Account, ImportBatch, StagingRow
 from .importers import (
+    PreviewResult,
     annotate_import_interpretation,
-    apply_import_sign_convention,
     commit_import,
     decode_text,
     detect_preset_from_content,
@@ -19,6 +19,7 @@ from .importers import (
     semantic_import_hash,
     suggest_account_for_import,
 )
+from .sign_profiles import get_sign_profile, profile_payload, resolution_payload, resolve_sign_preview
 
 
 SUPPORTED_INBOX_SUFFIXES = {".csv"}
@@ -79,7 +80,12 @@ def scan_import_inbox(db: Session) -> dict:
             if not account:
                 needs_account.append({"filename": relative_name, "preset_type": suggestion.preset_type, "reason": "The matched account no longer exists.", "proposed_account": suggestion.proposed_account})
                 continue
-            preview = annotate_import_interpretation(preview_import(content, suggestion.preset_type), account)
+            raw_preview = preview_import(content, suggestion.preset_type)
+            sign_resolution = resolve_sign_preview(db, account=account, preset_type=suggestion.preset_type, preview=raw_preview)
+            preview = annotate_import_interpretation(sign_resolution.preview, account)
+            warnings = list(preview.warnings)
+            if sign_resolution.requires_confirmation:
+                warnings.append("The amount signs do not match the saved or detected convention. Review the examples before confirming this import.")
             batch = ImportBatch(
                 account_id=account.id,
                 preset_id=None,
@@ -89,24 +95,24 @@ def scan_import_inbox(db: Session) -> dict:
                 status="pending",
                 imported_rows=0,
                 skipped_duplicates=0,
-                warnings_json=json.dumps(preview.warnings),
+                warnings_json=json.dumps(warnings),
                 source_path=str(path),
                 match_confidence=suggestion.match_confidence,
                 match_reason=suggestion.reason,
                 proposed_account_json=json.dumps(suggestion.proposed_account),
                 detected_preset=suggestion.preset_type,
-                sign_convention="preset",
+                sign_convention=sign_resolution.sign_convention,
             )
             db.add(batch)
             db.flush()
-            for row in preview.rows:
+            for raw_row, row in zip(raw_preview.rows, preview.rows, strict=True):
                 db.add(
                     StagingRow(
                         import_batch_id=batch.id,
                         account_id=account.id,
                         row_index=int(row.get("row_index") or 0),
                         row_kind=str(row.get("row_kind") or "transaction"),
-                        raw_json=json.dumps(row, default=str),
+                        raw_json=json.dumps(raw_row, default=str),
                         normalized_json=json.dumps(row, default=str),
                     )
                 )
@@ -124,7 +130,7 @@ def scan_import_inbox(db: Session) -> dict:
     }
 
 
-def stage_uploaded_import(db: Session, *, account: Account, filename: str, content: bytes, sign_convention: str = "preset") -> dict:
+def stage_uploaded_import(db: Session, *, account: Account, filename: str, content: bytes, sign_convention: str = "auto") -> dict:
     """Copy a manual upload into managed storage and stage it for the same review flow as inbox files."""
     max_bytes = settings.import_file_size_limit_mb * 1024 * 1024
     if len(content) > max_bytes:
@@ -140,7 +146,12 @@ def stage_uploaded_import(db: Session, *, account: Account, filename: str, conte
     semantic_match = db.scalar(select(ImportBatch).where(ImportBatch.semantic_hash == semantic_hash).order_by(ImportBatch.id.desc()))
     if semantic_match:
         raise ValueError(f"These transactions are already recorded as {semantic_match.status}.")
-    preview = annotate_import_interpretation(apply_import_sign_convention(preview_import(content, preset_type), sign_convention), account)
+    raw_preview = preview_import(content, preset_type)
+    sign_resolution = resolve_sign_preview(db, account=account, preset_type=preset_type, preview=raw_preview, requested=sign_convention)
+    preview = annotate_import_interpretation(sign_resolution.preview, account)
+    warnings = list(preview.warnings)
+    if sign_resolution.requires_confirmation:
+        warnings.append("The amount signs do not match the saved or detected convention. Review the examples before confirming this import.")
     managed_folder = inbox_directory() / ".staged"
     managed_folder.mkdir(parents=True, exist_ok=True)
     safe_suffix = Path(filename).suffix.casefold() if Path(filename).suffix else ".csv"
@@ -155,28 +166,28 @@ def stage_uploaded_import(db: Session, *, account: Account, filename: str, conte
         status="pending",
         imported_rows=0,
         skipped_duplicates=0,
-        warnings_json=json.dumps(preview.warnings),
+        warnings_json=json.dumps(warnings),
         source_path=str(source),
         match_confidence=100,
         match_reason="Account selected during manual upload.",
         proposed_account_json="{}",
         detected_preset=preset_type,
-        sign_convention=sign_convention,
+        sign_convention=sign_resolution.sign_convention,
     )
     db.add(batch)
     db.flush()
-    for row in preview.rows:
+    for raw_row, row in zip(raw_preview.rows, preview.rows, strict=True):
         db.add(
             StagingRow(
                 import_batch_id=batch.id,
                 account_id=account.id,
                 row_index=int(row.get("row_index") or 0),
                 row_kind=str(row.get("row_kind") or "transaction"),
-                raw_json=json.dumps(row, default=str),
+                raw_json=json.dumps(raw_row, default=str),
                 normalized_json=json.dumps(row, default=str),
             )
         )
-    return {"batch_id": batch.id, "filename": filename, "row_count": len(preview.rows), "preset_type": preset_type, "sign_convention": sign_convention}
+    return {"batch_id": batch.id, "filename": filename, "row_count": len(preview.rows), "preset_type": preset_type, "sign_convention": sign_resolution.sign_convention, "sign_decision": resolution_payload(sign_resolution)}
 
 
 def pending_import_batches(db: Session) -> list[dict]:
@@ -184,8 +195,12 @@ def pending_import_batches(db: Session) -> list[dict]:
     accounts = {account.id: account for account in db.scalars(select(Account).where(Account.id.in_({batch.account_id for batch in batches}))).all()} if batches else {}
     results = []
     for batch in batches:
-        preview_rows = db.scalars(select(StagingRow).where(StagingRow.import_batch_id == batch.id).order_by(StagingRow.row_index.asc()).limit(5)).all()
+        all_staging_rows = db.scalars(select(StagingRow).where(StagingRow.import_batch_id == batch.id).order_by(StagingRow.row_index.asc())).all()
+        preview_rows = all_staging_rows[:5]
         account = accounts.get(batch.account_id)
+        raw_preview = PreviewResult(rows=[json.loads(row.raw_json) for row in all_staging_rows], warnings=[], detected_preset=batch.detected_preset)
+        sign_resolution = resolve_sign_preview(db, account=account, preset_type=batch.detected_preset or "unknown", preview=raw_preview, requested=batch.sign_convention or "preset") if account else None
+        saved_profile = get_sign_profile(db, batch.account_id, batch.detected_preset or "unknown")
         results.append({
             "id": batch.id,
             "filename": batch.filename,
@@ -200,6 +215,7 @@ def pending_import_batches(db: Session) -> list[dict]:
             "warnings": json.loads(batch.warnings_json or "[]"),
             "preview": [json.loads(row.normalized_json) for row in preview_rows],
             "created_at": batch.created_at.isoformat(),
+            "sign_decision": ({**resolution_payload(sign_resolution), "profile": profile_payload(saved_profile) if saved_profile else None, "using_saved_profile": saved_profile is not None} if sign_resolution else None),
         })
     return results
 

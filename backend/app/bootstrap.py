@@ -66,4 +66,4 @@ def initialize_database() -> None:
         seed_categories(db)
         backfill_net_worth_snapshots(db)
         purge_expired_trash(db, retention_days=settings.trash_retention_days)
-    settings.import_inbox_dir.mkdir(parents=True, exist_ok=True)
+    settings.import_inbox_dir.expanduser().mkdir(parents=True, exist_ok=True)

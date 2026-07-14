@@ -1,5 +1,12 @@
 # Changelog
 
+## Phased game-plan implementation — July 13, 2026
+
+- Phase 0 gates and hygiene: the Import Inbox now defaults outside the repository at `~/PrivateFinance/import-inbox`; both `PF_IMPORT_INBOX` and the older `PF_IMPORT_INBOX_DIR` override are supported; package stores, databases, logs, pytest temp data, and `backend/data/` are ignored; Git history was audited without finding committed statement/data files; and the pre-merge pytest plus production-build gate is documented.
+- Phase 0 frontend shell: API access and route exports were extracted from `App.tsx`, feature/shared-component directories were established, and Vitest coverage now protects transaction-filter URL round-tripping.
+- Phase 1 sign architecture: per-account/preset sign profiles are persisted, journaled, undoable, and preserved across account merges. Credit-card and payroll plausibility checks prompt on contradictory files without silently changing signs, saved choices apply automatically, and later anomalies remain visible in Import Review.
+- Import Review and sign prompting now live under `features/imports/`, reducing `App.tsx` while establishing the strangler pattern for later phases. The canonical sign contract and cleanup guidance are documented in `docs/amount-signs.md`.
+
 ## Remediation pass — July 2026
 
 IDs reference `private-finance-evaluation-and-plan.md`.
@@ -59,4 +66,4 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Notes for reviewers
 
-- The backend suite passes (`112 passed`). The frontend passes TypeScript checking. The full Vite build still needs to be run outside the desktop filesystem sandbox because its bundled `esbuild` process could not access the required parent runtime path.
+- The backend suite passes (`134 passed`). The frontend passes TypeScript checking, the Vitest filter suite, and the full production Vite build (verified outside the desktop filesystem restriction used by esbuild).

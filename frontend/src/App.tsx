@@ -26,7 +26,11 @@ import {
 } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { encodeTxnFilter, readAppRoute, routeUrl, type NetWorthPeriod, type RouteView, type TxnFilter } from "./lib/filters";
+import { api, apiUrl, parseApiJson, readableApiError } from "./api/client";
+import { readAppRoute, routeUrl, type RouteView } from "./app/router";
+import { ImportReview, type InboxBatch, type ImportInboxScan, type ImportInboxState, type SignDecision } from "./features/imports/ImportReview";
+import { SignConventionPrompt, type ImportSignConvention } from "./features/imports/SignConventionPrompt";
+import { encodeTxnFilter, type NetWorthPeriod, type TxnFilter } from "./lib/filters";
 import { useDrillDown } from "./lib/useDrillDown";
 
 type BootstrapCategory = { id: number; key: string; label: string; parent_id: number | null };
@@ -93,6 +97,7 @@ type TransferCandidate = {
 type ImportPreview = {
   preset_type: string;
   sign_convention?: "preset" | "reverse";
+  sign_decision?: SignDecision;
   rows: Array<Record<string, string | number | null>>;
   warnings: string[];
 };
@@ -114,7 +119,6 @@ type ImportAnalysis = {
   sample_rows?: Array<Record<string, string>>;
 };
 type GenericCsvMapping = { date: string; description: string; amount: string };
-type ImportSignConvention = "preset" | "reverse";
 type HistorySignConvention = "charges_positive" | "canonical";
 
 type CategorizedHistoryRow = {
@@ -434,31 +438,6 @@ const selectionSummary = (label: string, selected: string[], options: FilterOpti
   return `${label}: ${selected.length} selected`;
 };
 
-type InboxBatch = {
-  id: number;
-  filename: string;
-  preset_type: string | null;
-  sign_convention: "preset" | "reverse";
-  account_id: number;
-  account_name: string;
-  account_last_four: string | null;
-  match_confidence: number;
-  match_reason: string | null;
-  row_count: number;
-  warnings: string[];
-  preview: Array<Record<string, string | number | null>>;
-  created_at: string;
-};
-
-type ImportInboxState = { folder: string; pending: InboxBatch[] };
-type ImportInboxScan = ImportInboxState & {
-  files_found: number;
-  staged: Array<{ batch_id: number; filename: string; account_id: number; row_count: number }>;
-  skipped: Array<{ filename: string; reason: string }>;
-  needs_account: Array<{ filename: string; preset_type: string; reason: string; proposed_account: Record<string, string | null> }>;
-  errors: Array<{ filename: string; message: string }>;
-};
-
 const accountOptionLabel = (account: AccountSummary) => {
   const name = account.display_name.trim();
   const lastFour = account.last_four?.trim();
@@ -548,56 +527,6 @@ const reviewStatusLabel = (value: string) =>
   })[value] ?? readableAccountType(value);
 
 const reviewStatusClass = (value: string) => `statusBadge ${value.replace(/_/g, "-")}`;
-
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(apiUrl(path), {
-    credentials: "include",
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
-  if (!response.ok) {
-    throw new Error(await readableApiError(response, path));
-  }
-  return parseApiJson<T>(response, path);
-}
-
-function apiUrl(path: string): string {
-  if (window.location.port === "5173" && path.startsWith("/api/")) {
-    return `http://${window.location.hostname}:8000${path}`;
-  }
-  return path;
-}
-
-async function readableApiError(response: Response, path: string): Promise<string> {
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) {
-    return `${path} returned ${response.status} ${response.statusText || "with a non-JSON response"}. Make sure the backend is running at http://127.0.0.1:8000.`;
-  }
-  try {
-    const data = await response.json();
-    const detail = data?.detail;
-    if (Array.isArray(detail) && detail.length > 0) {
-      return detail[0]?.msg ?? "The request could not be completed.";
-    }
-    if (typeof detail === "string") {
-      return detail;
-    }
-  } catch {
-    return "The request could not be completed.";
-  }
-  return "The request could not be completed.";
-}
-
-async function parseApiJson<T>(response: Response, path: string): Promise<T> {
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) {
-    throw new Error(`${path} returned frontend HTML instead of API data. The backend may need to be restarted at http://127.0.0.1:8000.`);
-  }
-  return response.json() as Promise<T>;
-}
 
 function visibleIdsFilter(visibleIds: number[], selectedIds: number[]) {
   return visibleIds.filter((id) => selectedIds.includes(id));
@@ -836,7 +765,7 @@ export function App() {
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importAnalysis, setImportAnalysis] = useState<ImportAnalysis | null>(null);
   const [genericCsvMapping, setGenericCsvMapping] = useState<GenericCsvMapping>({ date: "", description: "", amount: "" });
-  const [importSignConvention, setImportSignConvention] = useState<ImportSignConvention>("preset");
+  const [importSignConvention, setImportSignConvention] = useState<ImportSignConvention>("auto");
   const [importInbox, setImportInbox] = useState<ImportInboxState>({ folder: "", pending: [] });
   const [lastInboxScan, setLastInboxScan] = useState<ImportInboxScan | null>(null);
   const [importWorkspaceTab, setImportWorkspaceTab] = useState<"smart" | "manual">("smart");
@@ -1413,7 +1342,7 @@ export function App() {
     }
   }
 
-  async function previewSelectedImport() {
+  async function previewSelectedImport(signOverride: ImportSignConvention = importSignConvention, showReadyToast = true) {
     if (busyAction) {
       return;
     }
@@ -1433,7 +1362,7 @@ export function App() {
       if (!uploadFile) throw new Error("Choose a CSV file before previewing.");
       const form = new FormData();
       form.append("file", uploadFile);
-      const response = await fetch(apiUrl(`/api/imports/preview?account_id=${selectedAccountId}&sign_convention=${importSignConvention}`), {
+      const response = await fetch(apiUrl(`/api/imports/preview?account_id=${selectedAccountId}&sign_convention=${signOverride}`), {
         method: "POST",
         credentials: "include",
         body: form,
@@ -1443,7 +1372,7 @@ export function App() {
       }
       const preview = (await response.json()) as ImportPreview;
       setImportPreview(preview);
-      showToast({ tone: "success", message: `Preview ready: ${preview.rows.length} sample rows detected.` });
+      if (showReadyToast) showToast({ tone: "success", message: `Preview ready: ${preview.rows.length} sample rows detected.` });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Preview failed." });
     } finally {
@@ -1622,6 +1551,30 @@ export function App() {
     exitTransactionEdit();
   }
 
+  async function rememberImportSignConvention(signConvention: "preset" | "reverse") {
+    if (!selectedAccountId || !importPreview?.preset_type) return;
+    setBusyAction("sign-profile");
+    try {
+      const result = await api<{ operation_id: string }>(`/api/import-sign-profiles/${selectedAccountId}`, {
+        method: "PUT",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({
+          preset_type: importPreview.preset_type,
+          sign_convention: signConvention === "reverse" ? "reverse_detected" : "canonical_as_detected",
+          sample_note: selectedFile ? `Confirmed from ${selectedFile.name}` : null,
+        }),
+      });
+      setImportSignConvention(signConvention);
+      setBusyAction(null);
+      await previewSelectedImport(signConvention, false);
+      showToast({ tone: "success", message: "Saved this sign convention for future imports from this source.", operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "The sign convention could not be saved." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function bulkUpdateSelectedTransactions() {
     if (selectedRepositoryTransactionIds.length === 0) {
       showToast({ tone: "error", message: "Select one or more transactions first." });
@@ -1696,10 +1649,10 @@ export function App() {
           try {
             const parsed = JSON.parse(saved) as GenericCsvMapping & { signConvention?: ImportSignConvention };
             setGenericCsvMapping({ date: parsed.date, description: parsed.description, amount: parsed.amount });
-            setImportSignConvention(parsed.signConvention ?? "preset");
+            setImportSignConvention(parsed.signConvention ?? "auto");
           } catch {
             setGenericCsvMapping({ date: "", description: "", amount: "" });
-            setImportSignConvention("preset");
+            setImportSignConvention("auto");
           }
         } else {
           setGenericCsvMapping({ date: "", description: "", amount: "" });
@@ -3248,76 +3201,14 @@ export function App() {
 
             {importWorkspaceTab === "smart" ? (
               <>
-                <div className="importInboxPanel">
-                  <div className="importInboxHeader">
-                    <div>
-                      <strong>Import Inbox</strong>
-                      <span>Copy statement CSVs into this private local folder, then select Scan inbox when you want the app to look for files.</span>
-                      <code>{importInbox.folder || "The inbox folder will be created when the backend starts."}</code>
-                    </div>
-                    <button className="primaryButton" onClick={() => void scanImportInbox()} disabled={busyAction !== null}>
-                      <RefreshCw size={16} />
-                      {busyAction === "inbox-scan" ? "Scanning…" : "Scan inbox"}
-                    </button>
-                  </div>
-                  <small>The folder is scanned only when you select Scan inbox. Files stay in place, and fingerprints prevent accidental re-imports. For generic names such as stmt.csv, use one subfolder per account and include its last four digits—for example boa-checking-1016/stmt.csv.</small>
-                  {lastInboxScan && (lastInboxScan.needs_account.length > 0 || lastInboxScan.errors.length > 0) ? (
-                    <div className="inboxScanIssues">
-                      {lastInboxScan.needs_account.map((item) => (
-                        <div key={`account-${item.filename}`}>
-                          <strong>{item.filename}</strong>
-                          <span>Needs an account match: {item.reason} Use Smart import below to analyze it manually.</span>
-                        </div>
-                      ))}
-                      {lastInboxScan.errors.map((item) => (
-                        <div key={`error-${item.filename}`}>
-                          <strong>{item.filename}</strong>
-                          <span>{item.message}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                  {importInbox.pending.length > 0 ? (
-                    <div className="pendingInboxList">
-                      {importInbox.pending.map((batch) => (
-                        <article className="pendingInboxCard" key={batch.id}>
-                          <div className="pendingInboxTitle">
-                            <div>
-                              <strong>{batch.filename}</strong>
-                              <span>{batch.preset_type ?? "Detected CSV"} · {batch.row_count} rows</span>
-                            </div>
-                            <span className="statusBadge suggested">{batch.match_confidence}% match</span>
-                          </div>
-                          <div className="matchedAccountCard">
-                            <Landmark size={16} />
-                            <div>
-                              <strong>{batch.account_name}{batch.account_last_four && !batch.account_name.endsWith(batch.account_last_four) ? ` (${batch.account_last_four})` : ""}</strong>
-                              <span>{batch.match_reason ?? "Matched from the file name and contents."}</span>
-                            </div>
-                          </div>
-                          {batch.preview.length > 0 ? (
-                            <div className="inboxPreviewRows">
-                              {batch.preview.slice(0, 3).map((row, index) => (
-                                <div key={`${batch.id}-${index}`}>
-                                  <span>{String(row.transaction_date ?? row.snapshot_date ?? `Row ${index + 1}`)}</span>
-                                  <strong>{String(row.raw_description ?? row.description ?? row.symbol ?? row.account_name ?? "Imported row")}</strong>
-                                  <span>{String(row.amount ?? row.market_value ?? "")}{row.interpreted_transaction_type ? ` · ${String(row.interpreted_transaction_type).replaceAll("_", " ")}` : ""}</span>
-                                </div>
-                              ))}
-                            </div>
-                          ) : null}
-                          {batch.warnings.length > 0 ? <small>{batch.warnings.join(" ")}</small> : null}
-                          <div className="buttonRow">
-                            <button className="primaryButton" onClick={() => void confirmInboxBatch(batch)} disabled={busyAction !== null}>Confirm import</button>
-                            <button className="secondaryButton" onClick={() => void discardInboxBatch(batch)} disabled={busyAction !== null}>Discard batch</button>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="emptyText">No files are waiting for confirmation.</p>
-                  )}
-                </div>
+                <ImportReview
+                  inbox={importInbox}
+                  lastScan={lastInboxScan}
+                  busyAction={busyAction}
+                  onScan={() => void scanImportInbox()}
+                  onConfirm={(batch) => void confirmInboxBatch(batch)}
+                  onDiscard={(batch) => void discardInboxBatch(batch)}
+                />
                 <div className="historyImportPanel">
                   <div>
                     <strong>Categorized history import</strong>
@@ -3526,14 +3417,13 @@ export function App() {
                   </select>
                 </div>
 
-                <div className="manualOverride">
-                  <label>Amount signs</label>
-                  <select value={importSignConvention} onChange={(event) => { setImportSignConvention(event.target.value as ImportSignConvention); setImportPreview(null); }}>
-                    <option value="preset">Use detected signs (recommended)</option>
-                    <option value="reverse">Reverse detected signs</option>
-                  </select>
-                  <small>Preview the result: charges should be negative and refunds or deposits positive. Reverse only when this file uses the opposite convention.</small>
-                </div>
+                <SignConventionPrompt
+                  value={importSignConvention}
+                  decision={importPreview?.sign_decision}
+                  disabled={busyAction !== null}
+                  onChange={(value) => { setImportSignConvention(value); setImportPreview(null); }}
+                  onRemember={(value) => void rememberImportSignConvention(value)}
+                />
 
                 <div className="previewPanel">
                   {importPreview ? (
@@ -4490,13 +4380,13 @@ export function App() {
                       ))}
                     </select>
                   </label>
-                  <label>
-                    Amount signs
-                    <select value={importSignConvention} onChange={(event) => { setImportSignConvention(event.target.value as ImportSignConvention); setImportPreview(null); }}>
-                      <option value="preset">Use detected signs</option>
-                      <option value="reverse">Reverse detected signs</option>
-                    </select>
-                  </label>
+                  <SignConventionPrompt
+                    value={importSignConvention}
+                    decision={importPreview?.sign_decision}
+                    disabled={busyAction !== null}
+                    onChange={(value) => { setImportSignConvention(value); setImportPreview(null); }}
+                    onRemember={(value) => void rememberImportSignConvention(value)}
+                  />
                   <input type="file" accept=".csv,text/csv" onChange={(event) => chooseImportFile(event.target.files?.[0] ?? null)} />
                   <div className="buttonRow">
                     <button className="secondaryButton" onClick={() => void analyzeSelectedImport()} disabled={!selectedFile}>

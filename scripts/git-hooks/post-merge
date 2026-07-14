@@ -1,5 +1,7 @@
 #!/bin/sh
 # Restart the local app after git pull when backend/frontend source changed.
+# This post-merge convenience does not replace the pre-merge gate documented in
+# docs/workflow.md: backend pytest and the production frontend build must pass.
 
 ROOT="$(git rev-parse --show-toplevel)"
 CHANGED="$(git diff-tree -r --name-only --no-commit-id ORIG_HEAD HEAD 2>/dev/null || true)"

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import Base
-from app.models import Account, ImportBatch, Institution, Operation, StagingRow, Transaction
+from app.models import Account, ImportBatch, ImportSignProfile, Institution, Operation, StagingRow, Transaction
 from app.services.import_inbox import confirm_pending_import, discard_pending_import, pending_import_batches, scan_import_inbox, stage_uploaded_import
 
 
@@ -218,3 +218,21 @@ def test_manual_stage_can_reverse_detected_amount_signs(tmp_path, monkeypatch):
         transaction = db.scalar(select(Transaction))
         assert transaction.amount_cents == 4250
         assert transaction.transaction_type == "refund"
+
+
+def test_manual_stage_uses_saved_sign_profile_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "import_inbox_dir", tmp_path)
+    engine = _database()
+    with Session(engine) as db:
+        account = _matching_account(db)
+        db.add(ImportSignProfile(account_id=account.id, preset_type="card_activity", sign_convention="reverse_detected", decided_by="user"))
+        db.flush()
+
+        result = stage_uploaded_import(db, account=account, filename="manual-card.csv", content=CARD_CSV)
+        batch = db.get(ImportBatch, result["batch_id"])
+        pending = pending_import_batches(db)[0]
+
+        assert batch.sign_convention == "reverse"
+        assert pending["preview"][0]["amount"] == "42.50"
+        assert pending["sign_decision"]["using_saved_profile"] is True
+        assert pending["sign_decision"]["profile"]["sign_convention"] == "reverse_detected"

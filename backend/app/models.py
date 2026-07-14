@@ -68,6 +68,18 @@ class ImportPreset(TimestampMixin, Base):
     account: Mapped["Account"] = relationship(back_populates="presets")
 
 
+class ImportSignProfile(TimestampMixin, Base):
+    __tablename__ = "import_sign_profiles"
+    __table_args__ = (UniqueConstraint("account_id", "preset_type", name="uq_import_sign_profile_account_preset"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+    preset_type: Mapped[str | None] = mapped_column(String(40))
+    sign_convention: Mapped[str] = mapped_column(String(30), nullable=False)
+    decided_by: Mapped[str] = mapped_column(String(30), nullable=False)
+    sample_note: Mapped[str | None] = mapped_column(Text)
+
+
 class ImportBatch(TimestampMixin, Base):
     __tablename__ = "import_batches"
 

@@ -7,7 +7,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
-from ..models import Account, HoldingSnapshot, ImportBatch, ImportPreset, Institution, StagingRow, Transaction, TransactionSplit, TransferLink
+from ..models import Account, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, StagingRow, Transaction, TransactionSplit, TransferLink
 from .dedupe import canonical_source_hash, find_merge_match, is_categorized_history_reference
 from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 
@@ -129,6 +129,17 @@ def merge_account_into(db: Session, source: Account, target: Account, actor: str
     db.execute(update(HoldingSnapshot).where(HoldingSnapshot.account_id == source.id).values(account_id=target.id))
     db.execute(update(ImportBatch).where(ImportBatch.account_id == source.id).values(account_id=target.id))
     db.execute(update(ImportPreset).where(ImportPreset.account_id == source.id).values(account_id=target.id))
+    source_profiles = db.scalars(select(ImportSignProfile).where(ImportSignProfile.account_id == source.id)).all()
+    target_profiles = db.scalars(select(ImportSignProfile).where(ImportSignProfile.account_id == target.id)).all()
+    target_by_preset = {profile.preset_type: profile for profile in target_profiles}
+    for profile in source_profiles:
+        if profile.preset_type in target_by_preset:
+            changes.append(MutationChange(profile.id, full_values(profile), None, entity_type="import_sign_profile"))
+            db.delete(profile)
+        else:
+            before = changed_values(profile, ["account_id"])
+            profile.account_id = target.id
+            changes.append(MutationChange(profile.id, before, changed_values(profile, ["account_id"]), entity_type="import_sign_profile"))
     record_audit_event(
         db,
         "account_merge",

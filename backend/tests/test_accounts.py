@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db import Base
 from app.main import UNASSIGNED_ACCOUNT_MARKER, _delete_account_tree
-from app.models import Account, Category, HoldingSnapshot, ImportBatch, Transaction, TransactionSplit
+from app.models import Account, Category, HoldingSnapshot, ImportBatch, ImportSignProfile, Transaction, TransactionSplit
 from app.services.accounts import cleanup_imported_accounts, infer_account_characterization, infer_last_four, merge_account_into
 from app.services.operation_history import undo_operation
 from app.services.importers import _find_or_create_history_account
@@ -110,13 +110,15 @@ def test_account_deletion_preserves_transactions_for_account_review():
         session.flush()
         split = TransactionSplit(transaction_id=transaction.id, category_id=category.id, amount_cents=-5000)
         holding = HoldingSnapshot(account_id=account.id, snapshot_date=date(2026, 7, 1), symbol="TEST", market_value_cents=10000)
-        session.add_all([split, holding])
+        sign_profile = ImportSignProfile(account_id=account.id, preset_type="card_activity", sign_convention="canonical_as_detected", decided_by="user")
+        session.add_all([split, holding, sign_profile])
         session.commit()
         account_id = account.id
         transaction_id = transaction.id
         split_id = split.id
         batch_id = batch.id
         holding_id = holding.id
+        sign_profile_id = sign_profile.id
 
         _delete_account_tree(session, account)
         session.commit()
@@ -133,6 +135,7 @@ def test_account_deletion_preserves_transactions_for_account_review():
         assert review_account.display_name == "Needs account (Old Card)"
         assert session.get(ImportBatch, batch_id) is None
         assert session.get(HoldingSnapshot, holding_id) is None
+        assert session.get(ImportSignProfile, sign_profile_id) is None
 
 
 def test_account_merge_deduplicates_reliable_reference_even_when_legacy_hashes_differ():

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,7 +18,13 @@ class Settings(BaseSettings):
     login_attempt_limit: int = 5
     login_backoff_seconds: int = 300
     import_file_size_limit_mb: int = 10
-    import_inbox_dir: Path = Path("data/import-inbox")
+    # Keep imported financial statements outside the repository by default.
+    # PF_IMPORT_INBOX can still point at any user-selected location. The older
+    # PF_IMPORT_INBOX_DIR spelling remains accepted for compatibility.
+    import_inbox_dir: Path = Field(
+        default=Path.home() / "PrivateFinance" / "import-inbox",
+        validation_alias=AliasChoices("PF_IMPORT_INBOX", "PF_IMPORT_INBOX_DIR"),
+    )
     trash_retention_days: int = 90
     backup_dir: Path = Path("data/backups")
     # Display name that identifies the owner in Venmo exports ("From"/"To" columns).

@@ -1,5 +1,17 @@
 # User Workflow
 
+## Pre-merge checks
+
+Before merging any change:
+
+1. Run the backend suite from `backend/`: `pytest`.
+2. Run the production frontend build from `frontend/`: `pnpm build`.
+3. Confirm both commands finish successfully. Type-checking alone does not replace the production build.
+4. Update `CHANGELOG.md` and the relevant evaluation-plan status when behavior or plan status changes.
+5. Confirm `frontend/src/App.tsx` did not grow. New or touched screens belong in `features/` or `components/`.
+
+The optional `post-merge` hook rebuilds and restarts the local app after a pull. It is a convenience after merge, not a substitute for these checks before merge.
+
 ## Goal
 
 The app builds a full personal finance picture by turning account exports into a single reviewed ledger. The ledger then powers cash flow, spending, net worth, and export views.
@@ -13,6 +25,7 @@ The app builds a full personal finance picture by turning account exports into a
 2. Add downloaded CSVs to the Import Inbox.
    - Copy files into the local folder shown under Settings → Smart import → Import Inbox.
    - When two accounts produce generic names such as `stmt.csv`, create one subfolder per account and include the last four digits: `boa-checking-1016/stmt.csv` and `boa-checking-6768/stmt.csv`. The scanner searches subfolders and uses the full relative path for account matching.
+   - The default folder is `~/PrivateFinance/import-inbox`, outside the source repository. Set `PF_IMPORT_INBOX` to choose another location.
    - The app does not monitor this folder automatically. Select **Scan inbox** when you want it to search for files and stage new matches.
    - A file selected directly in Smart import is staged in this same inbox and review flow; it is no longer committed through a separate path.
    - Files without a confident account match are left untouched and listed for manual Smart import.

@@ -21,19 +21,20 @@ from .bootstrap import initialize_database
 from .config import settings
 from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
-from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingSnapshot, ImportBatch, ImportPreset, Institution, NetWorthSnapshot, SecurityMetadata, SecurityPrice, SessionToken, StagingRow, Transaction, TransactionSplit, TransferLink
+from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, SecurityMetadata, SecurityPrice, SessionToken, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
 from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
 from .services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_timeseries
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
-from .services.importers import annotate_import_interpretation, apply_import_sign_convention, commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
+from .services.importers import annotate_import_interpretation, commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
 from .services.import_inbox import confirm_pending_import, discard_pending_import, inbox_directory, pending_import_batches, scan_import_inbox, stage_uploaded_import
 from .services.history_cleanup import apply_categorized_history_sign_cleanup, preview_categorized_history_sign_cleanup
 from .services.mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .services.operation_history import OperationConflict, list_operations, operation_detail, undo_operation
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
+from .services.sign_profiles import profile_payload, resolution_payload, resolve_sign_preview, save_sign_profile
 from .services.snapshots import net_worth_contributors, net_worth_series, net_worth_stats, refresh_holding_net_worth_snapshot, upsert_net_worth_snapshot
 from .services.transaction_filters import parse_csv_ints, parse_csv_values, transaction_filter_conditions
 from .services.transaction_queries import get_live_transaction, live_transaction_filters, live_transaction_select
@@ -561,11 +562,13 @@ def _delete_account_tree(db: Session, account: Account) -> list[MutationChange]:
     if account.last_four == UNASSIGNED_ACCOUNT_MARKER:
         raise HTTPException(status_code=400, detail="The system account used for transaction review cannot be deleted")
     presets = db.scalars(select(ImportPreset).where(ImportPreset.account_id == account.id)).all()
+    sign_profiles = db.scalars(select(ImportSignProfile).where(ImportSignProfile.account_id == account.id)).all()
     batches = db.scalars(select(ImportBatch).where(ImportBatch.account_id == account.id)).all()
     staging_rows = db.scalars(select(StagingRow).where(StagingRow.account_id == account.id)).all()
     holdings = db.scalars(select(HoldingSnapshot).where(HoldingSnapshot.account_id == account.id)).all()
     changes: list[MutationChange] = [MutationChange(account.id, full_values(account), None, entity_type="account")]
     changes.extend(MutationChange(preset.id, full_values(preset), None, entity_type="import_preset") for preset in presets)
+    changes.extend(MutationChange(profile.id, full_values(profile), None, entity_type="import_sign_profile") for profile in sign_profiles)
     changes.extend(MutationChange(batch.id, full_values(batch), None, entity_type="import_batch") for batch in batches)
     changes.extend(MutationChange(row.id, full_values(row), None, entity_type="staging_row") for row in staging_rows)
     changes.extend(MutationChange(holding.id, full_values(holding), None, entity_type="holding_snapshot") for holding in holdings)
@@ -591,6 +594,7 @@ def _delete_account_tree(db: Session, account: Account) -> list[MutationChange]:
     db.execute(delete(HoldingSnapshot).where(HoldingSnapshot.account_id == account.id))
     db.execute(delete(ImportBatch).where(ImportBatch.account_id == account.id))
     db.execute(delete(ImportPreset).where(ImportPreset.account_id == account.id))
+    db.execute(delete(ImportSignProfile).where(ImportSignProfile.account_id == account.id))
     record_audit_event(
         db,
         "account_delete",
@@ -745,7 +749,7 @@ async def imports_analyze(file: UploadFile = File(...), session: SessionToken = 
 
 
 @app.post("/api/imports/preview")
-async def imports_preview(account_id: int, sign_convention: Literal["preset", "reverse"] = "preset", file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+async def imports_preview(account_id: int, sign_convention: Literal["auto", "preset", "reverse"] = "auto", file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     account = db.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -759,14 +763,15 @@ async def imports_preview(account_id: int, sign_convention: Literal["preset", "r
     if not preset_type:
         raise HTTPException(status_code=400, detail="Could not detect import preset")
     try:
-        preview = annotate_import_interpretation(apply_import_sign_convention(preview_import(content, preset_type), sign_convention), account)
+        resolution = resolve_sign_preview(db, account=account, preset_type=preset_type, preview=preview_import(content, preset_type), requested=sign_convention)
+        preview = annotate_import_interpretation(resolution.preview, account)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    return {"preset_type": preset_type, "sign_convention": sign_convention, "rows": preview.rows[:25], "warnings": preview.warnings}
+    return {"preset_type": preset_type, "sign_convention": resolution.sign_convention, "sign_decision": resolution_payload(resolution), "rows": preview.rows[:25], "warnings": preview.warnings}
 
 
 @app.post("/api/imports/commit")
-async def imports_commit(request: Request, account_id: int, preset_id: int | None = None, snapshot_date: str | None = None, sign_convention: Literal["preset", "reverse"] = "preset", file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+async def imports_commit(request: Request, account_id: int, preset_id: int | None = None, snapshot_date: str | None = None, sign_convention: Literal["auto", "preset", "reverse"] = "auto", file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
     account = db.get(Account, account_id)
     if not account:
@@ -782,7 +787,11 @@ async def imports_commit(request: Request, account_id: int, preset_id: int | Non
         except ValueError as error:
             raise HTTPException(status_code=400, detail="snapshot_date must be YYYY-MM-DD") from error
     try:
-        result = commit_import(db, account, preset, file.filename or "import.csv", content, actor=actor_for_session(session), snapshot_date=parsed_snapshot_date, sign_convention=sign_convention)
+        detected_preset = preset.preset_type if preset else detect_preset_from_content(decode_text(content), file.filename or "import.csv")
+        if not detected_preset:
+            raise ValueError("Could not detect import preset")
+        resolution = resolve_sign_preview(db, account=account, preset_type=detected_preset, preview=preview_import(content, detected_preset), requested=sign_convention)
+        result = commit_import(db, account, preset, file.filename or "import.csv", content, actor=actor_for_session(session), snapshot_date=parsed_snapshot_date, sign_convention=resolution.sign_convention)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     db.commit()
@@ -821,7 +830,7 @@ async def imports_reviewed_categorized_history(request: Request, session: Sessio
 
 
 @app.post("/api/imports/stage")
-async def stage_manual_import(request: Request, account_id: int, sign_convention: Literal["preset", "reverse"] = "preset", file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+async def stage_manual_import(request: Request, account_id: int, sign_convention: Literal["auto", "preset", "reverse"] = "auto", file: UploadFile = File(...), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
     account = db.get(Account, account_id)
     if not account:
@@ -833,6 +842,36 @@ async def stage_manual_import(request: Request, account_id: int, sign_convention
         raise HTTPException(status_code=400, detail=str(error)) from error
     db.commit()
     return {**result, "pending": pending_import_batches(db)}
+
+
+@app.get("/api/import-sign-profiles")
+def list_import_sign_profiles(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    profiles = db.scalars(select(ImportSignProfile).order_by(ImportSignProfile.account_id, ImportSignProfile.preset_type, ImportSignProfile.id)).all()
+    return [profile_payload(profile) for profile in profiles]
+
+
+@app.put("/api/import-sign-profiles/{account_id}")
+async def put_import_sign_profile(account_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    account = db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    payload = await request.json()
+    preset_type = str(payload.get("preset_type") or "").strip() or None
+    sample_note = str(payload.get("sample_note") or "").strip() or None
+    try:
+        profile, operation_id = save_sign_profile(
+            db,
+            account=account,
+            preset_type=preset_type,
+            sign_convention=str(payload.get("sign_convention") or ""),
+            actor=actor_for_session(session),
+            sample_note=sample_note,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    db.commit()
+    return {**profile_payload(profile), "operation_id": operation_id}
 
 
 @app.get("/api/maintenance/categorized-history-signs")
