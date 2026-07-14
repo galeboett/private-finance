@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import and_, func, or_, select
 
-from ..models import Account, Category, ExpenseAllocation, Institution, Transaction, TransactionSplit
+from ..models import Account, Category, ExpenseAllocation, Institution, RefundLink, Transaction, TransactionSplit
 from ..schemas import TransactionFilter
 
 
@@ -68,6 +68,12 @@ def transaction_filter_conditions(filters: TransactionFilter):
         conditions.append(Transaction.transaction_type.in_([value.value for value in filters.transaction_types]))
     if filters.review_status:
         conditions.append(Transaction.review_status == filters.review_status.value)
+    if filters.has_refund is not None:
+        confirmed_refund_exists = select(RefundLink.id).where(
+            RefundLink.confirmed.is_(True),
+            or_(RefundLink.expense_transaction_id == Transaction.id, RefundLink.refund_transaction_id == Transaction.id),
+        ).exists()
+        conditions.append(confirmed_refund_exists if filters.has_refund else ~confirmed_refund_exists)
     if filters.tags:
         for tag in filters.tags:
             normalized_tag = tag.strip().casefold().replace("|", "")

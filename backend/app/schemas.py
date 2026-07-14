@@ -161,6 +161,18 @@ class TransferLinkCreate(BaseModel):
     confirmed: bool = False
 
 
+class RefundLinkCreate(BaseModel):
+    expense_transaction_id: int
+    refund_transaction_id: int
+    match_confidence: int = Field(default=100, ge=0, le=100)
+    confirmed: bool = True
+    allow_over_refund: bool = False
+
+
+class RefundConfirmRequest(BaseModel):
+    allow_over_refund: bool = False
+
+
 class HoldingMetadataUpdate(BaseModel):
     symbol: str
     user_description: str | None = None
@@ -236,3 +248,4 @@ class TransactionFilter(BaseModel):
     search: str | None = None
     view: Literal["live", "trash"] = "live"
     review_status: ReviewStatus | None = None
+    has_refund: bool | None = None

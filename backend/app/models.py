@@ -217,6 +217,17 @@ class TransferLink(TimestampMixin, Base):
     confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class RefundLink(TimestampMixin, Base):
+    __tablename__ = "refund_links"
+    __table_args__ = (UniqueConstraint("refund_transaction_id", name="uq_refund_links_refund_transaction"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    expense_transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), nullable=False, index=True)
+    refund_transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), nullable=False, index=True)
+    match_confidence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
 class HoldingSnapshot(TimestampMixin, Base):
     __tablename__ = "holding_snapshots"
 

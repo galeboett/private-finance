@@ -21,26 +21,28 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
-  WalletCards,
   X,
 } from "lucide-react";
-import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, apiUrl, parseApiJson, readableApiError } from "./api/client";
 import { readAppRoute, routeUrl, type RouteView } from "./app/router";
+import { BulkActionBar, CashFlowGraphic, DrillDownLink, MultiSelectFilter, PanelTitle, UndoToast } from "./components/AppPrimitives";
 import { DeleteConfirmInline, type DeleteTarget } from "./components/DeleteConfirmInline";
 import { AccountPage } from "./features/accounts/AccountPage";
 import type { ReconciliationStatus } from "./features/accounts/ReconciliationBadge";
 import { ImportReview, type InboxBatch, type ImportInboxScan, type ImportInboxState, type SignDecision } from "./features/imports/ImportReview";
 import { SignConventionPrompt, type ImportSignConvention } from "./features/imports/SignConventionPrompt";
 import { HoldingsPanel, type HoldingRow } from "./features/networth/HoldingsPanel";
+import { RefundLinkPicker } from "./features/refunds/RefundLinkPicker";
+import { RefundSuggestions, type RefundLink } from "./features/refunds/RefundSuggestions";
 import { DuplicateReview, type DuplicateAction, type DuplicatePair } from "./features/review/DuplicateReview";
+import type { DuplicateTransaction } from "./features/review/TransactionCompareCard";
 import { TransferReview, type TransferCandidate } from "./features/review/TransferReview";
 import type { PaymentVerificationStatus, PaymentWarning } from "./features/transfers/PaymentVerification";
 import { ManualTransactionForm } from "./features/transactions/ManualTransactionForm";
 import { encodeTxnFilter, type NetWorthPeriod, type TxnFilter } from "./lib/filters";
 import { transactionTypeUsesCategory } from "./lib/transactionTypes";
-import { useDrillDown } from "./lib/useDrillDown";
 type BootstrapCategory = { id: number; key: string; label: string; parent_id: number | null };
 type DashboardSummary = {
   review_counts: Record<string, number>;
@@ -79,7 +81,12 @@ type TransactionRow = {
   split_count: number;
   reporting_category_ids: Array<number | null>;
   reporting_dates: string[];
+  refund_total_cents: number;
+  refund_link_count: number;
+  refund_expense_id: number | null;
 };
+
+type RefundPickerState = { expenseId: number; candidates: DuplicateTransaction[]; links: RefundLink[]; search: string; loading: boolean };
 
 type SplitDraft = { category_id: number | ""; amount: string; note: string };
 type MonthlyAllocationDraft = { transactionId: number; category_id: number | ""; start_month: string; end_month: string };
@@ -664,40 +671,6 @@ function useSelection() {
   return { selectedIds, setSelectedIds, toggle, resetAnchor };
 }
 
-function UndoToast({ toast, busy, onUndo, onDismiss }: { toast: ToastState; busy: boolean; onUndo: (operationId: string, unconflictedOnly: boolean) => void; onDismiss: () => void }) {
-  return (
-    <div className={`toast ${toast.tone}`} style={{ margin: "16px 20px 0" }} role="status" aria-live="polite">
-      {toast.tone === "success" ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
-      <span>{toast.message}</span>
-      {toast.operationId ? (
-        <button className="toastAction" onClick={() => onUndo(toast.operationId!, Boolean(toast.unconflictedOnly))} disabled={busy}>
-          {toast.unconflictedOnly ? "Undo safe rows" : "Undo"}
-        </button>
-      ) : null}
-      <button className="toastClose" onClick={onDismiss} aria-label="Dismiss notification"><X size={14} /></button>
-    </div>
-  );
-}
-
-function BulkActionBar({ count, detail, onClear, children }: { count: number; detail: string; onClear: () => void; children: ReactNode }) {
-  return (
-    <div className="bulkSelectionBar">
-      <div className="bulkSelectionContext"><div><strong>{count} selected</strong><span>{detail}</span></div></div>
-      {children}
-      <button className="ghostButton compactButton" onClick={onClear}>Clear</button>
-    </div>
-  );
-}
-
-function DrillDownLink({ filter, title, count, className, onPeek, children }: { filter: TxnFilter; title: string; count?: number; className?: string; onPeek: (filter: TxnFilter, title: string) => void; children: ReactNode }) {
-  const drillDown = useDrillDown(filter, title, onPeek);
-  return (
-    <a className={className ? `drillDownLink ${className}` : "drillDownLink"} href={drillDown.href} onClick={drillDown.onClick} title={`Click to preview${count === undefined ? " matching" : ` ${count}`} transaction${count === 1 ? "" : "s"}`}>
-      {children}
-    </a>
-  );
-}
-
 export function App() {
   const initialRoute = useRef(readAppRoute(window.location));
   const [configured, setConfigured] = useState(false);
@@ -722,6 +695,9 @@ export function App() {
   const [allocationRows, setAllocationRows] = useState<AllocationRow[]>([]);
   const [holdingRows, setHoldingRows] = useState<HoldingRow[]>([]);
   const [transferCandidates, setTransferCandidates] = useState<TransferCandidate[]>([]);
+  const [refundSuggestions, setRefundSuggestions] = useState<RefundLink[]>([]);
+  const [refundPicker, setRefundPicker] = useState<RefundPickerState | null>(null);
+  const refundSearchTimer = useRef<number | null>(null);
   const [duplicatePairs, setDuplicatePairs] = useState<DuplicatePair[]>([]);
   const [reconciliationStatuses, setReconciliationStatuses] = useState<ReconciliationStatus[]>([]);
   const [paymentVerification, setPaymentVerification] = useState<PaymentVerificationStatus[]>([]);
@@ -774,6 +750,7 @@ export function App() {
   const [transactionAmountMin, setTransactionAmountMin] = useState<number | undefined>(initialRoute.current.filters.amountMin);
   const [transactionAmountMax, setTransactionAmountMax] = useState<number | undefined>(initialRoute.current.filters.amountMax);
   const [transactionDirection, setTransactionDirection] = useState<TxnFilter["direction"]>(initialRoute.current.filters.direction);
+  const [transactionHasRefund, setTransactionHasRefund] = useState(Boolean(initialRoute.current.filters.hasRefund));
   const [transactionView, setTransactionView] = useState<TxnFilter["view"]>(() => ["account", "all-accounts"].includes(initialRoute.current.view) ? initialRoute.current.filters.view ?? "live" : "live");
   const [transactionFiltersInitialized, setTransactionFiltersInitialized] = useState(false);
   const [transactionSortKey, setTransactionSortKey] = useState<TransactionSortKey>(initialRoute.current.filters.sort ?? "date");
@@ -839,6 +816,7 @@ export function App() {
     setSelectedTransactionCategoryFilters(routeFilters.categories === undefined ? [...categories.map((category) => String(category.id)), uncategorizedFilterValue] : routeFilters.categories);
     setSelectedTransactionTypeFilters(routeFilters.types ?? []);
     setTransactionDateBasis(routeFilters.dateBasis);
+    setTransactionHasRefund(Boolean(routeFilters.hasRefund));
     setTransactionFiltersInitialized(true);
   }, [accounts, categories, transactions, transactionFiltersInitialized]);
 
@@ -858,6 +836,7 @@ export function App() {
       setTransactionAmountMin(route.filters.amountMin);
       setTransactionAmountMax(route.filters.amountMax);
       setTransactionDirection(route.filters.direction);
+      setTransactionHasRefund(Boolean(route.filters.hasRefund));
       setTransactionView(["account", "all-accounts"].includes(route.view) ? route.filters.view ?? "live" : "live");
       setTransactionSearch(route.filters.search ?? "");
       setTransactionSortKey(route.filters.sort ?? "date");
@@ -890,6 +869,7 @@ export function App() {
       sort: transactionSortKey,
       sortDirection: transactionSortDirection,
       netWorthPeriod: readAppRoute(window.location).filters.netWorthPeriod,
+      hasRefund: transactionHasRefund || undefined,
     };
     const nextUrl = routeUrl(activeView, focusedAccountId, filters);
     const currentUrl = `${window.location.pathname}${window.location.search}`;
@@ -910,6 +890,7 @@ export function App() {
     transactionDateTo,
     transactionDateBasis,
     transactionDirection,
+    transactionHasRefund,
     transactionView,
     transactionFiltersInitialized,
     transactionSearch,
@@ -934,6 +915,7 @@ export function App() {
     transactionDateTo,
     transactionDateBasis,
     transactionDirection,
+    transactionHasRefund,
     transactionSortKey,
     transactionSortDirection,
     transactionSearch,
@@ -980,7 +962,7 @@ export function App() {
   }
 
   async function loadData() {
-    const [dashboardData, accountsData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData, transferData, duplicateData, reconciliationData, paymentData, inboxData, operationData] = await Promise.all([
+    const [dashboardData, accountsData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData, transferData, refundData, duplicateData, reconciliationData, paymentData, inboxData, operationData] = await Promise.all([
       api<DashboardSummary>("/api/dashboard/summary"),
       api<AccountSummary[]>("/api/accounts"),
       api<TransactionRow[]>(`/api/transactions?view=${transactionView}`),
@@ -991,6 +973,7 @@ export function App() {
       api<AllocationRow[]>("/api/investments/allocation"),
       api<HoldingRow[]>("/api/investments/holdings"),
       api<TransferCandidate[]>("/api/transfers/unconfirmed"),
+      api<RefundLink[]>("/api/refunds/suggestions"),
       api<DuplicatePair[]>("/api/duplicates/pending"),
       api<ReconciliationStatus[]>("/api/reconciliation"),
       api<PaymentVerificationStatus[]>("/api/transfers/payments"),
@@ -1007,6 +990,7 @@ export function App() {
     setAllocationRows(allocationData);
     setHoldingRows(holdingsData);
     setTransferCandidates(transferData);
+    setRefundSuggestions(refundData);
     setDuplicatePairs(duplicateData);
     setReconciliationStatuses(reconciliationData);
     setPaymentVerification(paymentData);
@@ -1892,6 +1876,95 @@ export function App() {
     }
   }
 
+  async function detectRefunds() {
+    setBusyAction("refund-detect");
+    try {
+      const result = await api<{ created: number; removed: number; limit: number; limited: boolean; operation_id?: string }>("/api/refunds/detect", { method: "POST", headers: { "x-csrf-token": csrf } });
+      await loadData();
+      showToast({ tone: "success", message: result.created ? result.limited ? `Showing the ${result.limit} highest-confidence refund matches.` : `Found ${result.created} likely refund match${result.created === 1 ? "" : "es"}.` : "No likely refund matches found.", operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Refund scan failed." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function confirmRefundSuggestion(link: RefundLink) {
+    const allowOverRefund = link.would_exceed_expense && window.confirm(`Linked refunds would total ${formatMoney(link.linked_refund_cents)}, more than the ${formatMoney(link.expense_amount_cents)} expense. Link it anyway?`);
+    if (link.would_exceed_expense && !allowOverRefund) return;
+    setBusyAction(`refund-confirm-${link.id}`);
+    try {
+      const result = await api<{ operation_id: string }>(`/api/refunds/${link.id}/confirm`, { method: "POST", headers: { "x-csrf-token": csrf }, body: JSON.stringify({ allow_over_refund: allowOverRefund }) });
+      await loadData();
+      showToast({ tone: "success", message: "Refund linked to its original expense.", operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Refund could not be confirmed." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function rejectRefundSuggestion(linkId: number) {
+    setBusyAction(`refund-reject-${linkId}`);
+    try {
+      const result = await api<{ operation_id: string }>(`/api/refunds/${linkId}/reject`, { method: "POST", headers: { "x-csrf-token": csrf } });
+      await loadData();
+      showToast({ tone: "info", message: "Refund suggestion dismissed.", operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Refund suggestion could not be dismissed." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function loadRefundPicker(expenseId: number, search = "") {
+    setRefundPicker((current) => ({ expenseId, candidates: current?.expenseId === expenseId ? current.candidates : [], links: current?.expenseId === expenseId ? current.links : [], search, loading: true }));
+    try {
+      const query = new URLSearchParams({ expense_transaction_id: String(expenseId) });
+      if (search.trim()) query.set("search", search.trim());
+      const [links, candidates] = await Promise.all([
+        api<RefundLink[]>(`/api/refunds/expenses/${expenseId}`),
+        api<DuplicateTransaction[]>(`/api/refunds/candidates?${query.toString()}`),
+      ]);
+      setRefundPicker((current) => current?.expenseId === expenseId && current.search === search ? { expenseId, candidates, links, search, loading: false } : current);
+    } catch (error) {
+      setRefundPicker((current) => current?.expenseId === expenseId && current.search === search ? { ...current, loading: false } : current);
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Possible refunds could not be loaded." });
+    }
+  }
+
+  function searchRefundPicker(expenseId: number, search: string) {
+    setRefundPicker((current) => current?.expenseId === expenseId ? { ...current, search } : current);
+    if (refundSearchTimer.current !== null) window.clearTimeout(refundSearchTimer.current);
+    refundSearchTimer.current = window.setTimeout(() => void loadRefundPicker(expenseId, search), 250);
+  }
+
+  async function linkManualRefund(expense: TransactionRow, candidate: DuplicateTransaction) {
+    const linkedTotal = refundPicker?.expenseId === expense.id ? refundPicker.links.reduce((sum, link) => sum + link.refund_transaction.amount_cents, 0) : expense.refund_total_cents;
+    const wouldExceed = linkedTotal + candidate.amount_cents > Math.abs(expense.amount_cents);
+    const allowOverRefund = wouldExceed && window.confirm(`This would link ${formatMoney(linkedTotal + candidate.amount_cents)} of refunds to a ${formatMoney(Math.abs(expense.amount_cents))} expense. Link it anyway?`);
+    if (wouldExceed && !allowOverRefund) return;
+    try {
+      const result = await api<{ operation_id: string }>("/api/refund-links", { method: "POST", headers: { "x-csrf-token": csrf }, body: JSON.stringify({ expense_transaction_id: expense.id, refund_transaction_id: candidate.id, confirmed: true, allow_over_refund: allowOverRefund }) });
+      await loadData();
+      await loadRefundPicker(expense.id, refundPicker?.search ?? "");
+      showToast({ tone: "success", message: "Refund linked to this expense.", operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Refund could not be linked." });
+    }
+  }
+
+  async function unlinkRefund(expenseId: number, linkId: number) {
+    try {
+      const result = await api<{ operation_id: string }>(`/api/refunds/${linkId}`, { method: "DELETE", headers: { "x-csrf-token": csrf } });
+      await loadData();
+      await loadRefundPicker(expenseId, refundPicker?.search ?? "");
+      showToast({ tone: "info", message: "Refund unlinked from this expense.", operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Refund could not be unlinked." });
+    }
+  }
+
   async function resolveDuplicateCandidate(transactionId: number, action: DuplicateAction) {
     setBusyAction(`duplicate-${transactionId}-${action}`);
     try {
@@ -2384,6 +2457,7 @@ export function App() {
       amountMin: transactionAmountMin,
       amountMax: transactionAmountMax,
       direction: transactionDirection,
+      hasRefund: transactionHasRefund || undefined,
       search: transactionSearch.trim() || undefined,
       view: transactionView,
     };
@@ -2417,6 +2491,7 @@ export function App() {
       })
       .filter((transaction) => transactionAmountMin === undefined || Math.abs(transaction.amount_cents) >= transactionAmountMin)
       .filter((transaction) => transactionAmountMax === undefined || Math.abs(transaction.amount_cents) <= transactionAmountMax)
+      .filter((transaction) => !transactionHasRefund || transaction.refund_link_count > 0 || transaction.refund_expense_id !== null)
       .filter((transaction) => transactionDirection === undefined || (transactionDirection === "inflow" ? transaction.amount_cents > 0 : transaction.amount_cents < 0));
     return [...rows].sort((left, right) => {
       const direction = transactionSortDirection === "asc" ? 1 : -1;
@@ -2562,6 +2637,7 @@ export function App() {
   if (transactionAmountMin !== undefined) transactionFilterChips.push({ key: "amount-min", label: `Minimum: ${formatMoney(transactionAmountMin)}`, onRemove: () => setTransactionAmountMin(undefined) });
   if (transactionAmountMax !== undefined) transactionFilterChips.push({ key: "amount-max", label: `Maximum: ${formatMoney(transactionAmountMax)}`, onRemove: () => setTransactionAmountMax(undefined) });
   if (transactionDirection) transactionFilterChips.push({ key: "direction", label: transactionDirection === "inflow" ? "Inflows" : "Outflows", onRemove: () => setTransactionDirection(undefined) });
+  if (transactionHasRefund) transactionFilterChips.push({ key: "has-refund", label: "Has a linked refund", onRemove: () => setTransactionHasRefund(false) });
 
   function startSidebarResize(event: ReactPointerEvent<HTMLButtonElement>) {
     event.preventDefault();
@@ -3118,6 +3194,7 @@ export function App() {
                 onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
                 onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
               />
+              <button type="button" className={transactionHasRefund ? "filterToggle active" : "filterToggle"} onClick={() => setTransactionHasRefund((current) => !current)}>↩ Has refund</button>
               </div>
             </div>
           </AccountPage>
@@ -3178,6 +3255,7 @@ export function App() {
                 onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
                 onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
               />
+              <button type="button" className={transactionHasRefund ? "filterToggle active" : "filterToggle"} onClick={() => setTransactionHasRefund((current) => !current)}>↩ Has refund</button>
               </div>
             </div>
           </div>
@@ -3587,6 +3665,7 @@ export function App() {
           <nav className="reviewWorkspaceNav" aria-label="Review workspace sections">
             <a href="#duplicate-review">Duplicates <span>{duplicatePairs.length}</span></a>
             <a href="#transfer-review">Transfers <span>{transferCandidates.length}</span></a>
+            <a href="#refund-review">Refunds <span>{refundSuggestions.length}</span></a>
             <a href="#review-inbox">Inbox <span>{reviewTransactions.length}</span></a>
             <a href="#saved-rules">Rules <span>{rules.length}</span></a>
           </nav>
@@ -3605,6 +3684,13 @@ export function App() {
             onDetect={() => void detectTransfers()}
             onConfirm={(candidateId) => void confirmTransferCandidate(candidateId)}
             onReject={(candidateId) => void rejectTransferCandidate(candidateId)}
+          />
+          <RefundSuggestions
+            suggestions={refundSuggestions}
+            busy={busyAction}
+            onDetect={() => void detectRefunds()}
+            onConfirm={(link) => void confirmRefundSuggestion(link)}
+            onReject={(linkId) => void rejectRefundSuggestion(linkId)}
           />
 
           <section className="toolPanel reviewInboxPanel" id="review-inbox">
@@ -4069,11 +4155,13 @@ export function App() {
                     ) : (
                       <span className="ledgerReadonlyCell">{transaction.user_note || "Add details"}</span>
                     )}
-                    {transaction.labels.length > 0 || transaction.split_count > 0 || transaction.monthly_allocation_count > 0 ? (
+                    {transaction.labels.length > 0 || transaction.split_count > 0 || transaction.monthly_allocation_count > 0 || transaction.refund_total_cents > 0 || transaction.refund_expense_id !== null ? (
                       <div className="transactionLabels">
                         {transaction.labels.map((label) => <span key={label}>#{label}</span>)}
                         {transaction.split_count > 0 ? <span>Split into {transaction.split_count} categories</span> : null}
                         {transaction.monthly_allocation_count > 0 ? <span>Spread across {transaction.monthly_allocation_count} months</span> : null}
+                        {transaction.refund_total_cents > 0 ? <span className="refundBadge">↩ refunded {formatMoney(transaction.refund_total_cents)}</span> : null}
+                        {transaction.refund_expense_id !== null ? <span className="refundBadge">↩ linked refund</span> : null}
                       </div>
                     ) : null}
                   </div>
@@ -4223,6 +4311,23 @@ export function App() {
                       Done
                     </button>
                   </div>
+                ) : null}
+                {isEditing && transaction.transaction_type === "expense" ? (
+                  <RefundLinkPicker
+                    open={refundPicker?.expenseId === transaction.id}
+                    links={refundPicker?.expenseId === transaction.id ? refundPicker.links : []}
+                    candidates={refundPicker?.expenseId === transaction.id ? refundPicker.candidates : []}
+                    loading={refundPicker?.expenseId === transaction.id ? refundPicker.loading : false}
+                    expenseAmountCents={transaction.amount_cents}
+                    search={refundPicker?.expenseId === transaction.id ? refundPicker.search : ""}
+                    formatMoney={formatMoney}
+                    formatDate={formatShortDate}
+                    onOpen={() => void loadRefundPicker(transaction.id)}
+                    onClose={() => { if (refundSearchTimer.current !== null) window.clearTimeout(refundSearchTimer.current); setRefundPicker(null); }}
+                    onSearch={(value) => searchRefundPicker(transaction.id, value)}
+                    onLink={(candidate) => void linkManualRefund(transaction, candidate)}
+                    onUnlink={(linkId) => void unlinkRefund(transaction.id, linkId)}
+                  />
                 ) : null}
                 {splitEditor?.transactionId === transaction.id ? (
                   <section className="transactionAllocationEditor" onClick={(event) => event.stopPropagation()}>
@@ -4490,59 +4595,6 @@ export function App() {
   );
 }
 
-function MultiSelectFilter({
-  label,
-  options,
-  selectedValues,
-  onToggle,
-  onSelectAll,
-  onDeselectAll,
-}: {
-  label: string;
-  options: FilterOption[];
-  selectedValues: string[];
-  onToggle: (value: string) => void;
-  onSelectAll: () => void;
-  onDeselectAll: () => void;
-}) {
-  const detailsRef = useRef<HTMLDetailsElement>(null);
-  const selectedCount = selectedValues.length;
-  const summary = selectedCount === options.length ? "All" : selectedCount === 0 ? "None" : `${selectedCount} selected`;
-
-  useEffect(() => {
-    function closeOnOutsideClick(event: PointerEvent) {
-      if (detailsRef.current?.open && !detailsRef.current.contains(event.target as Node)) {
-        detailsRef.current.open = false;
-      }
-    }
-    document.addEventListener("pointerdown", closeOnOutsideClick);
-    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
-  }, []);
-
-  return (
-    <details className="multiFilter" ref={detailsRef}>
-      <summary>
-        <span>{label}</span>
-        <strong>{summary}</strong>
-      </summary>
-      <div className="multiFilterMenu">
-        <div className="multiFilterActions">
-          <button type="button" className="ghostButton" onClick={onSelectAll}>Select all</button>
-          <button type="button" className="ghostButton" onClick={onDeselectAll}>Deselect all</button>
-        </div>
-        <div className="multiFilterOptions">
-          {options.map((option) => (
-            <label key={option.value}>
-              <input type="checkbox" checked={selectedValues.includes(option.value)} onChange={() => onToggle(option.value)} />
-              <span>{option.label}</span>
-            </label>
-          ))}
-          {options.length === 0 ? <span className="emptyText">No options yet.</span> : null}
-        </div>
-      </div>
-    </details>
-  );
-}
 function reportTitle(activeTab: string) {
   if (activeTab === "Spending") return "Where your money is going";
   if (activeTab === "Income") return "Income vs expenses";
@@ -5323,68 +5375,4 @@ function MetricTile({ label, value, tone }: { label: string; value: string; tone
 function suggestedRuleText(description: string) {
   const cleaned = description.replace(/[^a-zA-Z0-9\s*&]/g, " ").replace(/\s+/g, " ").trim();
   return cleaned.split(" ").slice(0, 3).join(" ").toUpperCase() || description.slice(0, 40).toUpperCase();
-}
-
-function PanelTitle({ icon: Icon, title, subtitle }: { icon: typeof WalletCards; title: string; subtitle: string }) {
-  return (
-    <div className="panelTitle">
-      <Icon size={18} />
-      <div>
-        <h3>{title}</h3>
-        <p>{subtitle}</p>
-      </div>
-    </div>
-  );
-}
-
-function CashFlowGraphic({ income, expenses, net }: { income: number; expenses: number; net: number }) {
-  const max = Math.max(income, expenses, Math.abs(net), 1);
-  const incomeWidth = Math.max(18, Math.round((income / max) * 100));
-  const expenseWidth = Math.max(18, Math.round((expenses / max) * 100));
-  const netWidth = Math.max(18, Math.round((Math.abs(net) / max) * 100));
-
-  return (
-    <div className="flowCanvas" aria-label="Cash flow summary">
-      <div className="flowColumn">
-        <span>Paychecks</span>
-        <strong>{formatMoney(income)}</strong>
-        <div className="flowBar income" style={{ height: `${incomeWidth}%` }} />
-      </div>
-      <div className="flowStream">
-        <div className="streamBand blue" />
-        <div className="streamBand green" />
-        <div className="streamBand coral" />
-      </div>
-      <div className="flowColumn">
-        <span>Income</span>
-        <strong>{formatMoney(income)}</strong>
-        <div className="flowBar net" style={{ height: `${incomeWidth}%` }} />
-      </div>
-      <div className="flowStream split">
-        <div className="streamBand yellow" />
-        <div className="streamBand rose" />
-        <div className="streamBand slate" />
-      </div>
-      <div className="flowOutcomes">
-        <div className="outcomeRow">
-          <div>
-            <strong>Savings</strong>
-            <span>{formatMoney(Math.max(net, 0))}</span>
-          </div>
-          <div className="outcomeTrack">
-            <div style={{ width: `${netWidth}%` }} />
-          </div>
-        </div>
-        <div className="outcomeRow">
-          <div>
-            <strong>Expenses</strong>
-            <span>{formatMoney(expenses)}</span>
-          </div>
-          <div className="outcomeTrack expense">
-            <div style={{ width: `${expenseWidth}%` }} />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 }

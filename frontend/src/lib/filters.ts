@@ -22,6 +22,7 @@ export interface TxnFilter {
   sort?: TransactionSort;
   sortDirection?: SortDirection;
   netWorthPeriod?: NetWorthPeriod;
+  hasRefund?: boolean;
 }
 
 export type RouteView = "overview" | "all-accounts" | "account" | "review" | "history" | "settings";
@@ -83,6 +84,7 @@ export function decodeTxnFilter(params: URLSearchParams): TxnFilter {
   if (sortDirection === "asc" || sortDirection === "desc") filter.sortDirection = sortDirection;
   const netWorthPeriod = params.get("period");
   if (netWorthPeriod === "1M" || netWorthPeriod === "6M" || netWorthPeriod === "1Y" || netWorthPeriod === "Max") filter.netWorthPeriod = netWorthPeriod;
+  if (params.get("hasRefund") === "true") filter.hasRefund = true;
   return filter;
 }
 
@@ -102,6 +104,7 @@ export function encodeTxnFilter(filter: TxnFilter): URLSearchParams {
   if (filter.sort && filter.sort !== "date") params.set("sort", filter.sort);
   if (filter.sortDirection && filter.sortDirection !== "desc") params.set("sortDirection", filter.sortDirection);
   if (filter.netWorthPeriod && filter.netWorthPeriod !== "6M") params.set("period", filter.netWorthPeriod);
+  if (filter.hasRefund) params.set("hasRefund", "true");
   return params;
 }
 

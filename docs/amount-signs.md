@@ -29,7 +29,9 @@ Every later import is checked again. If a bank changes its export format and the
 
 For previously imported categorized history, run the sign cleanup preview in Settings. Review its cutoff and overlap warnings, then spot-check a known purchase, refund, and monthly category total for each spend account. The cleanup is one undoable operation.
 
-If a category total is inverted after cleanup, investigate the edge normalization—the selected CSV preset or source profile—rather than changing reporting math. Spending totals already net positive refunds against negative expenses. Future refund links will explain which expense a refund offsets without changing those totals.
+If a category total is inverted after cleanup, investigate the edge normalization—the selected CSV preset or source profile—rather than changing reporting math. Spending totals already net positive refunds against negative expenses.
+
+Refund links explain which original expense a positive refund offsets; they do not add or subtract a second reporting amount. Confirming a refund link changes the money-in row to type `refund` and copies the original expense category onto it, so the existing signed amounts net within the same category. One expense can have several partial refunds, while each refund can link to only one expense. If linked refunds exceed the original expense, the app warns and requires an explicit confirmation because price-adjustment credits can occasionally be larger than the charge.
 
 ## Manual entries
 

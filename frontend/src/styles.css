@@ -3130,6 +3130,22 @@ select.editableCell {
   margin-right: auto;
 }
 
+.filterToggle {
+  min-height: 36px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.filterToggle.active {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
 .transactionFilterChips {
   display: flex;
   align-items: center;
@@ -3789,6 +3805,94 @@ select.editableCell {
   .settingsWorkspace .importWorkspace {
     grid-column: auto;
   }
+}
+
+.transactionLabels .refundBadge {
+  background: #e6f6ed;
+  color: #17643a;
+}
+
+.refundReviewPanel,
+.refundSuggestionList {
+  display: grid;
+  gap: 12px;
+}
+
+.refundSuggestionCard,
+.refundLinkPicker {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.refundWarning {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 7px;
+  background: var(--yellow-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.refundLinkPicker {
+  margin: -2px 0 12px;
+  border-color: rgba(59, 106, 232, 0.28);
+}
+
+.refundPickerHeader,
+.linkedRefundList > div,
+.refundCandidateList button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.refundPickerHeader > div,
+.refundCandidateList button > span {
+  display: grid;
+  gap: 3px;
+}
+
+.refundPickerHeader span,
+.refundCandidateList small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.linkedRefundList {
+  display: grid;
+  gap: 6px;
+}
+
+.linkedRefundList > div {
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: #e6f6ed;
+}
+
+.refundCandidateList {
+  display: grid;
+  gap: 6px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.refundCandidateList button {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  text-align: left;
+}
+
+.refundCandidateList button:hover {
+  border-color: var(--blue);
+  background: var(--blue-soft);
 }
 
 @media (max-width: 1100px) {

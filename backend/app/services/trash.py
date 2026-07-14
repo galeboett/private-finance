@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from ..models import ExpenseAllocation, Transaction, TransactionSplit, TransferLink
+from ..models import ExpenseAllocation, RefundLink, Transaction, TransactionSplit, TransferLink
 
 
 def purge_expired_trash(db: Session, *, retention_days: int) -> int:
@@ -22,5 +22,6 @@ def purge_expired_trash(db: Session, *, retention_days: int) -> int:
     db.execute(delete(TransactionSplit).where(TransactionSplit.transaction_id.in_(ids)))
     db.execute(delete(ExpenseAllocation).where(ExpenseAllocation.transaction_id.in_(ids)))
     db.execute(delete(TransferLink).where((TransferLink.from_transaction_id.in_(ids)) | (TransferLink.to_transaction_id.in_(ids))))
+    db.execute(delete(RefundLink).where((RefundLink.expense_transaction_id.in_(ids)) | (RefundLink.refund_transaction_id.in_(ids))))
     db.execute(delete(Transaction).where(Transaction.id.in_(ids)))
     return len(ids)

@@ -22,9 +22,9 @@ from .bootstrap import initialize_database
 from .config import settings
 from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
-from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, SecurityMetadata, SecurityPrice, SessionToken, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
+from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, RefundLink, SecurityMetadata, SecurityPrice, SessionToken, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, HoldingLotCreate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, ManualTransactionCreate, MonthlyAllocationRequest, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, HoldingLotCreate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, ManualTransactionCreate, MonthlyAllocationRequest, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, RefundConfirmRequest, RefundLinkCreate, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
 from .services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_timeseries
@@ -36,6 +36,7 @@ from .services.history_cleanup import apply_categorized_history_sign_cleanup, pr
 from .services.mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .services.operation_history import OperationConflict, list_operations, operation_detail, undo_operation
 from .services.reconciliation import list_reconciliation_statuses, reconciliation_status, save_manual_checkpoint
+from .services.refunds import OverRefundError, confirm_refund_link, create_manual_refund_link, create_refund_suggestions, delete_refund_link, list_manual_refund_candidates, list_refund_links, reject_refund_link
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
 from .services.sign_profiles import profile_payload, resolution_payload, resolve_sign_preview, save_sign_profile
 from .services.snapshots import net_worth_contributors, net_worth_series, net_worth_stats, refresh_holding_net_worth_snapshot, upsert_net_worth_snapshot
@@ -107,6 +108,7 @@ def transaction_filter_dependency(
     search: str | None = None,
     view: Literal["live", "trash"] = "live",
     review_status: ReviewStatus | None = None,
+    has_refund: bool | None = Query(default=None, alias="hasRefund"),
 ) -> TransactionFilter:
     try:
         transaction_types = [TransactionType(value) for value in parse_csv_values(types)]
@@ -128,6 +130,7 @@ def transaction_filter_dependency(
         search=search,
         view=view,
         review_status=review_status,
+        has_refund=has_refund,
     )
 
 
@@ -536,6 +539,7 @@ def _delete_transaction_row(db: Session, transaction: Transaction) -> None:
     db.execute(delete(TransactionSplit).where(TransactionSplit.transaction_id == transaction.id))
     db.execute(delete(ExpenseAllocation).where(ExpenseAllocation.transaction_id == transaction.id))
     db.execute(delete(TransferLink).where((TransferLink.from_transaction_id == transaction.id) | (TransferLink.to_transaction_id == transaction.id)))
+    db.execute(delete(RefundLink).where((RefundLink.expense_transaction_id == transaction.id) | (RefundLink.refund_transaction_id == transaction.id)))
     record_audit_event(
         db,
         "transaction_delete",
@@ -1075,6 +1079,19 @@ def list_transactions(
     splits_by_transaction: dict[int, list[TransactionSplit]] = {}
     for split in db.scalars(select(TransactionSplit).order_by(TransactionSplit.id)).all():
         splits_by_transaction.setdefault(split.transaction_id, []).append(split)
+    confirmed_refund_links = db.scalars(select(RefundLink).where(RefundLink.confirmed.is_(True))).all()
+    refund_transaction_ids = {link.refund_transaction_id for link in confirmed_refund_links}
+    refund_amounts = {
+        row.id: row.amount_cents
+        for row in db.scalars(select(Transaction).where(Transaction.id.in_(refund_transaction_ids))).all()
+    } if refund_transaction_ids else {}
+    refund_total_by_expense: dict[int, int] = {}
+    refund_count_by_expense: dict[int, int] = {}
+    refund_expense_by_refund: dict[int, int] = {}
+    for link in confirmed_refund_links:
+        refund_total_by_expense[link.expense_transaction_id] = refund_total_by_expense.get(link.expense_transaction_id, 0) + refund_amounts.get(link.refund_transaction_id, 0)
+        refund_count_by_expense[link.expense_transaction_id] = refund_count_by_expense.get(link.expense_transaction_id, 0) + 1
+        refund_expense_by_refund[link.refund_transaction_id] = link.expense_transaction_id
     return [
         {
             "id": row.id,
@@ -1093,6 +1110,9 @@ def list_transactions(
             "duplicate_of_transaction_id": row.duplicate_of_transaction_id,
             "monthly_allocation_count": len(allocations_by_transaction.get(row.id, [])),
             "split_count": len(splits_by_transaction.get(row.id, [])),
+            "refund_total_cents": refund_total_by_expense.get(row.id, 0),
+            "refund_link_count": refund_count_by_expense.get(row.id, 0),
+            "refund_expense_id": refund_expense_by_refund.get(row.id),
             "reporting_category_ids": (
                 [allocation.category_id for allocation in allocations_by_transaction[row.id]]
                 if row.id in allocations_by_transaction
@@ -1736,6 +1756,75 @@ def reject_transfer(link_id: int, request: Request, session: SessionToken = Depe
     return reject_transfer_link(db, link)
 
 
+@app.get("/api/refunds/suggestions")
+def get_refund_suggestions(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return list_refund_links(db, confirmed=False)
+
+
+@app.get("/api/refunds/expenses/{expense_transaction_id}")
+def get_expense_refunds(expense_transaction_id: int, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return list_refund_links(db, confirmed=True, expense_transaction_id=expense_transaction_id)
+
+
+@app.get("/api/refunds/candidates")
+def get_refund_candidates(expense_transaction_id: int, search: str | None = None, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    try:
+        return list_manual_refund_candidates(db, expense_transaction_id=expense_transaction_id, search=search)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/refunds/detect")
+def detect_refunds(request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    return create_refund_suggestions(db, actor=actor_for_session(session))
+
+
+@app.post("/api/refund-links")
+def create_refund_link(payload: RefundLinkCreate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    try:
+        return create_manual_refund_link(db, **payload.model_dump(), actor=actor_for_session(session))
+    except OverRefundError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/refunds/{link_id}/confirm")
+def confirm_refund(link_id: int, payload: RefundConfirmRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    link = db.get(RefundLink, link_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Refund candidate not found")
+    try:
+        return confirm_refund_link(db, link, allow_over_refund=payload.allow_over_refund, actor=actor_for_session(session))
+    except OverRefundError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/refunds/{link_id}/reject")
+def reject_refund(link_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    link = db.get(RefundLink, link_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Refund candidate not found")
+    return reject_refund_link(db, link, actor=actor_for_session(session))
+
+
+@app.delete("/api/refunds/{link_id}")
+def unlink_refund(link_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    link = db.get(RefundLink, link_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Refund link not found")
+    return delete_refund_link(db, link, actor=actor_for_session(session))
+
+
 @app.get("/api/dashboard/summary")
 def get_dashboard_summary(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     return dashboard_summary(db)
@@ -2069,6 +2158,7 @@ APP_EXPORT_TABLES = [
     TransactionSplit,
     ExpenseAllocation,
     TransferLink,
+    RefundLink,
     HoldingSnapshot,
     HoldingLot,
     NetWorthSnapshot,
@@ -2088,6 +2178,7 @@ APP_EXPORT_ENTITY_TYPES = {
     TransactionSplit: "transaction_split",
     ExpenseAllocation: "expense_allocation",
     TransferLink: "transfer_link",
+    RefundLink: "refund_link",
     HoldingSnapshot: "holding_snapshot",
     HoldingLot: "holding_lot",
     NetWorthSnapshot: "net_worth_snapshot",

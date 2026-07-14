@@ -119,6 +119,12 @@ Automated:
 - row cleanup and normalization
 - duplicate detection
 - transaction type guesses such as expense, income, refund, or card payment
+
+### Match refunds to expenses
+
+In **Review → Refunds**, choose **Find refunds** to compare positive money-in rows with recent expenses. Confirm a match or choose **Not a match**; either decision appears in Activity and can be undone. The matcher favors the same account, similar merchant text, compatible amounts, and refunds received within 90 days. Obvious card payments, transfers, payroll, and unrelated money-in rows are excluded. To keep Review responsive on large ledgers, each scan replaces stale open suggestions and retains only the 25 highest-confidence matches.
+
+For a manual match, open an expense for editing in the ledger and choose **Link a refund…**. Linked expenses show a `↩ refunded $X` badge and can be found with the **Has refund** filter. Linking only explains the relationship; spending continues to use the ledger's signed amounts, so the refund is not counted twice.
 - dashboard and report aggregation
 
 Manual:

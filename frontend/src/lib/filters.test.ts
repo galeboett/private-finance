@@ -8,7 +8,7 @@ describe("transaction filter URL codec", () => {
       accounts: ["12", "4"], categories: ["8"], tags: ["tax", "shared"], months: ["2026-06"], years: ["2025", "2026"],
       dateFrom: "2026-01-02", dateTo: "2026-07-13", dateBasis: "reporting", amountMin: 125, amountMax: 50000,
       direction: "outflow", types: ["expense", "refund"], search: "coffee shop", view: "trash", sort: "amount",
-      sortDirection: "asc", netWorthPeriod: "1Y",
+      sortDirection: "asc", netWorthPeriod: "1Y", hasRefund: true,
     };
     expect(decodeTxnFilter(encodeTxnFilter(filter))).toEqual(filter);
   });

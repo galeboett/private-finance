@@ -7,7 +7,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
-from ..models import Account, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
+from ..models import Account, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, RefundLink, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
 from .dedupe import canonical_source_hash, find_merge_match, is_categorized_history_reference
 from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 
@@ -98,6 +98,7 @@ def merge_account_into(db: Session, source: Account, target: Account, actor: str
             changes.append(MutationChange(transaction.id, full_values(transaction), None, entity_type="transaction"))
             changes.extend(MutationChange(split.id, full_values(split), None, entity_type="transaction_split") for split in db.scalars(select(TransactionSplit).where(TransactionSplit.transaction_id == transaction.id)).all())
             changes.extend(MutationChange(link.id, full_values(link), None, entity_type="transfer_link") for link in db.scalars(select(TransferLink).where((TransferLink.from_transaction_id == transaction.id) | (TransferLink.to_transaction_id == transaction.id))).all())
+            changes.extend(MutationChange(link.id, full_values(link), None, entity_type="refund_link") for link in db.scalars(select(RefundLink).where((RefundLink.expense_transaction_id == transaction.id) | (RefundLink.refund_transaction_id == transaction.id))).all())
             _delete_transaction_row_for_merge(db, transaction)
             continue
         changed_fields = ["account_id", "source_hash", "review_status", "duplicate_of_transaction_id"]
@@ -216,4 +217,5 @@ def _delete_transaction_row_for_merge(db: Session, transaction: Transaction) -> 
     db.execute(update(Transaction).where(Transaction.duplicate_of_transaction_id == transaction.id).values(duplicate_of_transaction_id=None))
     db.execute(delete(TransactionSplit).where(TransactionSplit.transaction_id == transaction.id))
     db.execute(delete(TransferLink).where((TransferLink.from_transaction_id == transaction.id) | (TransferLink.to_transaction_id == transaction.id)))
+    db.execute(delete(RefundLink).where((RefundLink.expense_transaction_id == transaction.id) | (RefundLink.refund_transaction_id == transaction.id)))
     db.delete(transaction)

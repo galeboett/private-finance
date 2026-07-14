@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
-from ..models import Account, Transaction, TransferLink
+from ..models import Account, RefundLink, Transaction, TransferLink
 from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .transaction_queries import get_live_transaction, live_transaction_select
 
@@ -47,6 +47,7 @@ def score_transfer_match(left: Transaction, right: Transaction, accounts: dict[i
 def detect_transfer_candidates(db: Session, window_days: int = 5) -> list[TransferCandidate]:
     accounts = {account.id: account for account in db.scalars(select(Account).where(Account.status == "active")).all()}
     linked_transaction_ids = _linked_transaction_ids(db)
+    linked_transaction_ids.update(_confirmed_refund_transaction_ids(db))
     rows = db.scalars(
         live_transaction_select(
             Transaction.review_status.in_(list(TRANSFER_MATCH_STATUSES)),
@@ -195,6 +196,9 @@ def confirm_transfer_link(db: Session, link: TransferLink, actor: str = "local-u
     to_transaction = get_live_transaction(db, link.to_transaction_id)
     if not from_transaction or not to_transaction:
         raise ValueError("Transfer link points to a missing transaction")
+    refund_transaction_ids = _confirmed_refund_transaction_ids(db)
+    if from_transaction.id in refund_transaction_ids or to_transaction.id in refund_transaction_ids:
+        raise ValueError("A confirmed refund link already uses one of these transactions")
     suggested_type = _suggested_type(from_transaction, to_transaction, db)
     link_before = changed_values(link, ["confirmed"])
     from_before = changed_values(from_transaction, ["transaction_type", "review_status", "category_id"])
@@ -245,6 +249,13 @@ def _linked_transaction_ids(db: Session) -> set[int]:
     for link in db.scalars(select(TransferLink)).all():
         ids.add(link.from_transaction_id)
         ids.add(link.to_transaction_id)
+    return ids
+
+
+def _confirmed_refund_transaction_ids(db: Session) -> set[int]:
+    ids: set[int] = set()
+    for link in db.scalars(select(RefundLink).where(RefundLink.confirmed.is_(True))).all():
+        ids.update((link.expense_transaction_id, link.refund_transaction_id))
     return ids
 
 
