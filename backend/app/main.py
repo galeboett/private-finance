@@ -1948,7 +1948,7 @@ def get_investment_holdings(session: SessionToken = Depends(current_session), db
         if latest_price and row.quantity_basis_points is not None:
             displayed_value_cents = round((row.quantity_basis_points * latest_price.price_cents) / 10000)
         security_lots = lots_by_security.get((row.account_id, symbol_key), []) if symbol_key else []
-        cost_basis_cents = sum(lot.cost_basis_cents for lot in security_lots) if security_lots else None
+        cost_basis_cents = sum(lot.cost_basis_cents for lot in security_lots) if security_lots else row.cost_basis_cents
         oldest_acquisition_date = security_lots[0].acquisition_date if security_lots else None
         payload.append(
             {

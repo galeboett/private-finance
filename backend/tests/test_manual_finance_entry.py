@@ -61,8 +61,13 @@ def test_holding_lot_adds_basis_gain_and_age_and_can_be_undone():
         account = Account(display_name="Brokerage", account_type="brokerage")
         db.add(account)
         db.flush()
-        db.add(HoldingSnapshot(account_id=account.id, snapshot_date=date(2026, 7, 14), symbol="VTI", quantity_basis_points=100000, price_cents=10000, market_value_cents=100000))
+        db.add(HoldingSnapshot(account_id=account.id, snapshot_date=date(2026, 7, 14), symbol="VTI", quantity_basis_points=100000, price_cents=10000, market_value_cents=100000, cost_basis_cents=85000))
         db.commit()
+
+        aggregate_payload = get_investment_holdings(_session_token(), db)[0]
+        assert aggregate_payload["lot_count"] == 0
+        assert aggregate_payload["cost_basis_cents"] == 85000
+        assert aggregate_payload["unrealized_gain_loss_cents"] == 15000
 
         result = create_holding_lot(
             HoldingLotCreate(account_id=account.id, symbol="vti", acquisition_date=date(2024, 1, 15), quantity_basis_points=100000, cost_basis_cents=80000, note="Opening basis"),

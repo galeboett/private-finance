@@ -228,6 +228,7 @@ class HoldingSnapshot(TimestampMixin, Base):
     quantity_basis_points: Mapped[int | None] = mapped_column(Integer)
     price_cents: Mapped[int | None] = mapped_column(Integer)
     market_value_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    cost_basis_cents: Mapped[int | None] = mapped_column(Integer)
     asset_class: Mapped[str | None] = mapped_column(String(80))
 
 

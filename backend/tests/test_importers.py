@@ -97,6 +97,23 @@ def test_preview_brokerage_link_aggregate_rows_are_ignored():
     assert preview.rows[1]["row_kind"] == "position"
 
 
+def test_preview_fidelity_headers_are_case_insensitive_and_cash_rows_are_positions():
+    content = (
+        b"Account number,Account name,Symbol,Description,Quantity,Last price,Last price change,Current value,Cost basis total,Type\n"
+        b'34061,AMAZON 401(K) PLAN,,BROKERAGELINK,273599.96,$1.00,$0.00,$273599.96,$273599.96,\n'
+        b'653405265,BrokerageLink,FDRXX**,HELD IN MONEY MARKET,,,,$406.58,,Cash\n'
+        b'242084500,Health Savings Account,FDRXX**,HELD IN MONEY MARKET,,,,$3239.91,,Cash\n'
+    )
+
+    assert detect_preset_from_content(content.decode("utf-8"), "Portfolio_Positions_Jul-14-2026.csv") == "brokerage_positions"
+    preview = preview_import(content, "brokerage_positions")
+
+    assert [row["row_kind"] for row in preview.rows] == ["ignore", "position", "position"]
+    assert preview.rows[1]["account_name"] == "BrokerageLink"
+    assert preview.rows[1]["symbol"] == "FDRXX**"
+    assert preview.rows[1]["market_value"] == "$406.58"
+
+
 def test_detect_venmo_statement_with_intro_rows():
     content = (
         b"Account Statement - (@hey-matt) ,,,,,,,,,,,,,,,,,,,,,\n"

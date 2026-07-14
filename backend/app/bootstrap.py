@@ -4,6 +4,7 @@ from .config import settings
 from .db import Base, engine, session_scope
 from .seed import seed_categories
 from .services.reconciliation import backfill_statement_checkpoints
+from .services.fidelity import repair_fidelity_holding_history
 from .services.snapshots import backfill_net_worth_snapshots
 from .services.trash import purge_expired_trash
 
@@ -45,6 +46,9 @@ def initialize_database() -> None:
         if "labels" not in transaction_columns:
             connection.execute(text("ALTER TABLE transactions ADD COLUMN labels TEXT"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_transactions_deleted_at ON transactions (deleted_at)"))
+        holding_snapshot_columns = {column["name"] for column in inspector.get_columns("holding_snapshots")}
+        if "cost_basis_cents" not in holding_snapshot_columns:
+            connection.execute(text("ALTER TABLE holding_snapshots ADD COLUMN cost_basis_cents INTEGER"))
         import_batch_columns = {column["name"] for column in inspector.get_columns("import_batches")}
         if "source_path" not in import_batch_columns:
             connection.execute(text("ALTER TABLE import_batches ADD COLUMN source_path TEXT"))
@@ -93,5 +97,6 @@ def initialize_database() -> None:
         seed_categories(db)
         backfill_net_worth_snapshots(db)
         backfill_statement_checkpoints(db)
+        repair_fidelity_holding_history(db)
         purge_expired_trash(db, retention_days=settings.trash_retention_days)
     settings.import_inbox_dir.expanduser().mkdir(parents=True, exist_ok=True)

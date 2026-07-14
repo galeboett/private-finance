@@ -25,6 +25,7 @@ from .dedupe import (
     is_reliable_import_reference,
     natural_import_match_count,
 )
+from .fidelity import fidelity_position_row_kind, resolve_fidelity_category_account
 from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .snapshots import record_imported_snapshots
 from .reconciliation import record_imported_checkpoints
@@ -68,9 +69,10 @@ def decode_text(content: bytes) -> str:
 
 
 def detect_preset_from_content(text: str, filename: str = "") -> str | None:
-    if all(marker in text for marker in ("Qty (Quantity)", "Mkt Val (Market Value)", "Asset Type")):
+    folded_text = text.casefold()
+    if all(marker.casefold() in folded_text for marker in ("Qty (Quantity)", "Mkt Val (Market Value)", "Asset Type")):
         return "brokerage_positions_compact"
-    if CITI_ACTIVITY_HEADER in text:
+    if CITI_ACTIVITY_HEADER.casefold() in folded_text:
         normalized_filename = filename.lower()
         return "citi_checking" if normalized_filename.startswith("chk_") or "checking" in normalized_filename else "citi_card_activity"
     for marker, preset in (
@@ -83,7 +85,7 @@ def detect_preset_from_content(text: str, filename: str = "") -> str | None:
         (VENMO_HEADER, "venmo_activity"),
         (AMEX_ACTIVITY_HEADER, "amex_activity"),
     ):
-        if marker in text:
+        if marker.casefold() in folded_text:
             return preset
     return None
 
@@ -190,7 +192,7 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
         JPM_POSITIONS_HEADER,
         COMPACT_POSITIONS_HEADER,
     )
-    header_index = next((i for i, row in enumerate(reader) if any(",".join(row).startswith(marker) for marker in header_markers)), 0)
+    header_index = next((i for i, row in enumerate(reader) if any(",".join(row).casefold().startswith(marker.casefold()) for marker in header_markers)), 0)
     data_text = "\n".join(",".join(_csv_escape_cell(cell) for cell in row) for row in reader[header_index:])
     dict_reader = csv.DictReader(io.StringIO(data_text))
     rows = []
@@ -199,31 +201,35 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
             continue
         row_kind = "transaction"
         if preset_type == "brokerage_positions":
-            if row.get("Account Number", "").startswith("Date downloaded") or not row.get("Account Number"):
+            account_number = _row_value_ci(row, "Account Number")
+            account_name = _row_value_ci(row, "Account Name")
+            symbol = _row_value_ci(row, "Symbol")
+            current_value = _row_value_ci(row, "Current Value")
+            if account_number.startswith("Date downloaded") or not account_number:
                 continue
-            description = row.get("Description") or ""
-            if not description and not row.get("Symbol") and not row.get("Current Value"):
+            description = _row_value_ci(row, "Description")
+            if not description and not symbol and not current_value:
                 continue
-            upper_description = description.upper()
-            if upper_description.startswith("BROKERAGELINK") or upper_description.startswith("HELD IN"):
-                row_kind = "ignore"
-            else:
-                row_kind = "position"
+            row_kind = fidelity_position_row_kind(
+                account_name=account_name,
+                symbol=symbol,
+                description=description,
+            )
             rows.append(
                 {
                     "row_index": idx,
                     "row_kind": row_kind,
                     "snapshot_date": None,
-                    "account_number": row.get("Account Number"),
-                    "symbol": row.get("Symbol"),
+                    "account_number": account_number,
+                    "symbol": symbol,
                     "description": description,
-                    "quantity": row.get("Quantity"),
-                    "price": row.get("Last Price"),
-                    "market_value": row.get("Current Value"),
-                    "asset_class": row.get("Type"),
-                    "account_name": row.get("Account Name"),
-                    "acquisition_date": row.get("Date Acquired") or row.get("Acquisition Date"),
-                    "cost_basis": row.get("Cost Basis Total") or row.get("Cost Basis"),
+                    "quantity": _row_value_ci(row, "Quantity"),
+                    "price": _row_value_ci(row, "Last Price"),
+                    "market_value": current_value,
+                    "asset_class": _row_value_ci(row, "Type"),
+                    "account_name": account_name,
+                    "acquisition_date": _row_value_ci(row, "Date Acquired") or _row_value_ci(row, "Acquisition Date"),
+                    "cost_basis": _row_value_ci(row, "Cost Basis Total") or _row_value_ci(row, "Cost Basis"),
                 }
             )
         elif preset_type == "brokerage_positions_compact":
@@ -1051,10 +1057,56 @@ def semantic_import_hash(content: bytes, preset_type: str | None = None, filenam
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def holding_enrichment_available(db: Session, batch: ImportBatch, content: bytes, filename: str) -> bool:
+    """Return whether a committed positions file can fill missing snapshot basis data."""
+    if batch.status != "committed":
+        return False
+    detected = batch.detected_preset or detect_preset_from_content(decode_text(content), filename)
+    if not detected or not _is_brokerage_preset(detected):
+        return False
+    account = db.get(Account, batch.account_id)
+    if not account:
+        return False
+    preview = preview_import(content, detected)
+    resolved_snapshot_date = _snapshot_date_from_preview(preview) or _extract_snapshot_date(filename) or date.today()
+    for row in preview.rows:
+        symbol = (row.get("symbol") or "").strip().upper()
+        cost_basis_value = (row.get("cost_basis") or "").strip()
+        if row.get("row_kind") == "ignore" or not symbol or cost_basis_value in {"", "--"}:
+            continue
+        try:
+            cost_basis_cents = parse_decimal_to_cents(cost_basis_value)
+        except ValueError:
+            continue
+        if cost_basis_cents is None:
+            continue
+        target_account, _ = _resolve_brokerage_account(db, account, row)
+        snapshot = db.scalar(
+            select(HoldingSnapshot)
+            .where(
+                HoldingSnapshot.account_id == target_account.id,
+                HoldingSnapshot.snapshot_date == resolved_snapshot_date,
+                HoldingSnapshot.symbol == symbol,
+            )
+            .order_by(HoldingSnapshot.id.desc())
+        )
+        if snapshot and snapshot.cost_basis_cents is None:
+            return True
+    return False
+
+
 def _canonical_fingerprint_value(value):
     if isinstance(value, str):
         return " ".join(value.replace("\ufeff", "").split())
     return value
+
+
+def _row_value_ci(row: dict, name: str) -> str:
+    target = name.casefold()
+    for key, value in row.items():
+        if key and key.strip().casefold() == target:
+            return value or ""
+    return ""
 
 
 def commit_import(db: Session, account, preset: ImportPreset | None, filename: str, content: bytes, actor: str = "local-user", snapshot_date: date | None = None, existing_batch: ImportBatch | None = None, sign_convention: str = "preset") -> dict:
@@ -1133,7 +1185,7 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
                         )
                     ).all()
                     for stale_row in stale:
-                        journal_changes.append(MutationChange(stale_row.id, changed_values(stale_row, ["account_id", "snapshot_date", "symbol", "description", "quantity_basis_points", "price_cents", "market_value_cents", "asset_class"]), None))
+                        journal_changes.append(MutationChange(stale_row.id, changed_values(stale_row, ["account_id", "snapshot_date", "symbol", "description", "quantity_basis_points", "price_cents", "market_value_cents", "cost_basis_cents", "asset_class"]), None))
                         db.delete(stale_row)
                     if stale:
                         db.flush()
@@ -1146,6 +1198,11 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
                         quantity_basis_points=_parse_decimal_to_basis_points(row.get("quantity")),
                         price_cents=parse_decimal_to_cents(row.get("price")),
                         market_value_cents=market_value_cents,
+                        cost_basis_cents=(
+                            parse_decimal_to_cents(row.get("cost_basis"))
+                            if (row.get("cost_basis") or "").strip() not in {"", "--"}
+                            else None
+                        ),
                         asset_class=row.get("asset_class"),
                     )
                 db.add(holding)
@@ -1279,7 +1336,7 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
     journal_changes.extend(record_imported_checkpoints(db, created_transactions))
     if created_holdings:
         journal_changes.extend(
-            MutationChange(holding.id, None, changed_values(holding, ["account_id", "snapshot_date", "symbol", "description", "quantity_basis_points", "price_cents", "market_value_cents", "asset_class"]))
+            MutationChange(holding.id, None, changed_values(holding, ["account_id", "snapshot_date", "symbol", "description", "quantity_basis_points", "price_cents", "market_value_cents", "cost_basis_cents", "asset_class"]))
             for holding in created_holdings
         )
     if created_lots:
@@ -1310,6 +1367,10 @@ def _resolve_brokerage_account(db: Session, selected_account: Account, row: dict
     else:
         query = query.where(Account.id == selected_account.id)
     candidates = db.scalars(query).all()
+
+    category_account = resolve_fidelity_category_account(candidates, account_name)
+    if category_account:
+        return category_account, None
 
     for candidate in candidates:
         if candidate.last_four and account_number.endswith(candidate.last_four):

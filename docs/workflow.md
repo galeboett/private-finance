@@ -159,6 +159,8 @@ Recommended setup:
 
 During import, brokerage rows are routed to sibling accounts at the same institution when the CSV account number matches an account last-four or the CSV account name matches an account display name. If the app cannot confidently match a row, it assigns it to the selected upload account and includes an import warning.
 
+Fidelity `Portfolio_Positions` exports use three logical destinations in this app: Individual rows go to Individual Brokerage, Health Savings Account rows go to HSA, and both Amazon 401(k) Plan and BrokerageLink rows go to 401K. The Amazon 401(k) row whose description is exactly `BROKERAGELINK` is an aggregate of the detailed BrokerageLink positions and is ignored. Symbol-bearing `HELD IN` rows such as `FDRXX**` money market and `FCASH**` cash are real holdings and use Current value. Header capitalization is not significant.
+
 ## Why Account Creation Is Manual First
 
 Bank CSV files are inconsistent. Some include account numbers, some include only partial identifiers, and some include no reliable account identity at all. For privacy and accuracy, v1 requires the user to create or choose the account before importing.

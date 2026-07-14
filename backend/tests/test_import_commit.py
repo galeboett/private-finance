@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import Account, Category, CategoryRule, HoldingLot, HoldingSnapshot, NetWorthSnapshot, OperationChange, StatementCheckpoint, Transaction
+from app.models import Account, Category, CategoryRule, HoldingLot, HoldingSnapshot, Institution, NetWorthSnapshot, OperationChange, StatementCheckpoint, Transaction
 from app.services.importers import (
     _extract_snapshot_date,
     _history_transaction_type,
@@ -155,6 +155,42 @@ def test_fidelity_position_lots_import_basis_and_preserve_manual_lots_on_refresh
         lots = session.query(HoldingLot).order_by(HoldingLot.source).all()
         assert [(lot.source, lot.cost_basis_cents) for lot in lots] == [("import", 85000), ("manual", 35000)]
         assert lots[0].acquisition_date == date(2024, 1, 15)
+
+
+def test_fidelity_positions_route_to_three_logical_accounts_and_keep_cash():
+    with _session() as session:
+        institution = Institution(name="Fidelity")
+        individual = Account(institution=institution, display_name="Individual Brokerage", account_type="brokerage", last_four="1047")
+        retirement = Account(institution=institution, display_name="401K", account_type="retirement", last_four="4061")
+        hsa = Account(institution=institution, display_name="HSA", account_type="brokerage", last_four="4500")
+        duplicate = Account(institution=institution, display_name="Brokeragelink", account_type="brokerage", last_four="5265")
+        session.add_all([individual, retirement, hsa, duplicate])
+        session.commit()
+        content = (
+            b"Account number,Account name,Symbol,Description,Quantity,Last price,Last price change,Current value,Cost basis total,Type\n"
+            b'Z09581047,Individual,FCASH**,HELD IN FCASH,,,,$1101.12,,Cash\n'
+            b'Z09581047,Individual,AMZN,AMAZON.COM INC,24,$247.31,0,$5935.44,$5148.58,Cash\n'
+            b'34061,AMAZON 401(K) PLAN,,BROKERAGELINK,273599.96,$1.00,0,$273599.96,$273599.96,\n'
+            b'34061,AMAZON 401(K) PLAN,02315M107,VANG INST 500 IDX TR,85.264,$325.29,0,$27735.53,$25698.38,\n'
+            b'653405265,BrokerageLink,FDRXX**,HELD IN MONEY MARKET,,,,$406.58,,Cash\n'
+            b'653405265,BrokerageLink,BRKB,BERKSHIRE HATHAWAY,227,$496.85,0,$112784.95,$109766.74,Cash\n'
+            b'242084500,Health Savings Account,FDRXX**,HELD IN MONEY MARKET,,,,$3239.91,,Cash\n'
+            b'242084500,Health Savings Account,BRKB,BERKSHIRE HATHAWAY,51,$496.85,0,$25339.35,$23969.46,Cash\n'
+        )
+
+        result = commit_import(session, individual, None, "Portfolio_Positions_Jul-14-2026.csv", content)
+        session.commit()
+        holdings = session.query(HoldingSnapshot).order_by(HoldingSnapshot.account_id, HoldingSnapshot.id).all()
+        by_account = {
+            account.display_name: [(row.symbol, row.market_value_cents) for row in holdings if row.account_id == account.id]
+            for account in (individual, retirement, hsa, duplicate)
+        }
+
+        assert result["inserted"] == 7
+        assert by_account["Individual Brokerage"] == [("FCASH**", 110112), ("AMZN", 593544)]
+        assert by_account["401K"] == [("02315M107", 2773553), ("FDRXX**", 40658), ("BRKB", 11278495)]
+        assert by_account["HSA"] == [("FDRXX**", 323991), ("BRKB", 2533935)]
+        assert by_account["Brokeragelink"] == []
 
 
 def test_commit_import_records_running_balance_snapshot():
@@ -344,10 +380,10 @@ def test_commit_compact_positions_uses_filename_date_and_excludes_total():
         session.commit()
         content = (
             b'"Positions for account Individual ...373 as of 03:44 AM ET, 2026/07/14"\n\n'
-            b'"Symbol","Description","Qty (Quantity)","Price","Mkt Val (Market Value)","Asset Type",\n'
-            b'"VOO","VANGUARD S&P 500 ETF","94.527","688.50","$65,081.84","ETF",\n'
-            b'"Cash & Cash Investments","--","--","--","$23.81","Cash",\n'
-            b'"Positions Total","","--","--","$65,105.65","",\n'
+            b'"Symbol","Description","Qty (Quantity)","Price","Mkt Val (Market Value)","Cost Basis","Asset Type",\n'
+            b'"VOO","VANGUARD S&P 500 ETF","94.527","688.50","$65,081.84","$42,361.99","ETF",\n'
+            b'"Cash & Cash Investments","--","--","--","$23.81","--","Cash",\n'
+            b'"Positions Total","","--","--","$65,105.65","","",\n'
         )
 
         result = commit_import(session, account, None, "Individual-Positions-2026-07-14.csv", content)
@@ -357,3 +393,5 @@ def test_commit_compact_positions_uses_filename_date_and_excludes_total():
         assert result["inserted"] == 2
         assert {holding.snapshot_date for holding in holdings} == {date(2026, 7, 14)}
         assert sum(holding.market_value_cents for holding in holdings) == 6510565
+        assert holdings[0].cost_basis_cents == 4236199
+        assert session.query(HoldingLot).count() == 0

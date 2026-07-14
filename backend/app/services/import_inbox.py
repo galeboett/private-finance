@@ -15,6 +15,7 @@ from .importers import (
     commit_import,
     decode_text,
     detect_preset_from_content,
+    holding_enrichment_available,
     preview_import,
     semantic_import_hash,
     suggest_account_for_import,
@@ -58,13 +59,24 @@ def scan_import_inbox(db: Session) -> dict:
             content = path.read_bytes()
             file_hash = hashlib.sha256(content).hexdigest()
             exact_match = db.scalar(select(ImportBatch).where(ImportBatch.file_hash == file_hash).order_by(ImportBatch.id.desc()))
-            if exact_match:
+            refreshes_holding_data = bool(exact_match and holding_enrichment_available(db, exact_match, content, relative_name))
+            if exact_match and not refreshes_holding_data:
                 skipped.append({"filename": relative_name, "reason": f"Already recorded as {exact_match.status} (same file contents)."})
                 continue
             suggestion = suggest_account_for_import(db, relative_name, content)
+            if refreshes_holding_data and exact_match:
+                suggestion.suggested_account_id = exact_match.account_id
+                suggestion.match_confidence = 100
+                suggestion.reason = "Matched the account from the earlier import so missing holding data can be refreshed."
             semantic_hash = semantic_import_hash(content, suggestion.preset_type, relative_name)
             existing = db.scalar(select(ImportBatch).where(ImportBatch.semantic_hash == semantic_hash).order_by(ImportBatch.id.desc()))
-            if existing:
+            if existing and not refreshes_holding_data:
+                refreshes_holding_data = holding_enrichment_available(db, existing, content, relative_name)
+                if refreshes_holding_data:
+                    suggestion.suggested_account_id = existing.account_id
+                    suggestion.match_confidence = 100
+                    suggestion.reason = "Matched the account from the earlier import so missing holding data can be refreshed."
+            if existing and not refreshes_holding_data:
                 skipped.append({"filename": relative_name, "reason": f"Already recorded as {existing.status} (same parsed transactions)."})
                 continue
             if suggestion.suggested_account_id is None:
@@ -84,6 +96,8 @@ def scan_import_inbox(db: Session) -> dict:
             sign_resolution = resolve_sign_preview(db, account=account, preset_type=suggestion.preset_type, preview=raw_preview)
             preview = annotate_import_interpretation(sign_resolution.preview, account)
             warnings = list(preview.warnings)
+            if refreshes_holding_data:
+                warnings.append("This positions file was already imported, but it can fill missing cost basis data. Confirm to refresh the holdings.")
             if sign_resolution.requires_confirmation:
                 warnings.append("The amount signs do not match the saved or detected convention. Review the examples before confirming this import.")
             batch = ImportBatch(
@@ -137,19 +151,24 @@ def stage_uploaded_import(db: Session, *, account: Account, filename: str, conte
         raise ValueError(f"File exceeds the {settings.import_file_size_limit_mb} MB limit.")
     file_hash = hashlib.sha256(content).hexdigest()
     exact_match = db.scalar(select(ImportBatch).where(ImportBatch.file_hash == file_hash).order_by(ImportBatch.id.desc()))
-    if exact_match:
+    refreshes_holding_data = bool(exact_match and exact_match.account_id == account.id and holding_enrichment_available(db, exact_match, content, filename))
+    if exact_match and not refreshes_holding_data:
         raise ValueError(f"This file is already recorded as {exact_match.status}.")
     preset_type = detect_preset_from_content(decode_text(content), filename)
     if not preset_type:
         raise ValueError("Could not detect this CSV format. Choose a supported CSV or create a reusable column mapping.")
     semantic_hash = semantic_import_hash(content, preset_type, filename)
     semantic_match = db.scalar(select(ImportBatch).where(ImportBatch.semantic_hash == semantic_hash).order_by(ImportBatch.id.desc()))
-    if semantic_match:
+    if semantic_match and semantic_match.account_id == account.id and not refreshes_holding_data:
+        refreshes_holding_data = holding_enrichment_available(db, semantic_match, content, filename)
+    if semantic_match and not refreshes_holding_data:
         raise ValueError(f"These transactions are already recorded as {semantic_match.status}.")
     raw_preview = preview_import(content, preset_type)
     sign_resolution = resolve_sign_preview(db, account=account, preset_type=preset_type, preview=raw_preview, requested=sign_convention)
     preview = annotate_import_interpretation(sign_resolution.preview, account)
     warnings = list(preview.warnings)
+    if refreshes_holding_data:
+        warnings.append("This positions file was already imported, but it can fill missing cost basis data. Confirm to refresh the holdings.")
     if sign_resolution.requires_confirmation:
         warnings.append("The amount signs do not match the saved or detected convention. Review the examples before confirming this import.")
     managed_folder = inbox_directory() / ".staged"

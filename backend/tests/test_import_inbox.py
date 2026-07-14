@@ -3,8 +3,9 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import Base
-from app.models import Account, ImportBatch, ImportSignProfile, Institution, Operation, StagingRow, Transaction
+from app.models import Account, HoldingSnapshot, ImportBatch, ImportSignProfile, Institution, Operation, StagingRow, Transaction
 from app.services.import_inbox import confirm_pending_import, discard_pending_import, pending_import_batches, scan_import_inbox, stage_uploaded_import
+from app.services.importers import commit_import
 
 
 CARD_CSV = b"Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n07/10/2026,07/11/2026,Market,Shopping,Sale,-42.50,\n"
@@ -157,6 +158,41 @@ def test_download_suffix_and_harmless_csv_formatting_still_count_as_duplicates(t
         assert len(result["staged"]) == 1
         assert len(result["skipped"]) == 1
         assert "same parsed transactions" in result["skipped"][0]["reason"]
+
+
+def test_scan_restages_committed_positions_file_when_it_can_fill_missing_cost_basis(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "import_inbox_dir", tmp_path)
+    content = (
+        b'"Positions for account Individual ...373 as of 03:44 AM ET, 2026/07/14"\n\n'
+        b'"Symbol","Description","Qty (Quantity)","Price","Mkt Val (Market Value)","Cost Basis","Asset Type",\n'
+        b'"VOO","VANGUARD S&P 500 ETF","94.527","688.50","$65,081.84","$42,361.99","ETF",\n'
+    )
+    source = tmp_path / "Individual-Positions-2026-07-14-034412.csv"
+    source.write_bytes(content)
+    engine = _database()
+    with Session(engine) as db:
+        account = Account(display_name="CS Investment Account", account_type="brokerage", last_four="373")
+        db.add(account)
+        db.commit()
+
+        commit_import(db, account, None, source.name, content, actor="user:7")
+        db.commit()
+        holding = db.scalar(select(HoldingSnapshot))
+        assert holding.cost_basis_cents == 4236199
+
+        holding.cost_basis_cents = None
+        db.commit()
+        enrichment_scan = scan_import_inbox(db)
+        assert len(enrichment_scan["staged"]) == 1
+        assert enrichment_scan["skipped"] == []
+        enrichment_batch = db.get(ImportBatch, enrichment_scan["staged"][0]["batch_id"])
+        assert "fill missing cost basis" in enrichment_batch.warnings_json
+
+        confirm_pending_import(db, enrichment_batch, "user:7")
+        db.commit()
+        refreshed = db.scalar(select(HoldingSnapshot))
+        assert refreshed.cost_basis_cents == 4236199
+        assert scan_import_inbox(db)["skipped"][0]["reason"].startswith("Already recorded as committed")
 
 
 def test_similarly_named_downloads_with_different_rows_are_both_staged(tmp_path, monkeypatch):
