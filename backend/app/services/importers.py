@@ -38,6 +38,7 @@ VENMO_HEADER = ",ID,Datetime,Type,Status,Note,From,To,Amount (total),Amount (tip
 CITI_ACTIVITY_HEADER = "Status,Date,Description,Debit,Credit"
 AMEX_ACTIVITY_HEADER = "Date,Description,Amount"
 JPM_POSITIONS_HEADER = "Asset Class,Asset Strategy,Asset Strategy Detail,Description,Ticker,CUSIP,Quantity"
+COMPACT_POSITIONS_HEADER = "Symbol,Description,Qty (Quantity),Price"
 GENERIC_MAPPED_HEADER = "PF Date,PF Description,PF Amount"
 IMPORT_SIGN_CONVENTIONS = {"preset", "reverse"}
 
@@ -67,6 +68,8 @@ def decode_text(content: bytes) -> str:
 
 
 def detect_preset_from_content(text: str, filename: str = "") -> str | None:
+    if all(marker in text for marker in ("Qty (Quantity)", "Mkt Val (Market Value)", "Asset Type")):
+        return "brokerage_positions_compact"
     if CITI_ACTIVITY_HEADER in text:
         normalized_filename = filename.lower()
         return "citi_checking" if normalized_filename.startswith("chk_") or "checking" in normalized_filename else "citi_card_activity"
@@ -185,6 +188,7 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
         CITI_ACTIVITY_HEADER,
         AMEX_ACTIVITY_HEADER,
         JPM_POSITIONS_HEADER,
+        COMPACT_POSITIONS_HEADER,
     )
     header_index = next((i for i, row in enumerate(reader) if any(",".join(row).startswith(marker) for marker in header_markers)), 0)
     data_text = "\n".join(",".join(_csv_escape_cell(cell) for cell in row) for row in reader[header_index:])
@@ -218,6 +222,31 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
                     "market_value": row.get("Current Value"),
                     "asset_class": row.get("Type"),
                     "account_name": row.get("Account Name"),
+                }
+            )
+        elif preset_type == "brokerage_positions_compact":
+            raw_symbol = (row.get("Symbol") or "").strip()
+            if not raw_symbol or raw_symbol.casefold() == "positions total":
+                continue
+            is_cash = raw_symbol.casefold() == "cash & cash investments"
+            market_value = (row.get("Mkt Val (Market Value)") or "").strip()
+            if not market_value or market_value == "--":
+                continue
+            metadata = " ".join(cell for prefix_row in reader[:header_index] for cell in prefix_row if cell)
+            account_match = re.search(r"Positions for account (.+?) as of ", metadata, flags=re.IGNORECASE)
+            rows.append(
+                {
+                    "row_index": idx,
+                    "row_kind": "position",
+                    "snapshot_date": None,
+                    "account_number": account_match.group(1).strip() if account_match else None,
+                    "symbol": None if is_cash else raw_symbol,
+                    "description": raw_symbol if is_cash else (row.get("Description") or "").strip(),
+                    "quantity": None if (row.get("Qty (Quantity)") or "").strip() in {"", "--"} else row.get("Qty (Quantity)"),
+                    "price": None if (row.get("Price") or "").strip() in {"", "--"} else row.get("Price"),
+                    "market_value": market_value,
+                    "asset_class": (row.get("Asset Type") or "").strip() or None,
+                    "account_name": account_match.group(1).strip() if account_match else None,
                 }
             )
         elif preset_type == "jpm_brokerage_positions":
@@ -526,6 +555,7 @@ def _proposed_account_from_import(filename: str, preset_type: str, preview: Prev
         "checking_running_balance": "checking",
         "brokerage_positions": "brokerage",
         "jpm_brokerage_positions": "brokerage",
+        "brokerage_positions_compact": "brokerage",
         "citi_checking": "checking",
         "citi_card_activity": "credit_card",
         "amex_activity": "credit_card",
@@ -587,7 +617,7 @@ def _institution_from_filename(filename: str, preset_type: str) -> str | None:
     text = filename.lower()
     if preset_type == "jpm_brokerage_positions":
         return "Chase"
-    if preset_type == "brokerage_positions" or "fidelity" in text or "portfolio_positions" in text or "individual-positions" in text:
+    if preset_type in {"brokerage_positions", "brokerage_positions_compact"} or "fidelity" in text or "portfolio_positions" in text or "individual-positions" in text:
         return "Fidelity"
     if preset_type in {"citi_checking", "citi_card_activity"}:
         return "Citi"
@@ -1268,7 +1298,7 @@ def _normalize_account_name(value: str) -> str:
     return "".join(char.lower() for char in value if char.isalnum())
 
 def _is_brokerage_preset(preset_type: str) -> bool:
-    return preset_type in {"brokerage_positions", "jpm_brokerage_positions"}
+    return preset_type in {"brokerage_positions", "brokerage_positions_compact", "jpm_brokerage_positions"}
 
 
 def _snapshot_date_from_preview(preview: PreviewResult) -> date | None:

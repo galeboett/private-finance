@@ -315,3 +315,25 @@ def test_commit_jpm_positions_uses_as_of_date_and_ignores_footnotes():
     assert [holding.symbol for holding in holdings] == ["QACDS", "VOO"]
     assert {holding.snapshot_date for holding in holdings} == {date(2026, 7, 11)}
     assert sum(holding.market_value_cents for holding in holdings) == 22326410
+
+
+def test_commit_compact_positions_uses_filename_date_and_excludes_total():
+    with _session() as session:
+        account = Account(display_name="Individual", account_type="brokerage")
+        session.add(account)
+        session.commit()
+        content = (
+            b'"Positions for account Individual ...373 as of 03:44 AM ET, 2026/07/14"\n\n'
+            b'"Symbol","Description","Qty (Quantity)","Price","Mkt Val (Market Value)","Asset Type",\n'
+            b'"VOO","VANGUARD S&P 500 ETF","94.527","688.50","$65,081.84","ETF",\n'
+            b'"Cash & Cash Investments","--","--","--","$23.81","Cash",\n'
+            b'"Positions Total","","--","--","$65,105.65","",\n'
+        )
+
+        result = commit_import(session, account, None, "Individual-Positions-2026-07-14.csv", content)
+        session.commit()
+        holdings = session.query(HoldingSnapshot).order_by(HoldingSnapshot.id).all()
+
+        assert result["inserted"] == 2
+        assert {holding.snapshot_date for holding in holdings} == {date(2026, 7, 14)}
+        assert sum(holding.market_value_cents for holding in holdings) == 6510565

@@ -357,6 +357,26 @@ def test_preview_jpm_positions_uses_holding_fields_and_ignores_footer():
     assert preview.rows[0]["snapshot_date"] == "07/11/2026"
 
 
+def test_preview_compact_positions_skips_metadata_and_total():
+    content = (
+        b'"Positions for account Individual ...373 as of 03:44 AM ET, 2026/07/14"\n\n'
+        b'"Symbol","Description","Qty (Quantity)","Price","Mkt Val (Market Value)","Asset Type",\n'
+        b'"VOO","VANGUARD S&P 500 ETF","94.527","688.50","$65,081.84","ETFs & Closed End Funds",\n'
+        b'"Cash & Cash Investments","--","--","--","$23.81","Cash and Money Market",\n'
+        b'"Positions Total","","--","--","$65,105.65","",\n'
+    )
+
+    assert detect_preset_from_content(content.decode(), "Individual-Positions-2026-07-14.csv") == "brokerage_positions_compact"
+    preview = preview_import(content, "brokerage_positions_compact")
+
+    assert len(preview.rows) == 2
+    assert preview.rows[0]["symbol"] == "VOO"
+    assert preview.rows[0]["market_value"] == "$65,081.84"
+    assert preview.rows[0]["account_name"] == "Individual ...373"
+    assert preview.rows[1]["symbol"] is None
+    assert preview.rows[1]["description"] == "Cash & Cash Investments"
+
+
 def test_new_formats_propose_expected_accounts_without_treating_year_as_last_four():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
