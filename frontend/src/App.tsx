@@ -36,8 +36,8 @@ import { DuplicateReview, type DuplicateAction, type DuplicatePair } from "./fea
 import { TransferReview, type TransferCandidate } from "./features/review/TransferReview";
 import type { PaymentVerificationStatus, PaymentWarning } from "./features/transfers/PaymentVerification";
 import { encodeTxnFilter, type NetWorthPeriod, type TxnFilter } from "./lib/filters";
+import { transactionTypeUsesCategory } from "./lib/transactionTypes";
 import { useDrillDown } from "./lib/useDrillDown";
-
 type BootstrapCategory = { id: number; key: string; label: string; parent_id: number | null };
 type DashboardSummary = {
   review_counts: Record<string, number>;
@@ -195,7 +195,7 @@ type SavedRuleAction = {
 
 type RuleSummary = {
   id: number;
-  category_id: number;
+  category_id: number | null;
   priority: number;
   field_name: string;
   match_text: string;
@@ -1965,7 +1965,7 @@ export function App() {
 
   async function saveRuleFromTransaction(transaction: TransactionRow) {
     setToast(null);
-    if (!transaction.category_id) {
+    if (transactionTypeUsesCategory(transaction.transaction_type) && !transaction.category_id) {
       showToast({ tone: "error", message: "Choose a category before saving a rule." });
       return;
     }
@@ -1975,7 +1975,7 @@ export function App() {
         method: "POST",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({
-          category_id: transaction.category_id,
+          category_id: transactionTypeUsesCategory(transaction.transaction_type) ? transaction.category_id : null,
           field_name: "raw_description",
           match_text: matchText,
           suggested_transaction_type: transaction.transaction_type,
@@ -1984,7 +1984,7 @@ export function App() {
       });
       setLastSavedRule({ id: rule.id, matchText });
       await loadData();
-      showToast({ tone: "success", message: `Rule saved for "${matchText}". Apply it below to categorize and confirm matches.`, operationId: rule.operation_id });
+      showToast({ tone: "success", message: `Rule saved for "${matchText}". Apply it below to classify and confirm matches.`, operationId: rule.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be saved." });
     }
@@ -1996,7 +1996,7 @@ export function App() {
       showToast({ tone: "error", message: "Select at least one review item first." });
       return;
     }
-    if (!bulkReviewCategoryId) {
+    if (transactionTypeUsesCategory(bulkReviewType) && !bulkReviewCategoryId) {
       showToast({ tone: "error", message: "Choose a category before confirming selected review items." });
       return;
     }
@@ -2004,7 +2004,7 @@ export function App() {
       const result = await api<{ operation_id: string }>("/api/operations/bulk-update", {
         method: "POST",
         headers: { "x-csrf-token": csrf },
-        body: JSON.stringify({ entity_type: "transaction", ids: selectedVisibleReviewTransactions.map((transaction) => transaction.id), patch: { category_id: bulkReviewCategoryId, transaction_type: bulkReviewType, review_status: "confirmed" } }),
+        body: JSON.stringify({ entity_type: "transaction", ids: selectedVisibleReviewTransactions.map((transaction) => transaction.id), patch: { category_id: transactionTypeUsesCategory(bulkReviewType) ? bulkReviewCategoryId : null, transaction_type: bulkReviewType, review_status: "confirmed" } }),
       });
       setSelectedTransactionIds((current) => current.filter((id) => !selectedVisibleReviewIds.includes(id)));
       resetTransactionSelectionAnchor();
@@ -2022,17 +2022,17 @@ export function App() {
       return;
     }
     try {
-      const rules = selectedVisibleReviewTransactions.flatMap((transaction) => {
-        const categoryId = transaction.category_id ?? (bulkReviewCategoryId || null);
-        return categoryId ? [{
+      const rules = selectedVisibleReviewTransactions.map((transaction) => {
+        const categoryId = transactionTypeUsesCategory(bulkReviewType) ? transaction.category_id ?? (bulkReviewCategoryId || null) : null;
+        return {
             category_id: categoryId,
             field_name: "raw_description",
             match_text: suggestedRuleText(transaction.raw_description),
-            suggested_transaction_type: transaction.transaction_type || bulkReviewType,
+            suggested_transaction_type: bulkReviewType,
             priority: 100,
-          }] : [];
+          };
       });
-      if (rules.length === 0) {
+      if (transactionTypeUsesCategory(bulkReviewType) && rules.some((rule) => !rule.category_id)) {
         showToast({ tone: "error", message: "Choose a category or select rows that already have categories before saving bulk rules." });
         return;
       }
@@ -3630,22 +3630,22 @@ export function App() {
             {visibleReviewTransactions.length > 0 ? (
               <div className="selectionToolbar reviewBulkToolbar">
                 <span>{selectedVisibleReviewIds.length} selected</span>
-                <select value={bulkReviewType} onChange={(event) => setBulkReviewType(event.target.value)}>
+                <select value={bulkReviewType} onChange={(event) => { const nextType = event.target.value; setBulkReviewType(nextType); if (!transactionTypeUsesCategory(nextType)) setBulkReviewCategoryId(""); }}>
                   {transactionTypes.map((type) => (
                     <option key={type.value} value={type.value}>
                       {type.label}
                     </option>
                   ))}
                 </select>
-                <select value={bulkReviewCategoryId} onChange={(event) => setBulkReviewCategoryId(event.target.value ? Number(event.target.value) : "")}>
-                  <option value="">Choose category</option>
+                <select value={bulkReviewCategoryId} onChange={(event) => setBulkReviewCategoryId(event.target.value ? Number(event.target.value) : "")} disabled={!transactionTypeUsesCategory(bulkReviewType)}>
+                  <option value="">{transactionTypeUsesCategory(bulkReviewType) ? "Choose category" : "No category needed"}</option>
                   {categories.map((category) => (
                     <option key={category.id} value={category.id}>
                       {category.label}
                     </option>
                   ))}
                 </select>
-                <button className="primaryButton" onClick={() => void bulkConfirmSelectedReviewTransactions()} disabled={selectedVisibleReviewIds.length === 0 || !bulkReviewCategoryId}>
+                <button className="primaryButton" onClick={() => void bulkConfirmSelectedReviewTransactions()} disabled={selectedVisibleReviewIds.length === 0 || (transactionTypeUsesCategory(bulkReviewType) && !bulkReviewCategoryId)}>
                   Confirm selected
                 </button>
                 <button className="secondaryButton" onClick={() => void bulkSaveRulesForSelectedReviewTransactions()} disabled={selectedVisibleReviewIds.length === 0}>
@@ -3702,7 +3702,7 @@ export function App() {
                       </select>
                       <select
                         value={transaction.transaction_type}
-                        onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value })}
+                        onChange={(event) => { const nextType = event.target.value; void updateTransaction(transaction.id, { transaction_type: nextType, ...(transactionTypeUsesCategory(nextType) ? {} : { category_id: null }) }); }}
                       >
                         {transactionTypes.map((type) => (
                           <option key={type.value} value={type.value}>
@@ -3770,7 +3770,7 @@ export function App() {
               <div className="ruleApplyPanel">
                 <div>
                   <strong>Rule saved for "{lastSavedRule.matchText}"</strong>
-                  <span>Apply it now to categorize and confirm matching transactions.</span>
+                  <span>Apply it now to classify and confirm matching transactions.</span>
                 </div>
                 <div className="buttonRow">
                   <button className="secondaryButton" onClick={() => void applySavedRule("unreviewed")}>Apply unreviewed</button>
@@ -3787,7 +3787,7 @@ export function App() {
                       <div className="savedRuleRow">
                         <div>
                           <span>{rule.match_text}</span>
-                          <small>{category?.label ?? "Unknown category"} / {readableAccountType(rule.suggested_transaction_type)} / priority {rule.priority}</small>
+                          <small>{category?.label ?? "No category"} / {readableAccountType(rule.suggested_transaction_type)} / priority {rule.priority}</small>
                         </div>
                         <div className="savedRuleActions">
                           <button className="secondaryButton" onClick={() => void previewRule(rule.id)}>Preview</button>
@@ -3801,8 +3801,8 @@ export function App() {
                       {editingRule?.id === rule.id ? (
                         <div className="ruleEditRow">
                           <label>Contains<input value={editingRule.match_text} onChange={(event) => setEditingRule({ ...editingRule, match_text: event.target.value })} /></label>
-                          <label>Category<select value={editingRule.category_id} onChange={(event) => setEditingRule({ ...editingRule, category_id: Number(event.target.value) })}>{categories.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
-                          <label>Type<select value={editingRule.suggested_transaction_type} onChange={(event) => setEditingRule({ ...editingRule, suggested_transaction_type: event.target.value })}>{transactionTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
+                          <label>Category<select value={editingRule.category_id ?? ""} disabled={!transactionTypeUsesCategory(editingRule.suggested_transaction_type)} onChange={(event) => setEditingRule({ ...editingRule, category_id: event.target.value ? Number(event.target.value) : null })}><option value="">No category</option>{categories.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+                          <label>Type<select value={editingRule.suggested_transaction_type} onChange={(event) => { const nextType = event.target.value; setEditingRule({ ...editingRule, suggested_transaction_type: nextType, category_id: transactionTypeUsesCategory(nextType) ? editingRule.category_id : null }); }}>{transactionTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
                           <label>Priority<input type="number" value={editingRule.priority} onChange={(event) => setEditingRule({ ...editingRule, priority: Number(event.target.value) })} /><small>Smaller numbers run first.</small></label>
                           <button className="primaryButton" onClick={() => void saveRuleEdit()}>Save</button>
                           <button className="ghostButton" onClick={() => setEditingRule(null)}>Cancel</button>
@@ -3812,7 +3812,7 @@ export function App() {
                   );
                 })}
               </div>
-            ) : <div className="rulesEmptyState"><strong>No saved rules yet</strong><span>Choose a category on an inbox item, then select Save rule.</span></div>}
+            ) : <div className="rulesEmptyState"><strong>No saved rules yet</strong><span>Choose a type and, when needed, a category on an inbox item, then select Save rule.</span></div>}
           </aside>
           </>
           ) : null}

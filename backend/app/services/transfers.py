@@ -197,17 +197,19 @@ def confirm_transfer_link(db: Session, link: TransferLink, actor: str = "local-u
         raise ValueError("Transfer link points to a missing transaction")
     suggested_type = _suggested_type(from_transaction, to_transaction, db)
     link_before = changed_values(link, ["confirmed"])
-    from_before = changed_values(from_transaction, ["transaction_type", "review_status"])
-    to_before = changed_values(to_transaction, ["transaction_type", "review_status"])
+    from_before = changed_values(from_transaction, ["transaction_type", "review_status", "category_id"])
+    to_before = changed_values(to_transaction, ["transaction_type", "review_status", "category_id"])
     link.confirmed = True
     from_transaction.transaction_type = suggested_type
     to_transaction.transaction_type = suggested_type
     from_transaction.review_status = "confirmed"
     to_transaction.review_status = "confirmed"
+    from_transaction.category_id = None
+    to_transaction.category_id = None
     operation_id = journal_mutation(db, kind="update", entity_type="mixed", actor=actor, description="Confirmed transfer pair", changes=[
         MutationChange(link.id, link_before, changed_values(link, ["confirmed"]), entity_type="transfer_link"),
-        MutationChange(from_transaction.id, from_before, changed_values(from_transaction, ["transaction_type", "review_status"]), entity_type="transaction"),
-        MutationChange(to_transaction.id, to_before, changed_values(to_transaction, ["transaction_type", "review_status"]), entity_type="transaction"),
+        MutationChange(from_transaction.id, from_before, changed_values(from_transaction, ["transaction_type", "review_status", "category_id"]), entity_type="transaction"),
+        MutationChange(to_transaction.id, to_before, changed_values(to_transaction, ["transaction_type", "review_status", "category_id"]), entity_type="transaction"),
     ])
     record_audit_event(
         db,

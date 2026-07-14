@@ -141,6 +141,7 @@ Save rule turns one reviewed transaction into a future suggestion.
 - Applying a rule to existing transactions sets the category and type and marks those transactions confirmed, since you chose to run the rule deliberately.
 - Saved rules can be edited or deleted later through the rules API, so a mistaken rule is never permanent.
 - If multiple rules match, lower priority numbers run first. The default priority is 100.
+- Card payment and Transfer rules intentionally have no category. They classify and confirm matching rows while clearing any stale category, so moving money between your own accounts is not counted as spending.
 
 ## Brokerage Files With Multiple Accounts
 

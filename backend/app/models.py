@@ -126,7 +126,7 @@ class CategoryRule(TimestampMixin, Base):
     __tablename__ = "category_rules"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"), nullable=False)
+    category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"))
     priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
     field_name: Mapped[str] = mapped_column(String(40), nullable=False)
     match_text: Mapped[str] = mapped_column(String(255), nullable=False)

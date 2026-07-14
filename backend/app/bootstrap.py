@@ -8,6 +8,31 @@ from .services.snapshots import backfill_net_worth_snapshots
 from .services.trash import purge_expired_trash
 
 
+def migrate_category_rules_for_optional_category(connection) -> None:
+    category_rule_columns = {column["name"]: column for column in inspect(connection).get_columns("category_rules")}
+    if not category_rule_columns.get("category_id") or category_rule_columns["category_id"]["nullable"]:
+        return
+    connection.execute(
+        text(
+            """
+            CREATE TABLE category_rules_v2 (
+              id INTEGER NOT NULL PRIMARY KEY,
+              category_id INTEGER REFERENCES categories (id),
+              priority INTEGER NOT NULL,
+              field_name VARCHAR(40) NOT NULL,
+              match_text VARCHAR(255) NOT NULL,
+              suggested_transaction_type VARCHAR(40) NOT NULL,
+              created_at DATETIME NOT NULL,
+              updated_at DATETIME NOT NULL
+            )
+            """
+        )
+    )
+    connection.execute(text("INSERT INTO category_rules_v2 SELECT id, category_id, priority, field_name, match_text, suggested_transaction_type, created_at, updated_at FROM category_rules"))
+    connection.execute(text("DROP TABLE category_rules"))
+    connection.execute(text("ALTER TABLE category_rules_v2 RENAME TO category_rules"))
+
+
 def initialize_database() -> None:
     Base.metadata.create_all(bind=engine)
     with engine.begin() as connection:
@@ -41,6 +66,7 @@ def initialize_database() -> None:
             connection.execute(text("ALTER TABLE operation_changes ADD COLUMN entity_type VARCHAR(40)"))
             connection.execute(text("UPDATE operation_changes SET entity_type = (SELECT entity_type FROM operations WHERE operations.id = operation_changes.operation_id) WHERE entity_type IS NULL"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_operation_changes_entity_type ON operation_changes (entity_type)"))
+        migrate_category_rules_for_optional_category(connection)
         connection.execute(
             text(
                 """

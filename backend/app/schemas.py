@@ -114,7 +114,7 @@ class DuplicateResolutionRequest(BaseModel):
 
 
 class RuleCreate(BaseModel):
-    category_id: int
+    category_id: int | None = None
     field_name: str
     match_text: str
     suggested_transaction_type: TransactionType = TransactionType.EXPENSE

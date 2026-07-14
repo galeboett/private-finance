@@ -53,6 +53,7 @@ app.add_middleware(
 app.add_middleware(LocalhostSecurityMiddleware)
 
 UNASSIGNED_ACCOUNT_MARKER = "SYSTEM"
+CATEGORYLESS_TRANSACTION_TYPES = {TransactionType.TRANSFER.value, TransactionType.CREDIT_CARD_PAYMENT.value}
 
 
 def actor_for_session(session: SessionToken) -> str:
@@ -66,6 +67,23 @@ def normalize_transaction_labels(value: object) -> str | None:
         if label and label not in labels:
             labels.append(label)
     return f"|{'|'.join(labels)}|" if labels else None
+
+
+def normalize_transaction_updates(updates: dict) -> dict:
+    if updates.get("transaction_type") in CATEGORYLESS_TRANSACTION_TYPES:
+        updates["category_id"] = None
+    return updates
+
+
+def normalized_rule_category(db: Session, category_id: int | None, transaction_type: TransactionType | str) -> int | None:
+    type_value = transaction_type.value if isinstance(transaction_type, TransactionType) else transaction_type
+    if type_value in CATEGORYLESS_TRANSACTION_TYPES:
+        return None
+    if category_id is None:
+        raise HTTPException(status_code=400, detail="Choose a category for this rule")
+    if not db.get(Category, category_id):
+        raise HTTPException(status_code=400, detail="Category not found")
+    return category_id
 
 
 def transaction_labels(value: str | None) -> list[str]:
@@ -199,7 +217,7 @@ def operation_bulk_update(payload: OperationBulkUpdateRequest, request: Request,
     transactions = db.scalars(live_transaction_select(Transaction.id.in_(payload.ids))).all()
     if len(transactions) != len(set(payload.ids)):
         raise HTTPException(status_code=404, detail="One or more transactions were not found")
-    updates = payload.patch.model_dump(exclude_unset=True)
+    updates = normalize_transaction_updates(payload.patch.model_dump(exclude_unset=True))
     if not updates:
         raise HTTPException(status_code=400, detail="Provide at least one field to update")
     if "account_id" in updates:
@@ -222,10 +240,12 @@ def operation_bulk_update(payload: OperationBulkUpdateRequest, request: Request,
 @app.post("/api/operations/bulk-create-rules")
 def operation_bulk_create_rules(payload: BulkRuleCreateRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
-    category_ids = {rule.category_id for rule in payload.rules}
-    if len(db.scalars(select(Category.id).where(Category.id.in_(category_ids))).all()) != len(category_ids):
-        raise HTTPException(status_code=400, detail="One or more categories were not found")
-    rules = [CategoryRule(**rule.model_dump()) for rule in payload.rules]
+    rule_values = []
+    for rule_payload in payload.rules:
+        values = rule_payload.model_dump()
+        values["category_id"] = normalized_rule_category(db, rule_payload.category_id, rule_payload.suggested_transaction_type)
+        rule_values.append(values)
+    rules = [CategoryRule(**values) for values in rule_values]
     db.add_all(rules)
     db.flush()
     operation_id = journal_mutation(db, kind="create", entity_type="category_rule", actor=actor_for_session(session), description=f"Created {len(rules)} category rules", changes=[MutationChange(rule.id, None, full_values(rule)) for rule in rules])
@@ -1103,9 +1123,12 @@ def bulk_update_transactions(payload: BulkTransactionUpdateRequest, request: Req
         except ValueError as error:
             raise HTTPException(status_code=400, detail="Choose a valid transaction type") from error
         for transaction in transactions:
-            before = changed_values(transaction, ["transaction_type"])
+            fields = ["transaction_type", "category_id"] if transaction_type.value in CATEGORYLESS_TRANSACTION_TYPES else ["transaction_type"]
+            before = changed_values(transaction, fields)
             transaction.transaction_type = transaction_type.value
-            journal_changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["transaction_type"])))
+            if transaction_type.value in CATEGORYLESS_TRANSACTION_TYPES:
+                transaction.category_id = None
+            journal_changes.append(MutationChange(transaction.id, before, changed_values(transaction, fields)))
     elif field == "category":
         try:
             category_id = int(value)
@@ -1219,7 +1242,7 @@ def update_transaction(transaction_id: int, payload: TransactionReviewUpdate, re
     transaction = get_live_transaction(db, transaction_id)
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    updates = payload.model_dump(exclude_unset=True)
+    updates = normalize_transaction_updates(payload.model_dump(exclude_unset=True))
     if "account_id" in updates:
         account = db.get(Account, updates["account_id"])
         if not account or account.last_four == UNASSIGNED_ACCOUNT_MARKER:
@@ -1478,13 +1501,13 @@ def resolve_pending_duplicate(transaction_id: int, payload: DuplicateResolutionR
 @app.post("/api/rules")
 def create_rule(payload: RuleCreate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
-    if not db.get(Category, payload.category_id):
-        raise HTTPException(status_code=400, detail="Category not found")
-    rule = CategoryRule(**payload.model_dump())
+    values = payload.model_dump()
+    values["category_id"] = normalized_rule_category(db, payload.category_id, payload.suggested_transaction_type)
+    rule = CategoryRule(**values)
     db.add(rule)
     db.flush()
     operation_id = journal_mutation(db, kind="create", entity_type="category_rule", actor=actor_for_session(session), description=f'Created rule "{rule.match_text}"', changes=[MutationChange(rule.id, None, full_values(rule))])
-    record_audit_event(db, "rule_create", "local-user", "category_rule", str(rule.id), payload.model_dump())
+    record_audit_event(db, "rule_create", "local-user", "category_rule", str(rule.id), values)
     db.commit()
     return {"id": rule.id, "operation_id": operation_id}
 
@@ -1542,8 +1565,9 @@ def update_rule(rule_id: int, payload: RuleUpdate, request: Request, session: Se
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
     updates = payload.model_dump(exclude_unset=True)
-    if "category_id" in updates and not db.get(Category, updates["category_id"]):
-        raise HTTPException(status_code=400, detail="Category not found")
+    next_type = updates.get("suggested_transaction_type", rule.suggested_transaction_type)
+    next_category_id = updates.get("category_id", rule.category_id)
+    updates["category_id"] = normalized_rule_category(db, next_category_id, next_type)
     if "match_text" in updates and not str(updates["match_text"]).strip():
         raise HTTPException(status_code=400, detail="Match text is required")
     before = changed_values(rule, updates.keys())

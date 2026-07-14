@@ -101,3 +101,36 @@ def test_generic_bulk_operation_updates_multiple_fields_and_undoes_together():
         assert all(row.category_id == category.id and row.review_status == "confirmed" for row in rows)
         undo_operation(db, operation_id=result["operation_id"], actor="user:42")
         assert all(row.category_id is None and row.review_status == "suggested" for row in rows)
+
+
+def test_bulk_card_payment_confirmation_clears_categories():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        account = Account(display_name="Card", account_type="credit_card")
+        category = Category(key="shopping", label="Shopping")
+        db.add_all([account, category])
+        db.flush()
+        rows = [
+            Transaction(account_id=account.id, category_id=category.id, transaction_date=date(2026, 7, index), amount_cents=10000, raw_description=f"Payment {index}", transaction_type="refund", review_status="needs_review", source_hash=f"bulk-payment-{index}")
+            for index in (1, 2)
+        ]
+        db.add_all(rows)
+        db.commit()
+        request = Request({"type": "http", "headers": [(b"x-csrf-token", b"csrf")]})
+        session = SessionToken(user_id=42, csrf_token="csrf")
+
+        operation_bulk_update(
+            OperationBulkUpdateRequest(
+                entity_type="transaction",
+                ids=[row.id for row in rows],
+                patch=TransactionReviewUpdate(transaction_type="credit_card_payment", review_status="confirmed"),
+            ),
+            request,
+            session,
+            db,
+        )
+
+        assert all(row.transaction_type == "credit_card_payment" for row in rows)
+        assert all(row.category_id is None for row in rows)
+        assert all(row.review_status == "confirmed" for row in rows)

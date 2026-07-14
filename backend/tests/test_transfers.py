@@ -1,11 +1,11 @@
 from datetime import date, timedelta
 
-from app.models import Account, Transaction, TransferLink
+from app.models import Account, Category, Transaction, TransferLink
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.services.transfers import detect_transfer_candidates, list_payment_verification, score_transfer_match
+from app.services.transfers import confirm_transfer_link, detect_transfer_candidates, list_payment_verification, score_transfer_match
 
 
 def _transaction(account_id: int, amount_cents: int, transaction_date: date, description: str = "Transfer") -> Transaction:
@@ -127,3 +127,31 @@ def test_payment_verification_reports_confirmed_matches_and_stale_unmatched_paym
         assert result[0]["matched_payments"] == 1
         assert result[0]["latest_matched_date"] == "2026-07-02"
         assert [warning["transaction_id"] for warning in result[0]["warnings"]] == [stale_card.id]
+
+
+def test_confirming_card_payment_clears_categories_on_both_sides():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        checking = Account(display_name="Checking", account_type="checking")
+        card = Account(display_name="Card", account_type="credit_card")
+        category = Category(key="shopping", label="Shopping")
+        db.add_all([checking, card, category])
+        db.flush()
+        bank_row = _transaction(checking.id, -10000, date(2026, 7, 1), "Autopay")
+        card_row = _transaction(card.id, 10000, date(2026, 7, 2), "Payment received")
+        bank_row.source_hash = "confirm-payment-bank"
+        card_row.source_hash = "confirm-payment-card"
+        bank_row.category_id = category.id
+        card_row.category_id = category.id
+        db.add_all([bank_row, card_row])
+        db.flush()
+        link = TransferLink(from_transaction_id=bank_row.id, to_transaction_id=card_row.id, match_confidence=100, confirmed=False)
+        db.add(link)
+        db.commit()
+
+        confirm_transfer_link(db, link)
+
+        assert bank_row.transaction_type == card_row.transaction_type == "credit_card_payment"
+        assert bank_row.category_id is None
+        assert card_row.category_id is None
