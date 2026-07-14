@@ -4096,3 +4096,112 @@ a:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+.reconciliationBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.reconciliationBadge.reconciled {
+  color: #1e6d45;
+  background: #eaf8f0;
+}
+
+.reconciliationBadge.warning {
+  color: #8a5412;
+  background: #fff4da;
+}
+
+.reconciliationBadge.neutral {
+  color: var(--muted);
+  background: var(--surface-2);
+}
+
+.accountVerificationGrid {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.2fr) minmax(320px, 1fr);
+  gap: 10px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.statementCheckpointForm {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 145px 130px auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.statementCheckpointForm > div {
+  display: grid;
+  gap: 2px;
+}
+
+.statementCheckpointForm span,
+.paymentVerificationTitle span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.statementCheckpointForm input {
+  min-width: 0;
+}
+
+.paymentVerification {
+  display: grid;
+  gap: 7px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.paymentVerification.warning {
+  border-color: #e2bd70;
+  background: #fff9e9;
+}
+
+.paymentVerificationTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.paymentVerificationTitle div {
+  display: grid;
+  gap: 2px;
+}
+
+.paymentVerifiedIcon {
+  margin-left: auto;
+  color: #258557;
+}
+
+.paymentWarningRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+@media (max-width: 1100px) {
+  .accountVerificationGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .statementCheckpointForm {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .statementCheckpointForm > div {
+    grid-column: 1 / -1;
+  }
+}

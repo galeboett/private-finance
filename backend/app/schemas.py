@@ -163,6 +163,11 @@ class NetWorthSnapshotUpsert(BaseModel):
     balance_cents: int
 
 
+class StatementCheckpointCreate(BaseModel):
+    statement_date: date
+    statement_balance_cents: int
+
+
 class DeleteConfirmRequest(BaseModel):
     confirm_text: str
 

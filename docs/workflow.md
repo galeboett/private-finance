@@ -75,6 +75,14 @@ The app builds a full personal finance picture by turning account exports into a
 - On **Net Worth**, use **Add a manual balance** for accounts without an imported value, such as a home or vehicle. Choose the account and date, enter the balance, and save; the change supports Undo and appears in Activity.
 - After selecting a net-worth chart range, drag either circular edge handle to refine it. Account rows show six-month balance trends and open account-filtered transaction previews.
 
+## Reconciling an Account
+
+- Open an account and enter the ending balance and date from its bank or card statement under **Statement balance**.
+- The account badge shows **Reconciled** when the ledger reaches the same balance. If it is off, **Investigate difference** filters the ledger to activity since the preceding checkpoint.
+- Imports containing running balances create checkpoints automatically. Existing running-balance history is backfilled when the app starts.
+- Statement checkpoints appear in Activity and support Undo. Manual checkpoints take precedence over imported balances for the same account and date.
+- Credit-card account pages also verify confirmed payment links. A payment credit with no matching bank-side debit after five days appears as a warning with an investigation shortcut.
+
 ## Fixing Mistakes and Reviewing Changes
 
 - After an ordinary finance change—including transaction edits, bulk edits, imports, account/category/rule changes, splits, allocations, transfers, or holding updates—the success message includes **Undo** for 10 seconds.

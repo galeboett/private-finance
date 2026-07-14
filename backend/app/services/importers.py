@@ -27,6 +27,7 @@ from .dedupe import (
 )
 from .mutation_log import MutationChange, changed_values, journal_mutation
 from .snapshots import record_imported_snapshots
+from .reconciliation import record_imported_checkpoints
 
 
 CARD_REFERENCE_HEADER = "Posted Date,Reference Number,Payee,Address,Amount"
@@ -1216,6 +1217,7 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
     batch.warnings_json = json.dumps(warnings)
     db.flush()
     record_imported_snapshots(db, created_transactions, cleared_snapshot_scopes)
+    journal_changes.extend(record_imported_checkpoints(db, created_transactions))
     if created_holdings:
         journal_changes.extend(
             MutationChange(holding.id, None, changed_values(holding, ["account_id", "snapshot_date", "symbol", "description", "quantity_basis_points", "price_cents", "market_value_cents", "asset_class"]))

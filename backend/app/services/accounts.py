@@ -7,7 +7,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
-from ..models import Account, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, StagingRow, Transaction, TransactionSplit, TransferLink
+from ..models import Account, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
 from .dedupe import canonical_source_hash, find_merge_match, is_categorized_history_reference
 from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 
@@ -140,6 +140,16 @@ def merge_account_into(db: Session, source: Account, target: Account, actor: str
             before = changed_values(profile, ["account_id"])
             profile.account_id = target.id
             changes.append(MutationChange(profile.id, before, changed_values(profile, ["account_id"]), entity_type="import_sign_profile"))
+    target_checkpoint_dates = set(db.scalars(select(StatementCheckpoint.statement_date).where(StatementCheckpoint.account_id == target.id)).all())
+    source_checkpoints = db.scalars(select(StatementCheckpoint).where(StatementCheckpoint.account_id == source.id)).all()
+    for checkpoint in source_checkpoints:
+        if checkpoint.statement_date in target_checkpoint_dates:
+            changes.append(MutationChange(checkpoint.id, full_values(checkpoint), None, entity_type="statement_checkpoint"))
+            db.delete(checkpoint)
+        else:
+            before = changed_values(checkpoint, ["account_id"])
+            checkpoint.account_id = target.id
+            changes.append(MutationChange(checkpoint.id, before, changed_values(checkpoint, ["account_id"]), entity_type="statement_checkpoint"))
     record_audit_event(
         db,
         "account_merge",

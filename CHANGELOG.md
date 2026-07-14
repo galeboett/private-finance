@@ -8,6 +8,8 @@
 - Import Review and sign prompting now live under `features/imports/`, reducing `App.tsx` while establishing the strangler pattern for later phases. The canonical sign contract and cleanup guidance are documented in `docs/amount-signs.md`.
 - Phase 2 duplicate review: Review now shows candidate/original transactions side by side with differing account, reference, date, amount, description, category, notes, labels, and import-source fields highlighted. Remove-new, keep-both, replace-old, and bulk exact-match resolution are journaled as one undoable operation; replace-old preserves user categories, notes, labels, and splits.
 - Duplicate and transfer review moved into `features/review/`; `App.tsx` is 5,509 lines, down from 5,528 at the end of Phase 1 and 5,638 at the start of the phased plan.
+- Phase 3 transfer hardening: confirmed transactions can now be matched after both sides arrive, brokerage and retirement ACH transfers use a seven-day window, and confirmed credit-card payment links power per-card payment verification with warnings for stale unmatched payments.
+- Phase 3 account balancing: imported running balances create statement checkpoints automatically, existing running balances are backfilled at startup, and manual statement balances are journaled and undoable. Account pages show reconciled/off-by status, an exact investigation date range, and card-payment verification. Checkpoints survive account merges and are covered by account deletion/undo. The account page, reconciliation badge, and payment verification panel live under `features/`; `App.tsx` is 5,506 lines.
 
 ## Remediation pass — July 2026
 
@@ -68,4 +70,4 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Notes for reviewers
 
-- The backend suite passes (`139 passed`). The frontend passes TypeScript checking, the Vitest filter suite, and the full production Vite build (verified outside the desktop filesystem restriction used by esbuild).
+- The backend suite passes (`145 passed`). The frontend passes TypeScript checking, the Vitest filter suite, and the full production Vite build (verified outside the desktop filesystem restriction used by esbuild).

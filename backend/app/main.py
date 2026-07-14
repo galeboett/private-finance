@@ -21,9 +21,9 @@ from .bootstrap import initialize_database
 from .config import settings
 from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
-from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, SecurityMetadata, SecurityPrice, SessionToken, StagingRow, Transaction, TransactionSplit, TransferLink
+from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, SecurityMetadata, SecurityPrice, SessionToken, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
 from .services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_timeseries
@@ -34,12 +34,13 @@ from .services.import_inbox import confirm_pending_import, discard_pending_impor
 from .services.history_cleanup import apply_categorized_history_sign_cleanup, preview_categorized_history_sign_cleanup
 from .services.mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .services.operation_history import OperationConflict, list_operations, operation_detail, undo_operation
+from .services.reconciliation import list_reconciliation_statuses, reconciliation_status, save_manual_checkpoint
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
 from .services.sign_profiles import profile_payload, resolution_payload, resolve_sign_preview, save_sign_profile
 from .services.snapshots import net_worth_contributors, net_worth_series, net_worth_stats, refresh_holding_net_worth_snapshot, upsert_net_worth_snapshot
 from .services.transaction_filters import parse_csv_ints, parse_csv_values, transaction_filter_conditions
 from .services.transaction_queries import get_live_transaction, live_transaction_filters, live_transaction_select
-from .services.transfers import confirm_transfer_link, create_transfer_suggestions, list_unconfirmed_transfers, reject_transfer_link
+from .services.transfers import confirm_transfer_link, create_transfer_suggestions, list_payment_verification, list_unconfirmed_transfers, reject_transfer_link
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
@@ -383,6 +384,28 @@ def list_accounts(session: SessionToken = Depends(current_session), db: Session 
     return result
 
 
+@app.get("/api/reconciliation")
+def get_reconciliation_statuses(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return list_reconciliation_statuses(db)
+
+
+@app.post("/api/accounts/{account_id}/statement-checkpoints")
+def create_statement_checkpoint(account_id: int, payload: StatementCheckpointCreate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    account = db.get(Account, account_id)
+    if not account or account.status != "active":
+        raise HTTPException(status_code=404, detail="Active account not found")
+    saved = save_manual_checkpoint(
+        db,
+        account=account,
+        statement_date=payload.statement_date,
+        statement_balance_cents=payload.statement_balance_cents,
+        actor=actor_for_session(session),
+    )
+    db.commit()
+    return {**saved, "reconciliation": reconciliation_status(db, account)}
+
+
 @app.post("/api/accounts/cleanup-imported")
 def cleanup_accounts_from_import_labels(request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
@@ -567,12 +590,14 @@ def _delete_account_tree(db: Session, account: Account) -> list[MutationChange]:
     batches = db.scalars(select(ImportBatch).where(ImportBatch.account_id == account.id)).all()
     staging_rows = db.scalars(select(StagingRow).where(StagingRow.account_id == account.id)).all()
     holdings = db.scalars(select(HoldingSnapshot).where(HoldingSnapshot.account_id == account.id)).all()
+    checkpoints = db.scalars(select(StatementCheckpoint).where(StatementCheckpoint.account_id == account.id)).all()
     changes: list[MutationChange] = [MutationChange(account.id, full_values(account), None, entity_type="account")]
     changes.extend(MutationChange(preset.id, full_values(preset), None, entity_type="import_preset") for preset in presets)
     changes.extend(MutationChange(profile.id, full_values(profile), None, entity_type="import_sign_profile") for profile in sign_profiles)
     changes.extend(MutationChange(batch.id, full_values(batch), None, entity_type="import_batch") for batch in batches)
     changes.extend(MutationChange(row.id, full_values(row), None, entity_type="staging_row") for row in staging_rows)
     changes.extend(MutationChange(holding.id, full_values(holding), None, entity_type="holding_snapshot") for holding in holdings)
+    changes.extend(MutationChange(checkpoint.id, full_values(checkpoint), None, entity_type="statement_checkpoint") for checkpoint in checkpoints)
     unassigned_account = None
     if transactions:
         unassigned_account = Account(
@@ -593,6 +618,7 @@ def _delete_account_tree(db: Session, account: Account) -> list[MutationChange]:
         changes.append(MutationChange(unassigned_account.id, None, full_values(unassigned_account), entity_type="account"))
     db.execute(delete(StagingRow).where(StagingRow.account_id == account.id))
     db.execute(delete(HoldingSnapshot).where(HoldingSnapshot.account_id == account.id))
+    db.execute(delete(StatementCheckpoint).where(StatementCheckpoint.account_id == account.id))
     db.execute(delete(ImportBatch).where(ImportBatch.account_id == account.id))
     db.execute(delete(ImportPreset).where(ImportPreset.account_id == account.id))
     db.execute(delete(ImportSignProfile).where(ImportSignProfile.account_id == account.id))
@@ -1594,6 +1620,11 @@ def create_transfer_link(payload: TransferLinkCreate, request: Request, session:
 @app.get("/api/transfers/unconfirmed")
 def get_unconfirmed_transfers(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     return list_unconfirmed_transfers(db)
+
+
+@app.get("/api/transfers/payments")
+def get_payment_verification(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return list_payment_verification(db)
 
 
 @app.post("/api/transfers/detect")

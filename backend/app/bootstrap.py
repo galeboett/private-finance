@@ -3,6 +3,7 @@ from sqlalchemy import inspect, text
 from .config import settings
 from .db import Base, engine, session_scope
 from .seed import seed_categories
+from .services.reconciliation import backfill_statement_checkpoints
 from .services.snapshots import backfill_net_worth_snapshots
 from .services.trash import purge_expired_trash
 
@@ -65,5 +66,6 @@ def initialize_database() -> None:
     with session_scope() as db:
         seed_categories(db)
         backfill_net_worth_snapshots(db)
+        backfill_statement_checkpoints(db)
         purge_expired_trash(db, retention_days=settings.trash_retention_days)
     settings.import_inbox_dir.expanduser().mkdir(parents=True, exist_ok=True)

@@ -28,10 +28,13 @@ import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, apiUrl, parseApiJson, readableApiError } from "./api/client";
 import { readAppRoute, routeUrl, type RouteView } from "./app/router";
+import { AccountPage } from "./features/accounts/AccountPage";
+import type { ReconciliationStatus } from "./features/accounts/ReconciliationBadge";
 import { ImportReview, type InboxBatch, type ImportInboxScan, type ImportInboxState, type SignDecision } from "./features/imports/ImportReview";
 import { SignConventionPrompt, type ImportSignConvention } from "./features/imports/SignConventionPrompt";
 import { DuplicateReview, type DuplicateAction, type DuplicatePair } from "./features/review/DuplicateReview";
 import { TransferReview, type TransferCandidate } from "./features/review/TransferReview";
+import type { PaymentVerificationStatus, PaymentWarning } from "./features/transfers/PaymentVerification";
 import { encodeTxnFilter, type NetWorthPeriod, type TxnFilter } from "./lib/filters";
 import { useDrillDown } from "./lib/useDrillDown";
 
@@ -744,6 +747,8 @@ export function App() {
   const [holdingRows, setHoldingRows] = useState<HoldingRow[]>([]);
   const [transferCandidates, setTransferCandidates] = useState<TransferCandidate[]>([]);
   const [duplicatePairs, setDuplicatePairs] = useState<DuplicatePair[]>([]);
+  const [reconciliationStatuses, setReconciliationStatuses] = useState<ReconciliationStatus[]>([]);
+  const [paymentVerification, setPaymentVerification] = useState<PaymentVerificationStatus[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | "">("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
@@ -999,7 +1004,7 @@ export function App() {
   }
 
   async function loadData() {
-    const [dashboardData, accountsData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData, transferData, duplicateData, inboxData, operationData] = await Promise.all([
+    const [dashboardData, accountsData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData, transferData, duplicateData, reconciliationData, paymentData, inboxData, operationData] = await Promise.all([
       api<DashboardSummary>("/api/dashboard/summary"),
       api<AccountSummary[]>("/api/accounts"),
       api<TransactionRow[]>(`/api/transactions?view=${transactionView}`),
@@ -1011,6 +1016,8 @@ export function App() {
       api<HoldingRow[]>("/api/investments/holdings"),
       api<TransferCandidate[]>("/api/transfers/unconfirmed"),
       api<DuplicatePair[]>("/api/duplicates/pending"),
+      api<ReconciliationStatus[]>("/api/reconciliation"),
+      api<PaymentVerificationStatus[]>("/api/transfers/payments"),
       api<ImportInboxState>("/api/imports/inbox"),
       api<OperationSummary[]>("/api/operations?limit=100"),
     ]);
@@ -1025,6 +1032,8 @@ export function App() {
     setHoldingRows(holdingsData);
     setTransferCandidates(transferData);
     setDuplicatePairs(duplicateData);
+    setReconciliationStatuses(reconciliationData);
+    setPaymentVerification(paymentData);
     setImportInbox(inboxData);
     setOperations(operationData);
   }
@@ -2375,6 +2384,8 @@ export function App() {
   const brokerageAccounts = activeAccounts.filter((account) => brokerageAccountTypes.has(account.account_type));
   const focusedMissingCategoryCount = focusedAccountId ? missingCategoryCountByAccount.get(focusedAccountId) ?? 0 : 0;
   const focusedAccountBalanceCents = focusedAccountId ? accountBalances.get(focusedAccountId) ?? 0 : 0;
+  const focusedReconciliation = reconciliationStatuses.find((status) => status.account_id === focusedAccountId) ?? null;
+  const focusedPaymentVerification = paymentVerification.find((status) => status.account_id === focusedAccountId) ?? null;
   const transactionYears = Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))).sort((left, right) => right.localeCompare(left));
   const transactionCategoryOptions: FilterOption[] = [...categories.map((category) => ({ value: String(category.id), label: category.label })), { value: uncategorizedFilterValue, label: "Uncategorized" }];
   const effectiveTransactionCategoryFilters = new Set(selectedTransactionCategoryFilters);
@@ -2504,6 +2515,21 @@ export function App() {
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Manual balance could not be saved." });
     }
+  }
+
+  function investigateReconciliation(status: ReconciliationStatus) {
+    if (!status.latest) return;
+    setTransactionDateFrom(status.latest.investigate_from);
+    setTransactionDateTo(status.latest.investigate_to);
+    setTransactionSearch("");
+    document.querySelector(".ledgerWorkspace")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function investigatePayment(warning: PaymentWarning) {
+    setTransactionDateFrom(warning.transaction_date);
+    setTransactionDateTo(warning.transaction_date);
+    setTransactionSearch(warning.description);
+    document.querySelector(".ledgerWorkspace")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   async function scanImportInbox() {
@@ -3063,54 +3089,25 @@ export function App() {
         ) : null}
 
         {activeView === "account" && focusedAccount ? (
-          <div className="stickyAccountChrome">
-            {focusedMissingCategoryCount > 0 ? (
-              <div className="reviewNoticeBar">
-                <span>
-                  {focusedMissingCategoryCount} new transaction{focusedMissingCategoryCount === 1 ? "" : "s"} to approve or categorize.
-                </span>
-                <button type="button" onClick={scrollToUncategorized}>
-                  View
-                </button>
-              </div>
-            ) : null}
-            <header className="accountLedgerHeader">
-              <div>
-                <h1>
-                  {focusedAccount.display_name}
-                  {focusedAccount.last_four ? ` (${focusedAccount.last_four})` : ""}
-                </h1>
-                <div className="accountMetaRow">
-                  <span>{accountGroupLabel(focusedAccount.account_type)}</span>
-                  <span>{readableAccountType(focusedAccount.account_type)}</span>
-                  <span>{focusedAccount.institution_name ?? "Local account"}</span>
-                  <span>{focusedAccount.status}</span>
-                </div>
-              </div>
-              <div className="accountBalanceRow">
-                <div>
-                  <strong className={focusedAccountBalanceCents < 0 ? "amount negative" : "amount positive"}>{formatMoney(focusedAccountBalanceCents)}</strong>
-                  <span>{focusedAccount.sidebar_balance_kind === "recent_activity" ? "Last 30 days" : "Current balance"}</span>
-                </div>
-                <div>
-                  <strong>{focusedMissingCategoryCount}</strong>
-                  <span>Need category</span>
-                </div>
-              </div>
-              <div className="accountActionBar">
-                <button className="primaryButton compactButton" onClick={() => openImportModal(focusedAccount.id)}>
-                  <FileUp size={14} />
-                  File Import
-                </button>
-                <button className="secondaryButton compactButton" onClick={() => navigateToView("review")}>
-                  <ListChecks size={14} />
-                  Open Review
-                </button>
-                <button className="ghostButton compactIconButton" title="Refresh data" onClick={() => void loadData()}>
-                  <RefreshCw size={14} />
-                </button>
-              </div>
-            </header>
+          <AccountPage
+            account={focusedAccount}
+            balanceCents={focusedAccountBalanceCents}
+            missingCategoryCount={focusedMissingCategoryCount}
+            reconciliation={focusedReconciliation}
+            paymentVerification={focusedPaymentVerification}
+            csrf={csrf}
+            formatMoney={formatMoney}
+            accountGroupLabel={accountGroupLabel}
+            readableAccountType={readableAccountType}
+            onImport={() => openImportModal(focusedAccount.id)}
+            onOpenReview={() => navigateToView("review")}
+            onRefresh={() => void loadData()}
+            onViewUncategorized={scrollToUncategorized}
+            onCheckpointSaved={async (operationId) => { await loadData(); showToast({ tone: "success", message: "Statement balance saved and checked against the ledger.", operationId }); }}
+            onCheckpointError={(message) => showToast({ tone: "error", message })}
+            onInvestigateReconciliation={investigateReconciliation}
+            onInvestigatePayment={investigatePayment}
+          >
             <div className="transactionDiscovery stickyFilters">
               <label className="transactionSearchBox"><Search size={16} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search institution, account, description, details, or labels" /></label>
               <div className="transactionFilterRow">
@@ -3140,7 +3137,7 @@ export function App() {
               />
               </div>
             </div>
-          </div>
+          </AccountPage>
         ) : null}
 
         {activeView === "all-accounts" ? (

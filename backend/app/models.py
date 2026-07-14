@@ -242,6 +242,17 @@ class NetWorthSnapshot(TimestampMixin, Base):
     source: Mapped[str] = mapped_column(String(30), nullable=False)
 
 
+class StatementCheckpoint(TimestampMixin, Base):
+    __tablename__ = "statement_checkpoints"
+    __table_args__ = (UniqueConstraint("account_id", "statement_date", name="uq_statement_checkpoint_account_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False, index=True)
+    statement_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    statement_balance_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(30), nullable=False)
+
+
 class SecurityMetadata(TimestampMixin, Base):
     __tablename__ = "security_metadata"
 
