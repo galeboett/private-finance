@@ -12,6 +12,7 @@
 - Phase 3 account balancing: imported running balances create statement checkpoints automatically, existing running balances are backfilled at startup, and manual statement balances are journaled and undoable. Account pages show reconciled/off-by status, an exact investigation date range, and card-payment verification. Checkpoints survive account merges and are covered by account deletion/undo. The account page, reconciliation badge, and payment verification panel live under `features/`; `App.tsx` is 5,506 lines.
 - Import compatibility: compact brokerage position exports with report metadata above a `Symbol / Qty / Price / Market Value` header are now detected automatically. Position and cash rows import as holdings, summary totals are excluded, and the snapshot date is read from the export filename.
 - Review rules now support categoryless Card payment and Transfer classifications. Single and bulk confirmation no longer require a category for those types; saved rules can classify and confirm them without creating a spending category; and changing or confirming a transfer/payment clears any stale category to prevent payment double-counting. Existing rule tables are upgraded in place without losing saved rules.
+- Phase 5 net-worth data management: acquisition date, quantity, and cost basis now live in journaled `holding_lots` records instead of daily market-value snapshots. Fidelity-compatible exports populate lots when acquisition/basis columns are present, refreshed imports replace only imported lots, and manual lots remain intact. Holdings show aggregate basis, unrealized gain/loss, and oldest-lot age. A shared canonical-sign manual transaction form is available from account pages and Net Worth for asset accounts; both lot and transaction creation support Activity undo. `HoldingsPanel`, `ManualTransactionForm`, and delete confirmation are extracted components, reducing `App.tsx` to 5,390 lines.
 
 ## Remediation pass — July 2026
 
@@ -72,4 +73,4 @@ IDs reference `private-finance-evaluation-and-plan.md`.
 
 ### Notes for reviewers
 
-- The backend suite passes (`151 passed`). The frontend passes TypeScript checking, six Vitest tests, and the full production Vite build (verified outside the desktop filesystem restriction used by esbuild).
+- The backend suite passes (`154 passed`). The frontend passes TypeScript checking, ten Vitest tests, and the full production Vite build (verified outside the desktop filesystem restriction used by esbuild).

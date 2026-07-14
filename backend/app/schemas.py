@@ -103,6 +103,15 @@ class TransactionReviewUpdate(BaseModel):
     user_note: str | None = None
 
 
+class ManualTransactionCreate(BaseModel):
+    account_id: int
+    transaction_date: date
+    amount_cents: int
+    category_id: int | None = None
+    description: str = Field(min_length=1, max_length=500)
+    labels: list[str] = Field(default_factory=list)
+
+
 class OperationBulkUpdateRequest(BaseModel):
     entity_type: Literal["transaction"]
     ids: list[int] = Field(min_length=1)
@@ -155,6 +164,15 @@ class TransferLinkCreate(BaseModel):
 class HoldingMetadataUpdate(BaseModel):
     symbol: str
     user_description: str | None = None
+
+
+class HoldingLotCreate(BaseModel):
+    account_id: int
+    symbol: str = Field(min_length=1, max_length=40)
+    acquisition_date: date
+    quantity_basis_points: int = Field(gt=0)
+    cost_basis_cents: int = Field(ge=0)
+    note: str | None = Field(default=None, max_length=500)
 
 
 class NetWorthSnapshotUpsert(BaseModel):

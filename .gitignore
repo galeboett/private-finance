@@ -15,6 +15,7 @@ build/
 *.sqlite
 *.sqlite3
 *.egg-info/
+*.tsbuildinfo
 *.log
 .env
 coverage/

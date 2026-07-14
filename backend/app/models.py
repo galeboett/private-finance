@@ -231,6 +231,20 @@ class HoldingSnapshot(TimestampMixin, Base):
     asset_class: Mapped[str | None] = mapped_column(String(80))
 
 
+class HoldingLot(TimestampMixin, Base):
+    __tablename__ = "holding_lots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    acquisition_date: Mapped[date] = mapped_column(Date, nullable=False)
+    quantity_basis_points: Mapped[int] = mapped_column(Integer, nullable=False)
+    cost_basis_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(30), default="manual", nullable=False)
+    import_batch_id: Mapped[int | None] = mapped_column(ForeignKey("import_batches.id"))
+
+
 class NetWorthSnapshot(TimestampMixin, Base):
     __tablename__ = "net_worth_snapshots"
     __table_args__ = (UniqueConstraint("snapshot_date", "account_id", name="uq_net_worth_snapshot_date_account"),)

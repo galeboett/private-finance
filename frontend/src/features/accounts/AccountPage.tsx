@@ -1,8 +1,9 @@
-import { FileUp, ListChecks, RefreshCw } from "lucide-react";
+import { FileUp, ListChecks, Plus, RefreshCw } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { api } from "../../api/client";
 import { ReconciliationBadge, type ReconciliationStatus } from "./ReconciliationBadge";
 import { PaymentVerification, type PaymentVerificationStatus, type PaymentWarning } from "../transfers/PaymentVerification";
+import { ManualTransactionForm, type ManualTransactionAccount, type ManualTransactionCategory } from "../transactions/ManualTransactionForm";
 
 export type AccountPageSummary = {
   id: number;
@@ -21,6 +22,8 @@ type Props = {
   reconciliation: ReconciliationStatus | null;
   paymentVerification: PaymentVerificationStatus | null;
   csrf: string;
+  transactionAccounts: ManualTransactionAccount[];
+  transactionCategories: ManualTransactionCategory[];
   formatMoney: (cents: number) => string;
   accountGroupLabel: (value: string) => string;
   readableAccountType: (value: string) => string;
@@ -29,6 +32,7 @@ type Props = {
   onRefresh: () => void;
   onViewUncategorized: () => void;
   onCheckpointSaved: (operationId: string) => Promise<void>;
+  onManualTransactionSaved: (operationId: string) => Promise<void>;
   onCheckpointError: (message: string) => void;
   onInvestigateReconciliation: (status: ReconciliationStatus) => void;
   onInvestigatePayment: (warning: PaymentWarning) => void;
@@ -39,6 +43,7 @@ export function AccountPage(props: Props) {
   const [statementDate, setStatementDate] = useState("");
   const [statementBalance, setStatementBalance] = useState("");
   const [saving, setSaving] = useState(false);
+  const [showManualTransaction, setShowManualTransaction] = useState(false);
 
   async function submitCheckpoint(event: FormEvent) {
     event.preventDefault();
@@ -88,11 +93,13 @@ export function AccountPage(props: Props) {
           <div><strong>{props.missingCategoryCount}</strong><span>Need category</span></div>
         </div>
         <div className="accountActionBar">
+          <button className="secondaryButton compactButton" onClick={() => setShowManualTransaction((current) => !current)}><Plus size={14} />Add transaction</button>
           <button className="primaryButton compactButton" onClick={props.onImport}><FileUp size={14} />File Import</button>
           <button className="secondaryButton compactButton" onClick={props.onOpenReview}><ListChecks size={14} />Open Review</button>
           <button className="ghostButton compactIconButton" title="Refresh data" onClick={props.onRefresh}><RefreshCw size={14} /></button>
         </div>
       </header>
+      {showManualTransaction ? <ManualTransactionForm accounts={props.transactionAccounts} categories={props.transactionCategories} csrf={props.csrf} defaultAccountId={props.account.id} onSaved={props.onManualTransactionSaved} onError={props.onCheckpointError} onCancel={() => setShowManualTransaction(false)} /> : null}
       <div className="accountVerificationGrid">
         <form className="statementCheckpointForm" onSubmit={submitCheckpoint}>
           <div><strong>Statement balance</strong><span>Add the ending balance from a bank statement to verify the ledger.</span></div>

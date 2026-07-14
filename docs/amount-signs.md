@@ -10,6 +10,7 @@ The ledger stores money moving out as a negative amount and money moving in as a
 | Saved import sign profile | Detected signs or reversed detected signs | The user’s saved account-and-preset choice is applied before staging |
 | Categorized history | `charges_positive` or `canonical` | Spend-account history is converted to the canonical ledger convention at commit |
 | Legacy categorized history | Pre-normalization ledger rows | The preview-first maintenance action updates transactions, splits, and allocations in one undoable operation |
+| Manual transaction form | User chooses Money out or Money in and enters a positive amount | Money out is stored negative; money in is stored positive |
 
 ## Import sign profiles
 
@@ -29,3 +30,9 @@ Every later import is checked again. If a bank changes its export format and the
 For previously imported categorized history, run the sign cleanup preview in Settings. Review its cutoff and overlap warnings, then spot-check a known purchase, refund, and monthly category total for each spend account. The cleanup is one undoable operation.
 
 If a category total is inverted after cleanup, investigate the edge normalization—the selected CSV preset or source profile—rather than changing reporting math. Spending totals already net positive refunds against negative expenses. Future refund links will explain which expense a refund offsets without changing those totals.
+
+## Manual entries
+
+The shared manual transaction form accepts an unsigned dollar amount plus a clear **Money out / Money in** choice. It writes the canonical sign, confirms the deliberate entry, and journals creation so Activity can undo it. Money out on ordinary accounts requires a category; brokerage and retirement entries are typed as investment flows and remain categoryless.
+
+Holding acquisition date and cost basis are not ledger cash-flow signs. They are stored separately as tax lots, while holding snapshots continue to represent market value on a date.

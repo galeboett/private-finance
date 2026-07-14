@@ -1601,6 +1601,59 @@ button:disabled {
   gap: 3px;
 }
 
+.holdingsPanelTitle,
+.manualTransactionEntryPanel {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.holdingsPanelTitle > div,
+.manualTransactionEntryPanel > div,
+.manualFormTitle {
+  display: grid;
+  gap: 3px;
+}
+
+.manualTransactionEntryPanel,
+.manualTransactionForm,
+.holdingLotForm {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfb;
+}
+
+.manualTransactionForm,
+.holdingLotForm {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.manualTransactionForm label,
+.holdingLotForm label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.manualFormTitle {
+  grid-column: 1 / -1;
+}
+
+.manualDescriptionField {
+  grid-column: span 2;
+}
+
+.manualTransactionForm .buttonRow {
+  grid-column: 1 / -1;
+}
+
 .holdingsPanel span {
   color: var(--muted);
 }
@@ -1611,9 +1664,9 @@ button:disabled {
 
 .holdingsHeader,
 .holdingsRow {
-  min-width: 950px;
+  min-width: 1420px;
   display: grid;
-  grid-template-columns: 56px minmax(140px, 1fr) 96px minmax(220px, 1.4fr) 96px 112px 112px 86px;
+  grid-template-columns: 56px minmax(130px, 1fr) 80px minmax(210px, 1.4fr) 84px 100px 108px 108px 112px 112px 76px;
   gap: 10px;
   align-items: center;
   padding: 8px 0;
@@ -1792,6 +1845,25 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+}
+
+@media (max-width: 760px) {
+  .manualTransactionForm,
+  .holdingLotForm {
+    grid-template-columns: 1fr;
+  }
+
+  .manualDescriptionField,
+  .manualFormTitle,
+  .manualTransactionForm .buttonRow {
+    grid-column: 1;
+  }
+
+  .holdingsPanelTitle,
+  .manualTransactionEntryPanel {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 
 .drillDownLink {

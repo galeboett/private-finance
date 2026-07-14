@@ -28,13 +28,16 @@ import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, apiUrl, parseApiJson, readableApiError } from "./api/client";
 import { readAppRoute, routeUrl, type RouteView } from "./app/router";
+import { DeleteConfirmInline, type DeleteTarget } from "./components/DeleteConfirmInline";
 import { AccountPage } from "./features/accounts/AccountPage";
 import type { ReconciliationStatus } from "./features/accounts/ReconciliationBadge";
 import { ImportReview, type InboxBatch, type ImportInboxScan, type ImportInboxState, type SignDecision } from "./features/imports/ImportReview";
 import { SignConventionPrompt, type ImportSignConvention } from "./features/imports/SignConventionPrompt";
+import { HoldingsPanel, type HoldingRow } from "./features/networth/HoldingsPanel";
 import { DuplicateReview, type DuplicateAction, type DuplicatePair } from "./features/review/DuplicateReview";
 import { TransferReview, type TransferCandidate } from "./features/review/TransferReview";
 import type { PaymentVerificationStatus, PaymentWarning } from "./features/transfers/PaymentVerification";
+import { ManualTransactionForm } from "./features/transactions/ManualTransactionForm";
 import { encodeTxnFilter, type NetWorthPeriod, type TxnFilter } from "./lib/filters";
 import { transactionTypeUsesCategory } from "./lib/transactionTypes";
 import { useDrillDown } from "./lib/useDrillDown";
@@ -178,16 +181,6 @@ type ToastState = {
   unconflictedOnly?: boolean;
 };
 
-type DeleteTarget =
-  | { kind: "transaction"; id: number; label: string }
-  | { kind: "transaction_bulk"; ids: number[]; label: string }
-  | { kind: "transaction_permanent"; id: number; label: string }
-  | { kind: "transaction_bulk_permanent"; ids: number[]; label: string }
-  | { kind: "account"; id: number; label: string }
-  | { kind: "account_bulk"; ids: number[]; label: string }
-  | { kind: "holding"; id: number; label: string }
-  | { kind: "holding_bulk"; ids: number[]; label: string };
-
 type SavedRuleAction = {
   id: number;
   matchText: string;
@@ -271,23 +264,6 @@ type SortDirection = "asc" | "desc";
 type BulkTransactionField = "institution" | "account" | "description" | "details" | "type" | "category" | "date" | "labels";
 type ReportPeriod = "this_month" | "this_year" | "last_12_months" | "all";
 type FilterOption = { value: string; label: string };
-type HoldingRow = {
-  id: number;
-  account_id: number;
-  account: string;
-  snapshot_date: string;
-  symbol: string | null;
-  description: string | null;
-  csv_description: string | null;
-  user_description: string | null;
-  quantity: number | null;
-  price_cents: number | null;
-  display_price_cents: number | null;
-  price_date: string;
-  market_value_cents: number;
-  display_market_value_cents: number;
-  asset_class: string | null;
-};
 
 type AppView = RouteView;
 type AccountTaxonomyOverrides = Record<string, string>;
@@ -3002,6 +2978,8 @@ export function App() {
                   allAccounts={activeAccounts}
                   allocationRows={allocationRows}
                   holdingRows={holdingRows}
+                  csrf={csrf}
+                  categories={categories}
                   selectedHoldingIds={selectedHoldingIds}
                   selectedVisibleHoldingIds={selectedVisibleHoldingIds}
                   visibleHoldingIds={visibleHoldingIds}
@@ -3015,6 +2993,8 @@ export function App() {
                   }}
                   onUpdateHoldingDescription={updateHoldingDescription}
                   onSaveManualNetWorthSnapshot={saveManualNetWorthSnapshot}
+                  onFinanceMutation={async (operationId, message) => { await loadData(); showToast({ tone: "success", message, operationId }); }}
+                  onFinanceError={(message) => showToast({ tone: "error", message })}
                   reportFilter={reportPeriodFilter(reportPeriod)}
                   onOpenTransactionView={openTransactionView}
                   onOpenTransactionPeek={openTransactionPeek}
@@ -3096,6 +3076,8 @@ export function App() {
             reconciliation={focusedReconciliation}
             paymentVerification={focusedPaymentVerification}
             csrf={csrf}
+            transactionAccounts={activeAccounts}
+            transactionCategories={categories}
             formatMoney={formatMoney}
             accountGroupLabel={accountGroupLabel}
             readableAccountType={readableAccountType}
@@ -3104,6 +3086,7 @@ export function App() {
             onRefresh={() => void loadData()}
             onViewUncategorized={scrollToUncategorized}
             onCheckpointSaved={async (operationId) => { await loadData(); showToast({ tone: "success", message: "Statement balance saved and checked against the ledger.", operationId }); }}
+            onManualTransactionSaved={async (operationId) => { await loadData(); showToast({ tone: "success", message: "Manual transaction added.", operationId }); }}
             onCheckpointError={(message) => showToast({ tone: "error", message })}
             onInvestigateReconciliation={investigateReconciliation}
             onInvestigatePayment={investigatePayment}
@@ -4560,42 +4543,6 @@ function MultiSelectFilter({
     </details>
   );
 }
-function DeleteConfirmInline({
-  target,
-  confirmText,
-  onConfirmTextChange,
-  onConfirm,
-  onCancel,
-}: {
-  target: DeleteTarget;
-  confirmText: string;
-  onConfirmTextChange: (value: string) => void;
-  onConfirm: () => Promise<void>;
-  onCancel: () => void;
-}) {
-  const isBulk = target.kind.includes("bulk");
-  const isPermanent = target.kind.includes("permanent");
-  const isAccount = target.kind === "account" || target.kind === "account_bulk";
-  return (
-    <section className="deleteConfirmPanel inlineDeleteConfirm">
-      <div>
-        <strong>{isPermanent ? `Permanently delete ${isBulk ? "these transactions" : "this transaction"}?` : isBulk ? "Delete selected items?" : target.kind === "account" ? "Delete this account?" : "Move this row to Trash?"}</strong>
-        <span>{target.label}</span>
-        <small>{isPermanent ? "This cannot be undone. The transaction and its related split or allocation data will be removed." : isAccount ? "Deleting an account keeps its transactions and returns them to Review for account selection. Holdings, presets, and import history are removed; audit history remains." : "The transaction can be restored from Trash or immediately with Undo."}</small>
-      </div>
-      <input value={confirmText} onChange={(event) => onConfirmTextChange(event.target.value)} placeholder="Type DELETE to confirm" />
-      <div className="buttonRow">
-        <button className="dangerButton" onClick={() => void onConfirm()} disabled={confirmText !== "DELETE"}>
-          Delete
-        </button>
-        <button className="secondaryButton" onClick={onCancel}>
-          Cancel
-        </button>
-      </div>
-    </section>
-  );
-}
-
 function reportTitle(activeTab: string) {
   if (activeTab === "Spending") return "Where your money is going";
   if (activeTab === "Income") return "Income vs expenses";
@@ -4615,6 +4562,8 @@ function ReportSurface({
   allAccounts,
   allocationRows,
   holdingRows,
+  csrf,
+  categories,
   selectedHoldingIds,
   selectedVisibleHoldingIds,
   visibleHoldingIds,
@@ -4625,6 +4574,8 @@ function ReportSurface({
   onClearHoldingSelection,
   onUpdateHoldingDescription,
   onSaveManualNetWorthSnapshot,
+  onFinanceMutation,
+  onFinanceError,
   reportFilter,
   onOpenTransactionView,
   onOpenTransactionPeek,
@@ -4644,6 +4595,8 @@ function ReportSurface({
   allAccounts: AccountSummary[];
   allocationRows: AllocationRow[];
   holdingRows: HoldingRow[];
+  csrf: string;
+  categories: BootstrapCategory[];
   selectedHoldingIds: number[];
   selectedVisibleHoldingIds: number[];
   visibleHoldingIds: number[];
@@ -4654,6 +4607,8 @@ function ReportSurface({
   onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
   onSaveManualNetWorthSnapshot: (accountId: number, snapshotDate: string, balance: string) => Promise<void>;
+  onFinanceMutation: (operationId: string, message: string) => Promise<void>;
+  onFinanceError: (message: string) => void;
   reportFilter: TxnFilter;
   onOpenTransactionView: (filter: TxnFilter) => void;
   onOpenTransactionPeek: (filter: TxnFilter, title: string) => void;
@@ -4670,7 +4625,7 @@ function ReportSurface({
     return <IncomeReport income={income} expenses={expenses} net={net} reportFilter={reportFilter} onPeek={onOpenTransactionPeek} />;
   }
   if (activeTab === "Net Worth") {
-    return <NetWorthReport accounts={netWorthAccounts} allAccounts={allAccounts} allocationRows={allocationRows} holdingRows={holdingRows} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} deleteTarget={deleteTarget} deleteConfirmText={deleteConfirmText} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onSaveManualNetWorthSnapshot={onSaveManualNetWorthSnapshot} onViewTransactions={(fromDate, toDate) => onOpenTransactionView({ dateFrom: fromDate, dateTo: toDate })} onPeekNetWorth={onOpenNetWorthPeek} onRequestDelete={onRequestDelete} onConfirmDelete={onConfirmDelete} onDeleteConfirmTextChange={onDeleteConfirmTextChange} onCancelDelete={onCancelDelete} />;
+    return <NetWorthReport accounts={netWorthAccounts} allAccounts={allAccounts} allocationRows={allocationRows} holdingRows={holdingRows} csrf={csrf} categories={categories} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} deleteTarget={deleteTarget} deleteConfirmText={deleteConfirmText} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onSaveManualNetWorthSnapshot={onSaveManualNetWorthSnapshot} onFinanceMutation={onFinanceMutation} onFinanceError={onFinanceError} onViewTransactions={(fromDate, toDate) => onOpenTransactionView({ dateFrom: fromDate, dateTo: toDate })} onPeekNetWorth={onOpenNetWorthPeek} onRequestDelete={onRequestDelete} onConfirmDelete={onConfirmDelete} onDeleteConfirmTextChange={onDeleteConfirmTextChange} onCancelDelete={onCancelDelete} />;
   }
   if (activeTab === "Cash Flow") {
     return <MonthlyCashFlowReport rows={cashFlowRows} income={income} expenses={expenses} net={net} reportFilter={reportFilter} onPeek={onOpenTransactionPeek} />;
@@ -5220,6 +5175,8 @@ function NetWorthReport({
   allAccounts,
   allocationRows,
   holdingRows,
+  csrf,
+  categories,
   selectedHoldingIds,
   selectedVisibleHoldingIds,
   visibleHoldingIds,
@@ -5230,6 +5187,8 @@ function NetWorthReport({
   onClearHoldingSelection,
   onUpdateHoldingDescription,
   onSaveManualNetWorthSnapshot,
+  onFinanceMutation,
+  onFinanceError,
   onViewTransactions,
   onPeekNetWorth,
   onRequestDelete,
@@ -5241,6 +5200,8 @@ function NetWorthReport({
   allAccounts: AccountSummary[];
   allocationRows: AllocationRow[];
   holdingRows: HoldingRow[];
+  csrf: string;
+  categories: BootstrapCategory[];
   selectedHoldingIds: number[];
   selectedVisibleHoldingIds: number[];
   visibleHoldingIds: number[];
@@ -5251,6 +5212,8 @@ function NetWorthReport({
   onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
   onSaveManualNetWorthSnapshot: (accountId: number, snapshotDate: string, balance: string) => Promise<void>;
+  onFinanceMutation: (operationId: string, message: string) => Promise<void>;
+  onFinanceError: (message: string) => void;
   onViewTransactions: (fromDate: string, toDate: string) => void;
   onPeekNetWorth: (fromDate: string, toDate: string) => void;
   onRequestDelete: (target: DeleteTarget) => void;
@@ -5260,10 +5223,11 @@ function NetWorthReport({
 }) {
   const total = accounts.reduce((sum, row) => sum + row.market_value_cents, 0);
   const max = Math.max(...accounts.map((row) => row.market_value_cents), 1);
-  const sharedPriceDate = holdingRows.find((row) => row.price_date)?.price_date ?? "-";
+  const assetAccounts = allAccounts.filter((account) => account.account_type === "brokerage" || account.account_type === "retirement");
   const [manualAccountId, setManualAccountId] = useState<number | "">(allAccounts[0]?.id ?? "");
   const [manualSnapshotDate, setManualSnapshotDate] = useState(localIsoDate(new Date()));
   const [manualBalance, setManualBalance] = useState("");
+  const [showManualTransaction, setShowManualTransaction] = useState(false);
   const [accountTrendRows, setAccountTrendRows] = useState<NetWorthPoint[]>([]);
   useEffect(() => {
     const range = netWorthPeriodRange("6M");
@@ -5294,6 +5258,11 @@ function NetWorthReport({
         </label>
         <button type="button" className="secondaryButton compactButton" onClick={() => { if (manualAccountId) void onSaveManualNetWorthSnapshot(manualAccountId, manualSnapshotDate, manualBalance); }}>Save balance</button>
       </section>
+      <section className="manualTransactionEntryPanel">
+        <div><strong>Add investment activity</strong><span>Record a manual money movement in a brokerage or retirement account.</span></div>
+        <button type="button" className="secondaryButton compactButton" disabled={assetAccounts.length === 0} onClick={() => setShowManualTransaction((current) => !current)}>{showManualTransaction ? "Cancel" : "Add transaction"}</button>
+      </section>
+      {showManualTransaction ? <ManualTransactionForm accounts={assetAccounts} categories={categories} csrf={csrf} onSaved={(operationId) => onFinanceMutation(operationId, "Manual investment transaction added.")} onError={onFinanceError} onCancel={() => setShowManualTransaction(false)} /> : null}
       <div className="reportMiniGrid">
         <ReportStat label="Latest investment value" value={formatMoney(total)} />
         <ReportStat label="Accounts with snapshots" value={String(accounts.length)} />
@@ -5315,85 +5284,8 @@ function NetWorthReport({
         })}
         {accounts.length === 0 ? <p className="emptyText">No investment snapshots yet. Commit a brokerage positions CSV to populate net worth.</p> : null}
       </div>
-      <div className="holdingsPanel">
-        <div>
-          <strong>Holding details</strong>
-          <span>Latest imported rows used for investment net worth. Descriptions you edit are stored locally by symbol.</span>
-        </div>
-        {holdingRows.length > 0 ? (
-          <div className="selectionToolbar">
-            <span>{selectedVisibleHoldingIds.length} selected</span>
-            <button className="dangerTextButton" onClick={() => onRequestBulkHoldingDelete(selectedVisibleHoldingIds)} disabled={selectedVisibleHoldingIds.length === 0}>
-              Delete selected
-            </button>
-            <button className="secondaryButton" onClick={onClearHoldingSelection}>
-              Clear
-            </button>
-          </div>
-        ) : null}
-        {deleteTarget?.kind === "holding_bulk" ? (
-          <DeleteConfirmInline
-            target={deleteTarget}
-            confirmText={deleteConfirmText}
-            onConfirmTextChange={onDeleteConfirmTextChange}
-            onConfirm={onConfirmDelete}
-            onCancel={onCancelDelete}
-          />
-        ) : null}
-        <div className="holdingsTable">
-          <div className="holdingsHeader">
-            <span>Select</span>
-            <span>Account</span>
-            <span>Symbol</span>
-            <span>Description</span>
-            <span>Quantity</span>
-            <span className="stackedHeader">
-              Price
-              <small>{formatShortDate(sharedPriceDate)}</small>
-            </span>
-            <span>Value</span>
-            <span>Action</span>
-          </div>
-          {holdingRows.slice(0, 12).map((row) => (
-            <div className="inlineDeleteGroup holdingsDeleteGroup" key={row.id}>
-              <div className={selectedHoldingIds.includes(row.id) ? "holdingsRow selected" : "holdingsRow"}>
-                <input
-                  type="checkbox"
-                  checked={selectedHoldingIds.includes(row.id)}
-                  onChange={(event) => onToggleHoldingSelection(row.id, visibleHoldingIds, (event.nativeEvent as MouseEvent).shiftKey)}
-                  title="Select holding. Hold Shift to select a range."
-                />
-                <span>{row.account}</span>
-                <strong>{row.symbol || "Holding"}</strong>
-                <div className="holdingDescriptionEdit">
-                  <input
-                    defaultValue={row.user_description ?? row.csv_description ?? ""}
-                    onBlur={(event) => void updateIfChanged(row, event.currentTarget.value, onUpdateHoldingDescription)}
-                    placeholder="Add your description"
-                  />
-                  {row.csv_description ? <small>CSV: {row.csv_description}</small> : null}
-                </div>
-                <span>{row.quantity ?? "-"}</span>
-                <span>{row.display_price_cents == null ? "-" : formatMoney(row.display_price_cents)}</span>
-                <span>{formatMoney(row.display_market_value_cents)}</span>
-                <button className="dangerTextButton" onClick={() => onRequestDelete({ kind: "holding", id: row.id, label: `${row.symbol || row.description || "Holding"} in ${row.account}` })}>
-                  Delete
-                </button>
-              </div>
-              {deleteTarget?.kind === "holding" && deleteTarget.id === row.id ? (
-                <DeleteConfirmInline
-                  target={deleteTarget}
-                  confirmText={deleteConfirmText}
-                  onConfirmTextChange={onDeleteConfirmTextChange}
-                  onConfirm={onConfirmDelete}
-                  onCancel={onCancelDelete}
-                />
-              ) : null}
-            </div>
-          ))}
-          {holdingRows.length === 0 ? <p className="emptyText">No holdings rows to inspect yet.</p> : null}
-        </div>
-      </div>
+      {deleteTarget?.kind === "holding" || deleteTarget?.kind === "holding_bulk" ? <DeleteConfirmInline target={deleteTarget} confirmText={deleteConfirmText} onConfirmTextChange={onDeleteConfirmTextChange} onConfirm={onConfirmDelete} onCancel={onCancelDelete} /> : null}
+      <HoldingsPanel rows={holdingRows} accounts={assetAccounts} csrf={csrf} selectedIds={selectedHoldingIds} selectedVisibleIds={selectedVisibleHoldingIds} visibleIds={visibleHoldingIds} formatMoney={formatMoney} formatDate={formatShortDate} onToggleSelection={onToggleHoldingSelection} onRequestBulkDelete={onRequestBulkHoldingDelete} onClearSelection={onClearHoldingSelection} onUpdateDescription={onUpdateHoldingDescription} onRequestDelete={(row) => onRequestDelete({ kind: "holding", id: row.id, label: `${row.symbol || row.description || "Holding"} in ${row.account}` })} onLotSaved={(operationId) => onFinanceMutation(operationId, "Tax lot saved; basis and gain/loss updated.")} onError={onFinanceError} />
     </div>
   );
 }
@@ -5408,14 +5300,6 @@ function CompareCard({ label, value, max, tone }: { label: string; value: number
       </div>
     </div>
   );
-}
-
-async function updateIfChanged(row: HoldingRow, nextDescription: string, onUpdate: (symbol: string | null, userDescription: string) => Promise<void>) {
-  const previous = row.user_description ?? row.csv_description ?? "";
-  if (nextDescription.trim() === previous.trim()) {
-    return;
-  }
-  await onUpdate(row.symbol, nextDescription.trim());
 }
 
 function ReportStat({ label, value }: { label: string; value: string }) {

@@ -73,6 +73,9 @@ The app builds a full personal finance picture by turning account exports into a
 - Select **Clear** or press Escape to remove the range selection.
 - Imported running balances and brokerage positions create durable snapshots. Between known balances, the app reconstructs checking and savings history from ledger movements and forward-fills investment values.
 - On **Net Worth**, use **Add a manual balance** for accounts without an imported value, such as a home or vehicle. Choose the account and date, enter the balance, and save; the change supports Undo and appears in Activity.
+- Use **Add transaction** on an account page to enter money out or money in manually. Enter a positive dollar amount and choose the direction; the form writes the canonical negative/positive ledger sign, confirms the deliberate entry, and records it in Activity with Undo.
+- On **Net Worth**, **Add transaction** is limited to brokerage and retirement accounts and records the row as investment activity. Use **Add tax lot** under Holding details when an export does not provide acquisition date and total basis.
+- Tax lots are separate from daily holding snapshots. Holding details show total basis, unrealized gain/loss (latest value minus basis), and the age/count of saved lots. Compatible Fidelity position exports populate lots when they contain acquisition and cost-basis columns; later imports refresh imported lots without deleting manual lots.
 - After selecting a net-worth chart range, drag either circular edge handle to refine it. Account rows show six-month balance trends and open account-filtered transaction previews.
 
 ## Reconciling an Account

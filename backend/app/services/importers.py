@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
 from ..config import settings
-from ..models import Account, Category, CategoryRule, HoldingSnapshot, ImportBatch, ImportPreset, StagingRow, Transaction
+from ..models import Account, Category, CategoryRule, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, StagingRow, Transaction
 from ..money import parse_decimal_to_cents
 from .accounts import infer_account_characterization, infer_last_four, upsert_institution_by_name
 from .dedupe import (
@@ -25,7 +25,7 @@ from .dedupe import (
     is_reliable_import_reference,
     natural_import_match_count,
 )
-from .mutation_log import MutationChange, changed_values, journal_mutation
+from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .snapshots import record_imported_snapshots
 from .reconciliation import record_imported_checkpoints
 
@@ -222,6 +222,8 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
                     "market_value": row.get("Current Value"),
                     "asset_class": row.get("Type"),
                     "account_name": row.get("Account Name"),
+                    "acquisition_date": row.get("Date Acquired") or row.get("Acquisition Date"),
+                    "cost_basis": row.get("Cost Basis Total") or row.get("Cost Basis"),
                 }
             )
         elif preset_type == "brokerage_positions_compact":
@@ -247,6 +249,8 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
                     "market_value": market_value,
                     "asset_class": (row.get("Asset Type") or "").strip() or None,
                     "account_name": account_match.group(1).strip() if account_match else None,
+                    "acquisition_date": row.get("Date Acquired") or row.get("Acquisition Date"),
+                    "cost_basis": row.get("Cost Basis Total") or row.get("Cost Basis"),
                 }
             )
         elif preset_type == "jpm_brokerage_positions":
@@ -268,6 +272,8 @@ def parse_csv_preview(content: bytes, preset_type: str) -> PreviewResult:
                     "market_value": market_value,
                     "asset_class": row.get("Asset Class"),
                     "account_name": "J.P. Morgan Brokerage",
+                    "acquisition_date": row.get("Date Acquired") or row.get("Acquisition Date"),
+                    "cost_basis": row.get("Cost Basis Total") or row.get("Cost Basis"),
                 }
             )
         elif preset_type == "card_activity":
@@ -1079,12 +1085,14 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
     warnings = list(preview.warnings)
     journal_changes: list[MutationChange] = []
     created_holdings: list[HoldingSnapshot] = []
+    created_lots: list[HoldingLot] = []
     created_transactions: list[Transaction] = []
     description_counter: Counter[tuple[str, str, str | None]] = Counter()
     rules = db.scalars(select(CategoryRule).order_by(CategoryRule.priority.asc(), CategoryRule.id.asc())).all()
 
     resolved_snapshot_date: date | None = None
     cleared_snapshot_scopes: set[tuple[int, date]] = set()
+    cleared_imported_lot_scopes: set[tuple[int, str]] = set()
     if _is_brokerage_preset(detected):
         resolved_snapshot_date = snapshot_date or _snapshot_date_from_preview(preview) or _extract_snapshot_date(filename)
         if resolved_snapshot_date is None:
@@ -1143,6 +1151,27 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
                 db.add(holding)
                 created_holdings.append(holding)
                 inserted += 1
+                symbol = (row.get("symbol") or "").strip().upper()
+                acquisition_value = (row.get("acquisition_date") or "").strip()
+                cost_basis_value = (row.get("cost_basis") or "").strip()
+                quantity_basis_points = _parse_decimal_to_basis_points(row.get("quantity"))
+                if symbol and acquisition_value and acquisition_value.casefold() != "various" and cost_basis_value not in {"", "--"} and quantity_basis_points:
+                    try:
+                        acquisition_date = _parse_import_date(acquisition_value)
+                        cost_basis_cents = parse_decimal_to_cents(cost_basis_value)
+                    except ValueError:
+                        warnings.append(f"Could not import the {symbol} tax lot on row {row['row_index']}; enter its acquisition date and basis manually.")
+                    else:
+                        lot_scope = (target_account.id, symbol)
+                        if lot_scope not in cleared_imported_lot_scopes:
+                            stale_lots = db.scalars(select(HoldingLot).where(HoldingLot.account_id == target_account.id, HoldingLot.symbol == symbol, HoldingLot.source == "import")).all()
+                            for stale_lot in stale_lots:
+                                journal_changes.append(MutationChange(stale_lot.id, full_values(stale_lot), None, entity_type="holding_lot"))
+                                db.delete(stale_lot)
+                            cleared_imported_lot_scopes.add(lot_scope)
+                        lot = HoldingLot(account_id=target_account.id, symbol=symbol, acquisition_date=acquisition_date, quantity_basis_points=quantity_basis_points, cost_basis_cents=cost_basis_cents or 0, source="import", import_batch_id=batch.id)
+                        db.add(lot)
+                        created_lots.append(lot)
             continue
 
         if row["row_kind"] != "transaction":
@@ -1253,6 +1282,8 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
             MutationChange(holding.id, None, changed_values(holding, ["account_id", "snapshot_date", "symbol", "description", "quantity_basis_points", "price_cents", "market_value_cents", "asset_class"]))
             for holding in created_holdings
         )
+    if created_lots:
+        journal_changes.extend(MutationChange(lot.id, None, full_values(lot), entity_type="holding_lot") for lot in created_lots)
     if created_transactions:
         journal_changes.extend(MutationChange(transaction.id, None, changed_values(transaction, ["deleted_at"])) for transaction in created_transactions)
     operation_id = None

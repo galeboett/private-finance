@@ -6,6 +6,7 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -21,9 +22,9 @@ from .bootstrap import initialize_database
 from .config import settings
 from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
-from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, SecurityMetadata, SecurityPrice, SessionToken, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
+from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, SecurityMetadata, SecurityPrice, SessionToken, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, MonthlyAllocationRequest, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, HoldingLotCreate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, ManualTransactionCreate, MonthlyAllocationRequest, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
 from .services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_timeseries
@@ -610,6 +611,7 @@ def _delete_account_tree(db: Session, account: Account) -> list[MutationChange]:
     batches = db.scalars(select(ImportBatch).where(ImportBatch.account_id == account.id)).all()
     staging_rows = db.scalars(select(StagingRow).where(StagingRow.account_id == account.id)).all()
     holdings = db.scalars(select(HoldingSnapshot).where(HoldingSnapshot.account_id == account.id)).all()
+    lots = db.scalars(select(HoldingLot).where(HoldingLot.account_id == account.id)).all()
     checkpoints = db.scalars(select(StatementCheckpoint).where(StatementCheckpoint.account_id == account.id)).all()
     changes: list[MutationChange] = [MutationChange(account.id, full_values(account), None, entity_type="account")]
     changes.extend(MutationChange(preset.id, full_values(preset), None, entity_type="import_preset") for preset in presets)
@@ -617,6 +619,7 @@ def _delete_account_tree(db: Session, account: Account) -> list[MutationChange]:
     changes.extend(MutationChange(batch.id, full_values(batch), None, entity_type="import_batch") for batch in batches)
     changes.extend(MutationChange(row.id, full_values(row), None, entity_type="staging_row") for row in staging_rows)
     changes.extend(MutationChange(holding.id, full_values(holding), None, entity_type="holding_snapshot") for holding in holdings)
+    changes.extend(MutationChange(lot.id, full_values(lot), None, entity_type="holding_lot") for lot in lots)
     changes.extend(MutationChange(checkpoint.id, full_values(checkpoint), None, entity_type="statement_checkpoint") for checkpoint in checkpoints)
     unassigned_account = None
     if transactions:
@@ -638,6 +641,7 @@ def _delete_account_tree(db: Session, account: Account) -> list[MutationChange]:
         changes.append(MutationChange(unassigned_account.id, None, full_values(unassigned_account), entity_type="account"))
     db.execute(delete(StagingRow).where(StagingRow.account_id == account.id))
     db.execute(delete(HoldingSnapshot).where(HoldingSnapshot.account_id == account.id))
+    db.execute(delete(HoldingLot).where(HoldingLot.account_id == account.id))
     db.execute(delete(StatementCheckpoint).where(StatementCheckpoint.account_id == account.id))
     db.execute(delete(ImportBatch).where(ImportBatch.account_id == account.id))
     db.execute(delete(ImportPreset).where(ImportPreset.account_id == account.id))
@@ -999,6 +1003,58 @@ def import_report(batch_id: int, session: SessionToken = Depends(current_session
     if not batch:
         raise HTTPException(status_code=404, detail="Import batch not found")
     return {"id": batch.id, "filename": batch.filename, "status": batch.status, "imported_rows": batch.imported_rows, "skipped_duplicates": batch.skipped_duplicates, "warnings": json.loads(batch.warnings_json)}
+
+
+@app.post("/api/transactions/manual")
+def create_manual_transaction(payload: ManualTransactionCreate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    account = db.get(Account, payload.account_id)
+    if not account or account.status != "active" or account.last_four == UNASSIGNED_ACCOUNT_MARKER:
+        raise HTTPException(status_code=400, detail="Choose an active account")
+    if payload.amount_cents == 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than zero")
+    category = db.get(Category, payload.category_id) if payload.category_id is not None else None
+    if payload.category_id is not None and not category:
+        raise HTTPException(status_code=400, detail="Category not found")
+    if account.account_type in {"brokerage", "retirement"}:
+        transaction_type = TransactionType.INVESTMENT_FLOW.value
+        category_id = None
+    elif payload.amount_cents < 0:
+        transaction_type = TransactionType.EXPENSE.value
+        if category is None:
+            raise HTTPException(status_code=400, detail="Choose a category for money out")
+        category_id = category.id
+    else:
+        transaction_type = TransactionType.REFUND.value if account.account_type == "credit_card" else TransactionType.INCOME.value
+        category_id = category.id if category else None
+    description = " ".join(payload.description.split())
+    if not description:
+        raise HTTPException(status_code=400, detail="Description is required")
+    transaction = Transaction(
+        account_id=account.id,
+        transaction_date=payload.transaction_date,
+        amount_cents=payload.amount_cents,
+        raw_description=description,
+        normalized_payee=description[:255],
+        labels=normalize_transaction_labels(",".join(payload.labels)),
+        transaction_type=transaction_type,
+        category_id=category_id,
+        review_status=ReviewStatus.CONFIRMED.value,
+        source_hash=f"manual:{uuid4().hex}",
+    )
+    db.add(transaction)
+    db.flush()
+    operation_id = journal_mutation(
+        db,
+        kind="create",
+        entity_type="transaction",
+        actor=actor_for_session(session),
+        description=f'Added manual transaction "{description}"',
+        changes=[MutationChange(transaction.id, None, full_values(transaction))],
+    )
+    record_audit_event(db, "transaction_manual_create", actor_for_session(session), "transaction", str(transaction.id), {"account_id": account.id, "amount_cents": transaction.amount_cents, "operation_id": operation_id})
+    db.commit()
+    return {"ok": True, "transaction_id": transaction.id, "operation_id": operation_id}
 
 
 @app.get("/api/transactions")
@@ -1807,6 +1863,64 @@ def save_manual_net_worth_snapshot(payload: NetWorthSnapshotUpsert, request: Req
     return {"ok": True, "snapshot_id": snapshot.id, "operation_id": operation_id}
 
 
+@app.get("/api/investments/lots")
+def get_holding_lots(account_id: int | None = None, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    query = select(HoldingLot).order_by(HoldingLot.acquisition_date.asc(), HoldingLot.id.asc())
+    if account_id is not None:
+        query = query.where(HoldingLot.account_id == account_id)
+    return [
+        {
+            "id": lot.id,
+            "account_id": lot.account_id,
+            "symbol": lot.symbol,
+            "acquisition_date": lot.acquisition_date.isoformat(),
+            "quantity_basis_points": lot.quantity_basis_points,
+            "quantity": lot.quantity_basis_points / 10000,
+            "cost_basis_cents": lot.cost_basis_cents,
+            "note": lot.note,
+        }
+        for lot in db.scalars(query).all()
+    ]
+
+
+@app.post("/api/investments/lots")
+def create_holding_lot(payload: HoldingLotCreate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    account = db.get(Account, payload.account_id)
+    if not account or account.status != "active" or account.account_type not in {"brokerage", "retirement"}:
+        raise HTTPException(status_code=400, detail="Choose an active brokerage or retirement account")
+    symbol = payload.symbol.strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Symbol is required")
+    lot = HoldingLot(
+        account_id=account.id,
+        symbol=symbol,
+        acquisition_date=payload.acquisition_date,
+        quantity_basis_points=payload.quantity_basis_points,
+        cost_basis_cents=payload.cost_basis_cents,
+        note=payload.note.strip() if payload.note and payload.note.strip() else None,
+    )
+    db.add(lot)
+    db.flush()
+    operation_id = journal_mutation(db, kind="create", entity_type="holding_lot", actor=actor_for_session(session), description=f"Added {symbol} tax lot", changes=[MutationChange(lot.id, None, full_values(lot))])
+    record_audit_event(db, "holding_lot_create", actor_for_session(session), "holding_lot", str(lot.id), {"account_id": account.id, "symbol": symbol, "operation_id": operation_id})
+    db.commit()
+    return {"ok": True, "lot_id": lot.id, "operation_id": operation_id}
+
+
+@app.delete("/api/investments/lots/{lot_id}")
+def delete_holding_lot(lot_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    lot = db.get(HoldingLot, lot_id)
+    if not lot:
+        raise HTTPException(status_code=404, detail="Holding lot not found")
+    operation_id = journal_mutation(db, kind="delete", entity_type="holding_lot", actor=actor_for_session(session), description=f"Deleted {lot.symbol} tax lot", changes=[MutationChange(lot.id, full_values(lot), None)])
+    record_audit_event(db, "holding_lot_delete", actor_for_session(session), "holding_lot", str(lot.id), {"account_id": lot.account_id, "symbol": lot.symbol, "operation_id": operation_id})
+    db.delete(lot)
+    db.commit()
+    return {"ok": True, "operation_id": operation_id}
+
+
 @app.get("/api/investments/holdings")
 def get_investment_holdings(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     accounts = {account.id: account for account in db.scalars(select(Account)).all()}
@@ -1820,6 +1934,9 @@ def get_investment_holdings(session: SessionToken = Depends(current_session), db
     for row in rows:
         latest_dates[row.account_id] = max(latest_dates.get(row.account_id, row.snapshot_date), row.snapshot_date)
     latest_rows = [row for row in rows if latest_dates.get(row.account_id) == row.snapshot_date]
+    lots_by_security: dict[tuple[int, str], list[HoldingLot]] = {}
+    for lot in db.scalars(select(HoldingLot).order_by(HoldingLot.acquisition_date.asc(), HoldingLot.id.asc())).all():
+        lots_by_security.setdefault((lot.account_id, lot.symbol.upper()), []).append(lot)
     payload = []
     for row in latest_rows:
         symbol_key = (row.symbol or "").upper()
@@ -1830,6 +1947,9 @@ def get_investment_holdings(session: SessionToken = Depends(current_session), db
         displayed_value_cents = row.market_value_cents
         if latest_price and row.quantity_basis_points is not None:
             displayed_value_cents = round((row.quantity_basis_points * latest_price.price_cents) / 10000)
+        security_lots = lots_by_security.get((row.account_id, symbol_key), []) if symbol_key else []
+        cost_basis_cents = sum(lot.cost_basis_cents for lot in security_lots) if security_lots else None
+        oldest_acquisition_date = security_lots[0].acquisition_date if security_lots else None
         payload.append(
             {
                 "id": row.id,
@@ -1847,6 +1967,12 @@ def get_investment_holdings(session: SessionToken = Depends(current_session), db
                 "market_value_cents": row.market_value_cents,
                 "display_market_value_cents": displayed_value_cents,
                 "asset_class": row.asset_class,
+                "lot_count": len(security_lots),
+                "lot_quantity": sum(lot.quantity_basis_points for lot in security_lots) / 10000 if security_lots else None,
+                "cost_basis_cents": cost_basis_cents,
+                "unrealized_gain_loss_cents": displayed_value_cents - cost_basis_cents if cost_basis_cents is not None else None,
+                "oldest_acquisition_date": oldest_acquisition_date.isoformat() if oldest_acquisition_date else None,
+                "lot_age_days": (date.today() - oldest_acquisition_date).days if oldest_acquisition_date else None,
             }
         )
     return payload
@@ -1944,6 +2070,7 @@ APP_EXPORT_TABLES = [
     ExpenseAllocation,
     TransferLink,
     HoldingSnapshot,
+    HoldingLot,
     NetWorthSnapshot,
     SecurityMetadata,
     SecurityPrice,
@@ -1962,6 +2089,7 @@ APP_EXPORT_ENTITY_TYPES = {
     ExpenseAllocation: "expense_allocation",
     TransferLink: "transfer_link",
     HoldingSnapshot: "holding_snapshot",
+    HoldingLot: "holding_lot",
     NetWorthSnapshot: "net_worth_snapshot",
     SecurityMetadata: "security_metadata",
     SecurityPrice: "security_price",

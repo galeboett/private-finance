@@ -7,7 +7,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
-from ..models import Account, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
+from ..models import Account, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
 from .dedupe import canonical_source_hash, find_merge_match, is_categorized_history_reference
 from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 
@@ -120,6 +120,7 @@ def merge_account_into(db: Session, source: Account, target: Account, actor: str
     related_groups = [
         ("staging_row", db.scalars(select(StagingRow).where(StagingRow.account_id == source.id)).all()),
         ("holding_snapshot", db.scalars(select(HoldingSnapshot).where(HoldingSnapshot.account_id == source.id)).all()),
+        ("holding_lot", db.scalars(select(HoldingLot).where(HoldingLot.account_id == source.id)).all()),
         ("import_batch", db.scalars(select(ImportBatch).where(ImportBatch.account_id == source.id)).all()),
         ("import_preset", db.scalars(select(ImportPreset).where(ImportPreset.account_id == source.id)).all()),
     ]
@@ -127,6 +128,7 @@ def merge_account_into(db: Session, source: Account, target: Account, actor: str
         changes.extend(MutationChange(row.id, changed_values(row, ["account_id"]), {"id": row.id, "account_id": target.id}, entity_type=entity_type) for row in rows)
     db.execute(update(StagingRow).where(StagingRow.account_id == source.id).values(account_id=target.id))
     db.execute(update(HoldingSnapshot).where(HoldingSnapshot.account_id == source.id).values(account_id=target.id))
+    db.execute(update(HoldingLot).where(HoldingLot.account_id == source.id).values(account_id=target.id))
     db.execute(update(ImportBatch).where(ImportBatch.account_id == source.id).values(account_id=target.id))
     db.execute(update(ImportPreset).where(ImportPreset.account_id == source.id).values(account_id=target.id))
     source_profiles = db.scalars(select(ImportSignProfile).where(ImportSignProfile.account_id == source.id)).all()

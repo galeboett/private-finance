@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import Account, Category, CategoryRule, HoldingSnapshot, NetWorthSnapshot, OperationChange, StatementCheckpoint, Transaction
+from app.models import Account, Category, CategoryRule, HoldingLot, HoldingSnapshot, NetWorthSnapshot, OperationChange, StatementCheckpoint, Transaction
 from app.services.importers import (
     _extract_snapshot_date,
     _history_transaction_type,
@@ -135,6 +135,26 @@ def test_commit_import_reimport_replaces_holdings_snapshot():
         snapshots = session.query(NetWorthSnapshot).all()
         assert len(snapshots) == 1
         assert snapshots[0].balance_cents == 57200
+
+
+def test_fidelity_position_lots_import_basis_and_preserve_manual_lots_on_refresh():
+    with _session() as session:
+        account = Account(display_name="Taxable Brokerage", account_type="brokerage", last_four="5678")
+        session.add(account)
+        session.commit()
+        first = b"Account Number,Account Name,Symbol,Description,Quantity,Last Price,Last Price Change,Current Value,Cost Basis Total,Date Acquired,Type\n12345678,Individual,VTI,Vanguard Total,10,100,0,1000,800,01/15/2024,ETF\n"
+        refreshed = b"Account Number,Account Name,Symbol,Description,Quantity,Last Price,Last Price Change,Current Value,Cost Basis Total,Date Acquired,Type\n12345678,Individual,VTI,Vanguard Total,10,105,5,1050,850,01/15/2024,ETF\n"
+
+        commit_import(session, account, None, "Portfolio_Positions_Jul-04-2026.csv", first)
+        session.commit()
+        session.add(HoldingLot(account_id=account.id, symbol="VTI", acquisition_date=date(2023, 1, 1), quantity_basis_points=5000, cost_basis_cents=35000, source="manual"))
+        session.commit()
+        commit_import(session, account, None, "Portfolio_Positions_Jul-04-2026.csv", refreshed)
+        session.commit()
+
+        lots = session.query(HoldingLot).order_by(HoldingLot.source).all()
+        assert [(lot.source, lot.cost_basis_cents) for lot in lots] == [("import", 85000), ("manual", 35000)]
+        assert lots[0].acquisition_date == date(2024, 1, 15)
 
 
 def test_commit_import_records_running_balance_snapshot():

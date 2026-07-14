@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db import Base
 from app.main import UNASSIGNED_ACCOUNT_MARKER, _delete_account_tree
-from app.models import Account, Category, HoldingSnapshot, ImportBatch, ImportSignProfile, Transaction, TransactionSplit
+from app.models import Account, Category, HoldingLot, HoldingSnapshot, ImportBatch, ImportSignProfile, Transaction, TransactionSplit
 from app.services.accounts import cleanup_imported_accounts, infer_account_characterization, infer_last_four, merge_account_into
 from app.services.operation_history import undo_operation
 from app.services.importers import _find_or_create_history_account
@@ -56,7 +56,7 @@ def test_cleanup_imported_accounts_merges_case_duplicates_and_recharacterizes_ca
         boa = Account(display_name="BoA Cash 3056", account_type="checking")
         session.add_all([checkings, duplicate_checkings, boa])
         session.flush()
-        session.add(
+        session.add_all([
             Transaction(
                 account_id=duplicate_checkings.id,
                 transaction_date=date(2026, 1, 1),
@@ -65,8 +65,9 @@ def test_cleanup_imported_accounts_merges_case_duplicates_and_recharacterizes_ca
                 transaction_type="income",
                 review_status="confirmed",
                 source_hash="source-1",
-            )
-        )
+            ),
+            HoldingLot(account_id=duplicate_checkings.id, symbol="TEST", acquisition_date=date(2025, 1, 1), quantity_basis_points=10000, cost_basis_cents=8000),
+        ])
         session.commit()
         duplicate_id = duplicate_checkings.id
 
@@ -74,11 +75,13 @@ def test_cleanup_imported_accounts_merges_case_duplicates_and_recharacterizes_ca
         accounts = session.scalars(select(Account).order_by(Account.display_name)).all()
         cleaned_checkings = session.scalar(select(Account).where(Account.display_name == "Checkings"))
         moved_transaction = session.scalar(select(Transaction).where(Transaction.source_hash == "source-1"))
+        moved_lot = session.scalar(select(HoldingLot).where(HoldingLot.symbol == "TEST"))
         cleaned_boa = session.scalar(select(Account).where(Account.display_name == "BoA Cash 3056"))
 
         assert result["merged"] == 1
         assert [account.display_name for account in accounts] == ["BoA Cash 3056", "Checkings"]
         assert moved_transaction.account_id == cleaned_checkings.id
+        assert moved_lot.account_id == cleaned_checkings.id
         assert cleaned_boa.account_type == "credit_card"
         assert cleaned_boa.institution.name == "Bank of America"
         assert cleaned_boa.last_four == "3056"
@@ -88,9 +91,11 @@ def test_cleanup_imported_accounts_merges_case_duplicates_and_recharacterizes_ca
         session.commit()
         restored_duplicate = session.get(Account, duplicate_id)
         session.refresh(moved_transaction)
+        session.refresh(moved_lot)
         session.refresh(cleaned_boa)
         assert restored_duplicate.display_name == "checkings"
         assert moved_transaction.account_id == restored_duplicate.id
+        assert moved_lot.account_id == restored_duplicate.id
         assert cleaned_boa.account_type == "checking"
 
 
@@ -110,14 +115,16 @@ def test_account_deletion_preserves_transactions_for_account_review():
         session.flush()
         split = TransactionSplit(transaction_id=transaction.id, category_id=category.id, amount_cents=-5000)
         holding = HoldingSnapshot(account_id=account.id, snapshot_date=date(2026, 7, 1), symbol="TEST", market_value_cents=10000)
+        lot = HoldingLot(account_id=account.id, symbol="TEST", acquisition_date=date(2025, 1, 1), quantity_basis_points=10000, cost_basis_cents=8000)
         sign_profile = ImportSignProfile(account_id=account.id, preset_type="card_activity", sign_convention="canonical_as_detected", decided_by="user")
-        session.add_all([split, holding, sign_profile])
+        session.add_all([split, holding, lot, sign_profile])
         session.commit()
         account_id = account.id
         transaction_id = transaction.id
         split_id = split.id
         batch_id = batch.id
         holding_id = holding.id
+        lot_id = lot.id
         sign_profile_id = sign_profile.id
 
         _delete_account_tree(session, account)
@@ -135,6 +142,7 @@ def test_account_deletion_preserves_transactions_for_account_review():
         assert review_account.display_name == "Needs account (Old Card)"
         assert session.get(ImportBatch, batch_id) is None
         assert session.get(HoldingSnapshot, holding_id) is None
+        assert session.get(HoldingLot, lot_id) is None
         assert session.get(ImportSignProfile, sign_profile_id) is None
 
 
