@@ -114,6 +114,10 @@ export function routeUrl(view: RouteView, accountId: number | null, filter: TxnF
   return `${routePath(view, accountId)}${query ? `?${query}` : ""}`;
 }
 
+export function freshAccountNavigationFilter(accountId: number): TxnFilter {
+  return { accounts: [String(accountId)] };
+}
+
 function decodeList(value: string | null): string[] {
   if (!value) return [];
   return Array.from(new Set(value.split(",").map((item) => item.trim()).filter(Boolean)));

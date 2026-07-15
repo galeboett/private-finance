@@ -5,6 +5,7 @@ from .db import Base, engine, session_scope
 from .seed import seed_categories
 from .services.reconciliation import backfill_statement_checkpoints
 from .services.fidelity import repair_fidelity_holding_history
+from .services.duplicate_scan import migrate_keep_both_decisions
 from .services.snapshots import backfill_net_worth_snapshots
 from .services.trash import purge_expired_trash
 
@@ -46,6 +47,9 @@ def initialize_database() -> None:
         if "labels" not in transaction_columns:
             connection.execute(text("ALTER TABLE transactions ADD COLUMN labels TEXT"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_transactions_deleted_at ON transactions (deleted_at)"))
+        account_columns = {column["name"] for column in inspector.get_columns("accounts")}
+        if "net_worth_inclusion" not in account_columns:
+            connection.execute(text("ALTER TABLE accounts ADD COLUMN net_worth_inclusion VARCHAR(20) NOT NULL DEFAULT 'auto'"))
         holding_snapshot_columns = {column["name"] for column in inspector.get_columns("holding_snapshots")}
         if "cost_basis_cents" not in holding_snapshot_columns:
             connection.execute(text("ALTER TABLE holding_snapshots ADD COLUMN cost_basis_cents INTEGER"))
@@ -98,5 +102,6 @@ def initialize_database() -> None:
         backfill_net_worth_snapshots(db)
         backfill_statement_checkpoints(db)
         repair_fidelity_holding_history(db)
+        migrate_keep_both_decisions(db)
         purge_expired_trash(db, retention_days=settings.trash_retention_days)
     settings.import_inbox_dir.expanduser().mkdir(parents=True, exist_ok=True)

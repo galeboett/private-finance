@@ -8,7 +8,27 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) throw new Error(await readableApiError(response, path));
-  return parseApiJson<T>(response, path);
+  const result = await parseApiJson<T>(response, path);
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") bumpTransactionsVersion();
+  return result;
+}
+
+let transactionsVersion = 0;
+const transactionVersionListeners = new Set<() => void>();
+
+export function getTransactionsVersion(): number {
+  return transactionsVersion;
+}
+
+export function subscribeTransactionsVersion(listener: () => void): () => void {
+  transactionVersionListeners.add(listener);
+  return () => transactionVersionListeners.delete(listener);
+}
+
+export function bumpTransactionsVersion(): void {
+  transactionsVersion += 1;
+  for (const listener of transactionVersionListeners) listener();
 }
 
 export function apiUrl(path: string): string {

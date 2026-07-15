@@ -24,8 +24,8 @@ import {
   X,
 } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { api, apiUrl, parseApiJson, readableApiError } from "./api/client";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { api, apiUrl, bumpTransactionsVersion, getTransactionsVersion, parseApiJson, readableApiError, subscribeTransactionsVersion } from "./api/client";
 import { readAppRoute, routeUrl, type RouteView } from "./app/router";
 import { BulkActionBar, CashFlowGraphic, DrillDownLink, MultiSelectFilter, PanelTitle, UndoToast } from "./components/AppPrimitives";
 import { DeleteConfirmInline, type DeleteTarget } from "./components/DeleteConfirmInline";
@@ -34,15 +34,19 @@ import type { ReconciliationStatus } from "./features/accounts/ReconciliationBad
 import { ImportReview, type InboxBatch, type ImportInboxScan, type ImportInboxState, type SignDecision } from "./features/imports/ImportReview";
 import { SignConventionPrompt, type ImportSignConvention } from "./features/imports/SignConventionPrompt";
 import { HoldingsPanel, type HoldingRow } from "./features/networth/HoldingsPanel";
+import { UnanchoredBanner } from "./features/networth/UnanchoredBanner";
 import { RefundLinkPicker } from "./features/refunds/RefundLinkPicker";
 import { RefundSuggestions, type RefundLink } from "./features/refunds/RefundSuggestions";
-import { DuplicateReview, type DuplicateAction, type DuplicatePair } from "./features/review/DuplicateReview";
+import { SaveRuleControl } from "./features/rules/SaveRuleControl";
+import { SavedRulesPanel } from "./features/rules/SavedRulesPanel";
+import { LedgerDuplicateScan, type DuplicatePair } from "./features/review/LedgerDuplicateScan";
 import type { DuplicateTransaction } from "./features/review/TransactionCompareCard";
 import { TransferReview, type TransferCandidate } from "./features/review/TransferReview";
 import type { PaymentVerificationStatus, PaymentWarning } from "./features/transfers/PaymentVerification";
 import { ManualTransactionForm } from "./features/transactions/ManualTransactionForm";
-import { encodeTxnFilter, type NetWorthPeriod, type TxnFilter } from "./lib/filters";
+import { encodeTxnFilter, freshAccountNavigationFilter, type NetWorthPeriod, type TxnFilter } from "./lib/filters";
 import { transactionTypeUsesCategory } from "./lib/transactionTypes";
+import { useSelection } from "./lib/useSelection";
 type BootstrapCategory = { id: number; key: string; label: string; parent_id: number | null };
 type DashboardSummary = {
   review_counts: Record<string, number>;
@@ -59,8 +63,10 @@ type AccountSummary = {
   institution_name: string | null;
   currency: string;
   last_four: string | null;
-  sidebar_balance_cents: number;
-  sidebar_balance_kind: "running_balance" | "investment_snapshot" | "recent_activity";
+  net_worth_inclusion: "auto" | "always" | "never";
+  is_anchored: boolean;
+  sidebar_balance_cents: number | null;
+  sidebar_balance_kind: "running_balance" | "investment_snapshot" | "anchored_balance" | "recent_activity" | "unanchored" | "excluded";
   sidebar_balance_as_of: string | null;
 };
 
@@ -186,11 +192,13 @@ type ToastState = {
   message: string;
   operationId?: string;
   unconflictedOnly?: boolean;
+  action?: { label: string; ruleId: number; transactionId: number };
 };
 
 type SavedRuleAction = {
   id: number;
   matchText: string;
+  transactionId: number;
 };
 
 type RuleSummary = {
@@ -208,7 +216,7 @@ type CategoryAggregateRow = { category_id: number | null; category: string; tota
 type MonthlyCashFlow = { month: string; income_cents: number; expense_cents: number; net_cents: number };
 type NetWorthAccount = { account_id: number; account: string; account_type: string; latest_date: string; market_value_cents: number };
 type NetWorthPoint = { date: string; total_cents: number; by_account: Record<string, number> };
-type NetWorthSeriesResponse = { from: string; to: string; bucket: "day" | "week" | "month"; series: NetWorthPoint[] };
+type NetWorthSeriesResponse = { from: string; to: string; bucket: "day" | "week" | "month"; series: NetWorthPoint[]; unanchored_accounts: Array<{ id: number; name: string }> };
 type NetWorthStats = {
   from: string;
   to: string;
@@ -416,11 +424,15 @@ const accountOptionLabel = (account: AccountSummary) => {
 };
 
 const sidebarBalanceLabel = (account: AccountSummary) => {
+  if (account.sidebar_balance_kind === "unanchored") return "Excluded from net worth until a statement balance is added";
+  if (account.sidebar_balance_kind === "excluded") return "Excluded from net worth";
   const source = account.sidebar_balance_kind === "running_balance"
     ? "Latest imported balance"
     : account.sidebar_balance_kind === "investment_snapshot"
       ? "Latest investment value"
-      : "Net activity in the last 30 days";
+      : account.sidebar_balance_kind === "anchored_balance"
+        ? "Balance reconstructed from the latest anchor"
+        : "Net activity in the last 30 days";
   return account.sidebar_balance_as_of ? `${source}, as of ${formatShortDate(account.sidebar_balance_as_of)}` : source;
 };
 
@@ -461,11 +473,13 @@ const readableAccountType = (value: string) =>
     loan: "Loan",
     brokerage: "Brokerage",
     retirement: "Retirement",
+    external: "Untracked account",
   })[value] ?? value.replace(/_/g, " ");
 
 const bankAccountTypes = new Set(["checking", "savings", "cash", "other", "loan"]);
 const creditCardAccountTypes = new Set(["credit_card"]);
 const brokerageAccountTypes = new Set(["brokerage", "retirement"]);
+const externalAccountTypes = new Set(["external"]);
 
 function isBrokerageAccountType(accountType: string): boolean {
   return brokerageAccountTypes.has(accountType);
@@ -474,6 +488,7 @@ function isBrokerageAccountType(accountType: string): boolean {
 function accountGroupLabel(accountType: string): string {
   if (creditCardAccountTypes.has(accountType)) return "Credit Cards";
   if (brokerageAccountTypes.has(accountType)) return "Brokerages";
+  if (externalAccountTypes.has(accountType)) return "Untracked Accounts";
   return "Bank Accounts";
 }
 
@@ -486,6 +501,7 @@ const accountTypeOptions = [
   { value: "credit_card", label: "Credit card (Credit Cards)" },
   { value: "brokerage", label: "Brokerage (Brokerages)" },
   { value: "retirement", label: "Retirement (Brokerages)" },
+  { value: "external", label: "Untracked account (Transfers only)" },
 ];
 
 const reviewStatusLabel = (value: string) =>
@@ -641,36 +657,6 @@ function buildTaxonomyGroups(rows: AccountSummary[], accountBalances: Map<number
   });
 }
 
-function useSelection() {
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const [lastSelectedId, setLastSelectedId] = useState<number | null>(null);
-
-  function toggle(id: number, visibleIds: number[], shiftKey: boolean) {
-    setSelectedIds((current) => {
-      const next = new Set(current);
-      if (shiftKey && lastSelectedId !== null) {
-        const start = visibleIds.indexOf(lastSelectedId);
-        const end = visibleIds.indexOf(id);
-        if (start >= 0 && end >= 0) {
-          const [from, to] = start < end ? [start, end] : [end, start];
-          visibleIds.slice(from, to + 1).forEach((visibleId) => next.add(visibleId));
-          return Array.from(next);
-        }
-      }
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return Array.from(next);
-    });
-    setLastSelectedId(id);
-  }
-
-  function resetAnchor() {
-    setLastSelectedId(null);
-  }
-
-  return { selectedIds, setSelectedIds, toggle, resetAnchor };
-}
-
 export function App() {
   const initialRoute = useRef(readAppRoute(window.location));
   const [configured, setConfigured] = useState(false);
@@ -679,6 +665,7 @@ export function App() {
   const [errorMessage, setErrorMessage] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const transactionsVersion = useSyncExternalStore(subscribeTransactionsVersion, getTransactionsVersion, getTransactionsVersion);
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
   const [categories, setCategories] = useState<BootstrapCategory[]>([]);
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
@@ -932,7 +919,15 @@ export function App() {
         setEditingTransactionId(null);
       })
       .catch(() => undefined);
-  }, [csrf, transactionView]);
+  }, [csrf, transactionView, transactionsVersion]);
+
+  useEffect(() => {
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") bumpTransactionsVersion();
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -947,7 +942,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
   async function loadBootstrap() {
-    const data = await api<{ configured: boolean; categories: BootstrapCategory[] }>("/api/bootstrap");
+    const data = await api<{ configured: boolean; categories: BootstrapCategory[]; net_worth_notice: Array<{ id: number; name: string }> }>("/api/bootstrap");
     setConfigured(data.configured);
     setCategories(data.categories);
     if (data.configured) {
@@ -955,6 +950,11 @@ export function App() {
         const me = await api<{ csrf_token: string }>("/api/me");
         setCsrf(me.csrf_token);
         await loadData();
+        const noticeKey = `privateFinance.netWorthAnchoringNotice.${data.net_worth_notice.map((account) => account.id).join("-")}`;
+        if (data.net_worth_notice.length && !window.localStorage.getItem(noticeKey)) {
+          window.localStorage.setItem(noticeKey, "seen");
+          showToast({ tone: "info", message: `${data.net_worth_notice.length} unanchored account${data.net_worth_notice.length === 1 ? " is" : "s are"} now excluded from net worth. Add a statement balance or change the account override to include it.` });
+        }
       } catch {
         setCsrf("");
       }
@@ -1965,40 +1965,6 @@ export function App() {
     }
   }
 
-  async function resolveDuplicateCandidate(transactionId: number, action: DuplicateAction) {
-    setBusyAction(`duplicate-${transactionId}-${action}`);
-    try {
-      const result = await api<{ operation_id: string }>(`/api/duplicates/${transactionId}/resolve`, {
-        method: "POST",
-        headers: { "x-csrf-token": csrf },
-        body: JSON.stringify({ action }),
-      });
-      await loadData();
-      const message = action === "remove_new" ? "Removed the new duplicate copy." : action === "keep_both" ? "Kept both transactions; the new row remains in category review." : "Updated the original with the new bank details and preserved your annotations.";
-      showToast({ tone: "success", message, operationId: result.operation_id });
-    } catch (error) {
-      showToast({ tone: "error", message: error instanceof Error ? error.message : "The duplicate could not be resolved." });
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
-  async function resolveAllExactDuplicates() {
-    setBusyAction("duplicates-exact");
-    try {
-      const result = await api<{ resolved: number; operation_id: string | null }>("/api/duplicates/resolve-exact", {
-        method: "POST",
-        headers: { "x-csrf-token": csrf },
-      });
-      await loadData();
-      showToast({ tone: "success", message: `Removed ${result.resolved} exact duplicate cop${result.resolved === 1 ? "y" : "ies"}.`, operationId: result.operation_id ?? undefined });
-    } catch (error) {
-      showToast({ tone: "error", message: error instanceof Error ? error.message : "Exact duplicates could not be resolved." });
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
   async function confirmTransaction(transaction: TransactionRow) {
     if (!accounts.some((account) => account.id === transaction.account_id)) {
       showToast({ tone: "error", message: "Choose an account before confirming this transaction." });
@@ -2012,13 +1978,13 @@ export function App() {
     if (operationId) showToast({ tone: "success", message: "Transaction confirmed.", operationId });
   }
 
-  async function saveRuleFromTransaction(transaction: TransactionRow) {
+  async function saveRuleFromTransaction(transaction: TransactionRow, requestedMatchText?: string) {
     setToast(null);
     if (transactionTypeUsesCategory(transaction.transaction_type) && !transaction.category_id) {
       showToast({ tone: "error", message: "Choose a category before saving a rule." });
       return;
     }
-    const matchText = suggestedRuleText(transaction.raw_description);
+    const matchText = requestedMatchText?.trim() || suggestedRuleText(transaction.raw_description);
     try {
       const rule = await api<{ id: number; operation_id: string }>("/api/rules", {
         method: "POST",
@@ -2031,9 +1997,9 @@ export function App() {
           priority: 100,
         }),
       });
-      setLastSavedRule({ id: rule.id, matchText });
+      setLastSavedRule({ id: rule.id, matchText, transactionId: transaction.id });
       await loadData();
-      showToast({ tone: "success", message: `Rule saved for "${matchText}". Apply it below to classify and confirm matches.`, operationId: rule.operation_id });
+      showToast({ tone: "success", message: `Rule saved for "${matchText}".`, operationId: rule.operation_id, action: { label: "Apply & confirm this row", ruleId: rule.id, transactionId: transaction.id } });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be saved." });
     }
@@ -2302,7 +2268,7 @@ export function App() {
   const accountBalances = useMemo(() => {
     const balances = new Map<number, number>();
     for (const account of accounts) {
-      balances.set(account.id, account.sidebar_balance_cents);
+      balances.set(account.id, account.sidebar_balance_cents ?? 0);
     }
     return balances;
   }, [accounts]);
@@ -2427,6 +2393,8 @@ export function App() {
   const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status) && !duplicateCandidateIds.has(transaction.id) && transactionMatchesSearch(transaction));
   const visibleReviewTransactions = reviewTransactions.slice(0, 5);
   const activeAccounts = accounts.filter((account) => account.status === "active");
+  const importableAccounts = activeAccounts.filter((account) => account.account_type !== "external");
+  const externalAccounts = activeAccounts.filter((account) => account.account_type === "external");
   const archivedAccounts = accounts.filter((account) => account.status === "archived");
   const bankAccounts = activeAccounts.filter((account) => bankAccountTypes.has(account.account_type));
   const creditCardAccounts = activeAccounts.filter((account) => creditCardAccountTypes.has(account.account_type));
@@ -2440,6 +2408,19 @@ export function App() {
   const effectiveTransactionCategoryFilters = new Set(selectedTransactionCategoryFilters);
   for (const category of categories) {
     if (category.parent_id !== null && effectiveTransactionCategoryFilters.has(String(category.parent_id))) effectiveTransactionCategoryFilters.add(String(category.id));
+  }
+
+  async function applyRuleToTransaction(ruleId: number, transactionId: number) {
+    try {
+      const result = await api<{ updated: number; operation_id?: string }>(`/api/rules/${ruleId}/apply-to/${transactionId}`, {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+      });
+      await loadData();
+      showToast({ tone: "success", message: result.updated ? "Rule applied and transaction confirmed." : "Transaction already matched this rule.", operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be applied to this transaction." });
+    }
   }
 
   async function selectAllMatchingTransactions() {
@@ -2524,6 +2505,7 @@ export function App() {
     { label: "Bank Accounts", rows: bankAccounts, emptyText: "No bank accounts yet." },
     { label: "Credit Cards", rows: creditCardAccounts, emptyText: "No credit cards yet." },
     { label: "Brokerages", rows: brokerageAccounts, emptyText: "No brokerages yet." },
+    { label: "Untracked Accounts", rows: externalAccounts, emptyText: "No untracked accounts yet." },
   ];
   const taxonomyTree = taxonomySections.map((section) => ({
     ...section,
@@ -2664,8 +2646,17 @@ export function App() {
   }
 
   function openAccountView(accountId: number) {
-    setSelectedAccountId(accountId);
-    navigateToView("account", accountId);
+    const nextFilter = freshAccountNavigationFilter(accountId);
+    setSelectedAccountId(accountId); setSelectedTransactionAccountFilters([accountId]);
+    setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value)); setSelectedTransactionYearFilters(transactionYears);
+    setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value)); setSelectedTransactionTypeFilters([]);
+    setTransactionDateFrom(""); setTransactionDateTo(""); setTransactionDateBasis(undefined);
+    setTransactionAmountMin(undefined); setTransactionAmountMax(undefined); setTransactionDirection(undefined);
+    setTransactionHasRefund(false); setTransactionSearch(""); setTransactionView("live");
+    setTransactionSortKey("date"); setTransactionSortDirection("desc");
+    window.history.pushState({}, "", routeUrl("account", accountId, nextFilter));
+    setActiveView("account");
+    setFocusedAccountId(accountId);
     setCategoryEditor(null);
     setFocusedTransactionId(null);
     setEditingTransactionId(null);
@@ -2831,7 +2822,7 @@ export function App() {
                                 {account.last_four ? ` (${account.last_four})` : ""}
                               </span>
                               <span className="sidebarAccountBalanceWrap">
-                                <span className={(accountBalances.get(account.id) ?? 0) < 0 ? "sidebarAccountBalance negative" : "sidebarAccountBalance"}>{formatMoney(accountBalances.get(account.id) ?? 0)}</span>
+                                <span className={(accountBalances.get(account.id) ?? 0) < 0 ? "sidebarAccountBalance negative" : "sidebarAccountBalance"}>{account.sidebar_balance_cents === null ? "—" : formatMoney(accountBalances.get(account.id) ?? 0)}</span>
                                 {account.sidebar_balance_kind === "recent_activity" ? <small>30d</small> : null}
                               </span>
                             </button>
@@ -2903,7 +2894,7 @@ export function App() {
 
       <main className="workspace">
         {toast ? (
-          <UndoToast toast={toast} busy={busyAction === `undo-${toast.operationId}`} onUndo={(operationId, unconflictedOnly) => void undoLoggedOperation(operationId, unconflictedOnly)} onDismiss={() => setToast(null)} />
+          <UndoToast toast={toast} busy={busyAction === `undo-${toast.operationId}`} onUndo={(operationId, unconflictedOnly) => void undoLoggedOperation(operationId, unconflictedOnly)} onAction={toast.action ? () => void applyRuleToTransaction(toast.action!.ruleId, toast.action!.transactionId) : undefined} onDismiss={() => setToast(null)} />
         ) : null}
 
         {activeView === "overview" && (
@@ -3075,6 +3066,7 @@ export function App() {
                   onOpenTransactionView={openTransactionView}
                   onOpenTransactionPeek={openTransactionPeek}
                   onOpenNetWorthPeek={openNetWorthPeek}
+                  onOpenAccount={openAccountView}
                   onRequestDelete={requestDelete}
                   onConfirmDelete={confirmDelete}
                   onDeleteConfirmTextChange={setDeleteConfirmText}
@@ -3152,8 +3144,9 @@ export function App() {
             reconciliation={focusedReconciliation}
             paymentVerification={focusedPaymentVerification}
             csrf={csrf}
-            transactionAccounts={activeAccounts}
+            transactionAccounts={importableAccounts}
             transactionCategories={categories}
+            externalAccounts={externalAccounts}
             formatMoney={formatMoney}
             accountGroupLabel={accountGroupLabel}
             readableAccountType={readableAccountType}
@@ -3166,6 +3159,8 @@ export function App() {
             onCheckpointError={(message) => showToast({ tone: "error", message })}
             onInvestigateReconciliation={investigateReconciliation}
             onInvestigatePayment={investigatePayment}
+            onPaymentDismissed={async (operationId) => { await loadData(); showToast({ tone: "success", message: "Payment warning dismissed.", operationId }); }}
+            onAccountChanged={async (operationId, message) => { await loadData(); showToast({ tone: "success", message, operationId }); }}
           >
             <div className="transactionDiscovery stickyFilters">
               <label className="transactionSearchBox"><Search size={16} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search institution, account, description, details, or labels" /></label>
@@ -3485,7 +3480,7 @@ export function App() {
                   <label>Override account if the match is wrong</label>
                   <select value={selectedAccountId} onChange={(event) => setSelectedAccountId(event.target.value ? Number(event.target.value) : "")}>
                     <option value="">Choose existing account</option>
-                    {accounts.map((account) => (
+                    {importableAccounts.map((account) => (
                       <option key={account.id} value={account.id}>
                         {accountOptionLabel(account)}
                       </option>
@@ -3669,12 +3664,7 @@ export function App() {
             <a href="#review-inbox">Inbox <span>{reviewTransactions.length}</span></a>
             <a href="#saved-rules">Rules <span>{rules.length}</span></a>
           </nav>
-          <DuplicateReview
-            pairs={duplicatePairs}
-            busyAction={busyAction}
-            onResolve={(transactionId, action) => void resolveDuplicateCandidate(transactionId, action)}
-            onResolveExact={() => void resolveAllExactDuplicates()}
-          />
+          <LedgerDuplicateScan pairs={duplicatePairs} csrf={csrf} onChanged={async (message, operationId) => { await loadData(); showToast({ tone: "success", message, operationId }); }} onError={(message) => showToast({ tone: "error", message })} onRerunTransfers={detectTransfers} />
           <TransferReview
             candidates={transferCandidates}
             accountName={(accountId) => accounts.find((account) => account.id === accountId)?.display_name ?? `Account ${accountId}`}
@@ -3797,15 +3787,16 @@ export function App() {
                       placeholder="Add your own context, like what you actually bought."
                       rows={2}
                     />
-                    <div className="ruleHint">
-                      <strong>Rule to save:</strong> future descriptions containing "{suggestedRuleText(transaction.raw_description)}" will use {readableAccountType(transaction.transaction_type)}
-                      {transaction.category_id ? ` / ${categories.find((category) => category.id === transaction.category_id)?.label ?? "selected category"}` : " / no category"}. Applying it now also confirms matching rows.
-                    </div>
+                    <SaveRuleControl
+                      transactionId={transaction.id}
+                      description={transaction.raw_description}
+                      initialMatchText={suggestedRuleText(transaction.raw_description)}
+                      typeLabel={readableAccountType(transaction.transaction_type)}
+                      categoryLabel={transaction.category_id ? categories.find((category) => category.id === transaction.category_id)?.label ?? "selected category" : "no category"}
+                      disabled={transactionTypeUsesCategory(transaction.transaction_type) && !transaction.category_id}
+                      onSave={(matchText) => saveRuleFromTransaction(transaction, matchText)}
+                    />
                     <div className="reviewActions">
-                      <button className="secondaryButton" onClick={() => void saveRuleFromTransaction(transaction)}>
-                        <Sparkles size={16} />
-                        Save rule
-                      </button>
                       <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>
                         Delete
                       </button>
@@ -3833,56 +3824,7 @@ export function App() {
             </div>
           </section>
 
-          <aside className="toolPanel rulesPanel" id="saved-rules">
-            <PanelTitle icon={Sparkles} title="Saved Rules" subtitle="Preview, edit, and apply automatic categorization." />
-            {lastSavedRule ? (
-              <div className="ruleApplyPanel">
-                <div>
-                  <strong>Rule saved for "{lastSavedRule.matchText}"</strong>
-                  <span>Apply it now to classify and confirm matching transactions.</span>
-                </div>
-                <div className="buttonRow">
-                  <button className="secondaryButton" onClick={() => void applySavedRule("unreviewed")}>Apply unreviewed</button>
-                  <button className="secondaryButton" onClick={() => void applySavedRule("all")}>Apply previous</button>
-                </div>
-              </div>
-            ) : null}
-            {rules.length > 0 ? (
-              <div className="savedRulesPanel">
-                {rules.map((rule) => {
-                  const category = categories.find((item) => item.id === rule.category_id);
-                  return (
-                    <div className="savedRuleGroup" key={rule.id}>
-                      <div className="savedRuleRow">
-                        <div>
-                          <span>{rule.match_text}</span>
-                          <small>{category?.label ?? "No category"} / {readableAccountType(rule.suggested_transaction_type)} / priority {rule.priority}</small>
-                        </div>
-                        <div className="savedRuleActions">
-                          <button className="secondaryButton" onClick={() => void previewRule(rule.id)}>Preview</button>
-                          <button className="secondaryButton" onClick={() => void applyRule(rule.id, "unreviewed")}>Apply unreviewed</button>
-                          <button className="secondaryButton" onClick={() => void applyRule(rule.id, "all")}>Apply previous</button>
-                          <button className="secondaryButton" onClick={() => setEditingRule({ ...rule })}>Edit</button>
-                          <button className="dangerTextButton" onClick={() => void deleteRule(rule)}>Delete</button>
-                        </div>
-                      </div>
-                      {ruleFeedback?.ruleId === rule.id ? <div className="ruleInlineFeedback" role="status">{ruleFeedback.message}</div> : null}
-                      {editingRule?.id === rule.id ? (
-                        <div className="ruleEditRow">
-                          <label>Contains<input value={editingRule.match_text} onChange={(event) => setEditingRule({ ...editingRule, match_text: event.target.value })} /></label>
-                          <label>Category<select value={editingRule.category_id ?? ""} disabled={!transactionTypeUsesCategory(editingRule.suggested_transaction_type)} onChange={(event) => setEditingRule({ ...editingRule, category_id: event.target.value ? Number(event.target.value) : null })}><option value="">No category</option>{categories.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
-                          <label>Type<select value={editingRule.suggested_transaction_type} onChange={(event) => { const nextType = event.target.value; setEditingRule({ ...editingRule, suggested_transaction_type: nextType, category_id: transactionTypeUsesCategory(nextType) ? editingRule.category_id : null }); }}>{transactionTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
-                          <label>Priority<input type="number" value={editingRule.priority} onChange={(event) => setEditingRule({ ...editingRule, priority: Number(event.target.value) })} /><small>Smaller numbers run first.</small></label>
-                          <button className="primaryButton" onClick={() => void saveRuleEdit()}>Save</button>
-                          <button className="ghostButton" onClick={() => setEditingRule(null)}>Cancel</button>
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : <div className="rulesEmptyState"><strong>No saved rules yet</strong><span>Choose a type and, when needed, a category on an inbox item, then select Save rule.</span></div>}
-          </aside>
+          <SavedRulesPanel rules={rules} categories={categories} transactionTypes={transactionTypes} lastSavedRule={lastSavedRule} editingRule={editingRule} feedback={ruleFeedback} focusedTransaction={transactions.find((transaction) => transaction.id === focusedTransactionId) ?? null} readableType={readableAccountType} onApplyOne={(ruleId, transactionId) => void applyRuleToTransaction(ruleId, transactionId)} onApplySaved={(scope) => void applySavedRule(scope)} onApply={(ruleId, scope) => void applyRule(ruleId, scope)} onPreview={(ruleId) => void previewRule(ruleId)} onEdit={setEditingRule} onSaveEdit={() => void saveRuleEdit()} onDelete={(rule) => void deleteRule(rule)} />
           </>
           ) : null}
 
@@ -4312,6 +4254,18 @@ export function App() {
                     </button>
                   </div>
                 ) : null}
+                {isEditing ? (
+                  <SaveRuleControl
+                    compact
+                    transactionId={transaction.id}
+                    description={transaction.raw_description}
+                    initialMatchText={suggestedRuleText(transaction.raw_description)}
+                    typeLabel={readableAccountType(transaction.transaction_type)}
+                    categoryLabel={transaction.category_id ? categories.find((category) => category.id === transaction.category_id)?.label ?? "selected category" : "no category"}
+                    disabled={transactionTypeUsesCategory(transaction.transaction_type) && !transaction.category_id}
+                    onSave={(matchText) => saveRuleFromTransaction(transaction, matchText)}
+                  />
+                ) : null}
                 {isEditing && transaction.transaction_type === "expense" ? (
                   <RefundLinkPicker
                     open={refundPicker?.expenseId === transaction.id}
@@ -4439,7 +4393,7 @@ export function App() {
                     Account
                     <select value={selectedAccountId} onChange={(event) => setSelectedAccountId(event.target.value ? Number(event.target.value) : "")}>
                       <option value="">Choose account</option>
-                      {accounts.map((account) => (
+                      {importableAccounts.map((account) => (
                         <option key={account.id} value={account.id}>
                           {accountOptionLabel(account)}
                         </option>
@@ -4632,6 +4586,7 @@ function ReportSurface({
   onOpenTransactionView,
   onOpenTransactionPeek,
   onOpenNetWorthPeek,
+  onOpenAccount,
   onRequestDelete,
   onConfirmDelete,
   onDeleteConfirmTextChange,
@@ -4665,6 +4620,7 @@ function ReportSurface({
   onOpenTransactionView: (filter: TxnFilter) => void;
   onOpenTransactionPeek: (filter: TxnFilter, title: string) => void;
   onOpenNetWorthPeek: (fromDate: string, toDate: string) => void;
+  onOpenAccount: (accountId: number) => void;
   onRequestDelete: (target: DeleteTarget) => void;
   onConfirmDelete: () => Promise<void>;
   onDeleteConfirmTextChange: (value: string) => void;
@@ -4677,7 +4633,7 @@ function ReportSurface({
     return <IncomeReport income={income} expenses={expenses} net={net} reportFilter={reportFilter} onPeek={onOpenTransactionPeek} />;
   }
   if (activeTab === "Net Worth") {
-    return <NetWorthReport accounts={netWorthAccounts} allAccounts={allAccounts} allocationRows={allocationRows} holdingRows={holdingRows} csrf={csrf} categories={categories} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} deleteTarget={deleteTarget} deleteConfirmText={deleteConfirmText} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onSaveManualNetWorthSnapshot={onSaveManualNetWorthSnapshot} onFinanceMutation={onFinanceMutation} onFinanceError={onFinanceError} onViewTransactions={(fromDate, toDate) => onOpenTransactionView({ dateFrom: fromDate, dateTo: toDate })} onPeekNetWorth={onOpenNetWorthPeek} onRequestDelete={onRequestDelete} onConfirmDelete={onConfirmDelete} onDeleteConfirmTextChange={onDeleteConfirmTextChange} onCancelDelete={onCancelDelete} />;
+    return <NetWorthReport accounts={netWorthAccounts} allAccounts={allAccounts} allocationRows={allocationRows} holdingRows={holdingRows} csrf={csrf} categories={categories} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} deleteTarget={deleteTarget} deleteConfirmText={deleteConfirmText} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onSaveManualNetWorthSnapshot={onSaveManualNetWorthSnapshot} onFinanceMutation={onFinanceMutation} onFinanceError={onFinanceError} onViewTransactions={(fromDate, toDate) => onOpenTransactionView({ dateFrom: fromDate, dateTo: toDate })} onPeekNetWorth={onOpenNetWorthPeek} onOpenAccount={onOpenAccount} onRequestDelete={onRequestDelete} onConfirmDelete={onConfirmDelete} onDeleteConfirmTextChange={onDeleteConfirmTextChange} onCancelDelete={onCancelDelete} />;
   }
   if (activeTab === "Cash Flow") {
     return <MonthlyCashFlowReport rows={cashFlowRows} income={income} expenses={expenses} net={net} reportFilter={reportFilter} onPeek={onOpenTransactionPeek} />;
@@ -5243,6 +5199,7 @@ function NetWorthReport({
   onFinanceError,
   onViewTransactions,
   onPeekNetWorth,
+  onOpenAccount,
   onRequestDelete,
   onConfirmDelete,
   onDeleteConfirmTextChange,
@@ -5268,6 +5225,7 @@ function NetWorthReport({
   onFinanceError: (message: string) => void;
   onViewTransactions: (fromDate: string, toDate: string) => void;
   onPeekNetWorth: (fromDate: string, toDate: string) => void;
+  onOpenAccount: (accountId: number) => void;
   onRequestDelete: (target: DeleteTarget) => void;
   onConfirmDelete: () => Promise<void>;
   onDeleteConfirmTextChange: (value: string) => void;
@@ -5276,7 +5234,9 @@ function NetWorthReport({
   const total = accounts.reduce((sum, row) => sum + row.market_value_cents, 0);
   const max = Math.max(...accounts.map((row) => row.market_value_cents), 1);
   const assetAccounts = allAccounts.filter((account) => account.account_type === "brokerage" || account.account_type === "retirement");
-  const [manualAccountId, setManualAccountId] = useState<number | "">(allAccounts[0]?.id ?? "");
+  const balanceAccounts = allAccounts.filter((account) => account.account_type !== "external");
+  const unanchoredAccounts = allAccounts.filter((account) => account.account_type !== "external" && account.net_worth_inclusion === "auto" && !account.is_anchored).map((account) => ({ id: account.id, name: account.display_name }));
+  const [manualAccountId, setManualAccountId] = useState<number | "">(balanceAccounts[0]?.id ?? "");
   const [manualSnapshotDate, setManualSnapshotDate] = useState(localIsoDate(new Date()));
   const [manualBalance, setManualBalance] = useState("");
   const [showManualTransaction, setShowManualTransaction] = useState(false);
@@ -5287,6 +5247,7 @@ function NetWorthReport({
   }, []);
   return (
     <div className="reportStack">
+      <UnanchoredBanner accounts={unanchoredAccounts} onChoose={onOpenAccount} />
       <NetWorthHistoryChart onViewTransactions={onViewTransactions} onPeekNetWorth={onPeekNetWorth} />
       <section className="manualSnapshotPanel">
         <div>
@@ -5297,7 +5258,7 @@ function NetWorthReport({
           Account
           <select value={manualAccountId} onChange={(event) => setManualAccountId(Number(event.target.value) || "")}>
             <option value="">Choose account</option>
-            {allAccounts.map((account) => <option value={account.id} key={account.id}>{accountOptionLabel(account)}</option>)}
+            {balanceAccounts.map((account) => <option value={account.id} key={account.id}>{accountOptionLabel(account)}</option>)}
           </select>
         </label>
         <label>

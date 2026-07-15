@@ -1,11 +1,15 @@
 from datetime import date, timedelta
 
-from app.models import Account, Category, Transaction, TransferLink
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 
 from app.db import Base
-from app.services.transfers import confirm_transfer_link, detect_transfer_candidates, list_payment_verification, score_transfer_match
+from app.main import update_transaction
+from app.models import Account, Category, PaymentVerificationDismissal, SessionToken, Transaction, TransferLink
+from app.schemas import TransactionReviewUpdate, TransactionType
+from app.services.operation_history import undo_operation
+from app.services.transfers import confirm_transfer_link, detect_transfer_candidates, dismiss_payment_verification, list_payment_verification, score_transfer_match, settle_payment_from_external
 
 
 def _transaction(account_id: int, amount_cents: int, transaction_date: date, description: str = "Transfer") -> Transaction:
@@ -129,6 +133,80 @@ def test_payment_verification_reports_confirmed_matches_and_stale_unmatched_paym
         assert [warning["transaction_id"] for warning in result[0]["warnings"]] == [stale_card.id]
 
 
+def test_payment_detection_v2_rejects_false_positive_phrases_and_respects_confirmed_type():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        card = Account(display_name="Card", account_type="credit_card")
+        db.add(card)
+        db.flush()
+        rows = [
+            _transaction(card.id, 2900, date(2026, 7, 1), "LATE FEE FOR PAYMENT DUE"),
+            _transaction(card.id, 4927, date(2026, 7, 1), "RETURN PROTECTION BENEFIT PAYMENT"),
+            _transaction(card.id, 103624, date(2026, 7, 1), "PAYMENT FROM CHK 6768"),
+            _transaction(card.id, 5000, date(2026, 7, 1), "ONLINE PAYMENT"),
+            _transaction(card.id, 675, date(2026, 7, 1), "COFFEE ONLINE PAYMENT"),
+        ]
+        rows[3].review_status = "confirmed"
+        rows[3].transaction_type = "expense"
+        for index, row in enumerate(rows):
+            row.source_hash = f"payment-v2-{index}"
+        db.add_all(rows)
+        db.commit()
+
+        warnings = list_payment_verification(db, as_of=date(2026, 7, 13))[0]["warnings"]
+
+        assert {warning["transaction_id"] for warning in warnings} == {rows[2].id, rows[4].id}
+
+
+def test_payment_warning_dismissal_is_persistent_and_undoable():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        card = Account(display_name="Card", account_type="credit_card")
+        db.add(card)
+        db.flush()
+        payment = _transaction(card.id, 103624, date(2026, 7, 1), "PAYMENT FROM CHK 6768")
+        payment.source_hash = "dismiss-payment"
+        db.add(payment)
+        db.commit()
+
+        dismissed = dismiss_payment_verification(db, transaction_id=payment.id)
+        assert db.query(PaymentVerificationDismissal).count() == 1
+        assert list_payment_verification(db, as_of=date(2026, 7, 13))[0]["warnings"] == []
+
+        undo_operation(db, operation_id=dismissed["operation_id"], actor="local-user")
+        db.commit()
+
+        assert db.query(PaymentVerificationDismissal).count() == 0
+        assert [warning["transaction_id"] for warning in list_payment_verification(db, as_of=date(2026, 7, 13))[0]["warnings"]] == [payment.id]
+
+
+def test_retyping_payment_auto_dismisses_in_same_undoable_operation():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        card = Account(display_name="Card", account_type="credit_card")
+        db.add(card)
+        db.flush()
+        payment = _transaction(card.id, 103624, date(2026, 7, 1), "PAYMENT FROM CHK 6768")
+        payment.transaction_type = "credit_card_payment"
+        payment.source_hash = "retype-payment"
+        db.add(payment)
+        db.commit()
+        request = Request({"type": "http", "headers": [(b"x-csrf-token", b"csrf")]})
+        session = SessionToken(user_id=7, csrf_token="csrf")
+
+        result = update_transaction(payment.id, TransactionReviewUpdate(transaction_type=TransactionType.EXPENSE), request, session, db)
+
+        assert payment.transaction_type == "expense"
+        assert db.query(PaymentVerificationDismissal).count() == 1
+        undo_operation(db, operation_id=result["operation_id"], actor="local-user")
+        db.commit()
+        assert payment.transaction_type == "credit_card_payment"
+        assert db.query(PaymentVerificationDismissal).count() == 0
+
+
 def test_confirming_card_payment_clears_categories_on_both_sides():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -155,3 +233,58 @@ def test_confirming_card_payment_clears_categories_on_both_sides():
         assert bank_row.transaction_type == card_row.transaction_type == "credit_card_payment"
         assert bank_row.category_id is None
         assert card_row.category_id is None
+
+
+def test_external_payment_creates_confirmed_mirror_counts_as_matched_and_is_undoable():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        card = Account(display_name="Card", account_type="credit_card")
+        db.add(card)
+        db.flush()
+        payment = _transaction(card.id, 103624, date(2026, 7, 1), "PAYMENT FROM OLD CHECKING")
+        payment.source_hash = "external-payment-card"
+        payment.transaction_type = "credit_card_payment"
+        db.add(payment)
+        db.commit()
+
+        result = settle_payment_from_external(db, transaction_id=payment.id, external_account_name="Old Chase")
+
+        external = db.query(Account).filter(Account.account_type == "external").one()
+        mirror = db.query(Transaction).filter(Transaction.account_id == external.id).one()
+        link = db.query(TransferLink).one()
+        assert external.net_worth_inclusion == "never"
+        assert mirror.amount_cents == -payment.amount_cents
+        assert mirror.transaction_type == "transfer"
+        assert link.confirmed is True
+        verification = list_payment_verification(db, as_of=date(2026, 7, 13))[0]
+        assert verification["matched_payments"] == 1
+        assert verification["external_payments"] == 1
+        assert verification["warnings"] == []
+
+        undo_operation(db, operation_id=result["operation_id"], actor="local-user")
+        db.commit()
+        assert db.query(TransferLink).count() == 0
+        assert db.query(Transaction).filter(Transaction.account_id == external.id, Transaction.deleted_at.is_(None)).count() == 0
+        assert db.query(Account).filter(Account.account_type == "external").count() == 0
+
+
+def test_external_payment_can_reuse_an_existing_untracked_account():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        card = Account(display_name="Card", account_type="credit_card")
+        external = Account(display_name="Old Chase", account_type="external", net_worth_inclusion="never")
+        db.add_all([card, external])
+        db.flush()
+        payment = _transaction(card.id, 50000, date(2026, 7, 1), "ONLINE PAYMENT")
+        payment.source_hash = "reuse-external-payment"
+        db.add(payment)
+        db.commit()
+
+        result = settle_payment_from_external(db, transaction_id=payment.id, external_account_id=external.id)
+        assert result["external_account_id"] == external.id
+
+        undo_operation(db, operation_id=result["operation_id"], actor="local-user")
+        db.commit()
+        assert db.get(Account, external.id) is not None

@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, timedelta
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
-from ..models import Account, RefundLink, Transaction, TransferLink
+from ..models import Account, PaymentVerificationDismissal, RefundLink, Transaction, TransferLink
 from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .transaction_queries import get_live_transaction, live_transaction_select
 
 
 TRANSFER_MATCH_STATUSES = {"needs_review", "suggested", "possible_duplicate", "confirmed"}
 LONG_WINDOW_ACCOUNT_TYPES = {"brokerage", "retirement"}
+PAYMENT_HEURISTIC_STATUSES = {"needs_review", "suggested"}
+PAYMENT_CONTEXT_TERMS = ("PAYMENT RECEIVED", "ONLINE PAYMENT", "PAYMENT FROM", "AUTOPAY", "ACH PMT")
+PAYMENT_EXCLUSION_TERMS = ("LATE FEE", "FEE", "INTEREST", "RETURN", "BENEFIT", "REWARD", "PROTECTION")
+PAYMENT_DISMISSAL_REASONS = {"not_a_payment", "external_source", "other"}
 
 
 @dataclass(frozen=True)
@@ -141,6 +147,7 @@ def list_payment_verification(db: Session, as_of: date | None = None) -> list[di
     as_of = as_of or date.today()
     cards = db.scalars(select(Account).where(Account.status == "active", Account.account_type == "credit_card").order_by(Account.display_name, Account.id)).all()
     confirmed_links = db.scalars(select(TransferLink).where(TransferLink.confirmed.is_(True))).all()
+    dismissed_ids = set(db.scalars(select(PaymentVerificationDismissal.transaction_id)).all())
     linked_ids = {link.from_transaction_id for link in confirmed_links} | {link.to_transaction_id for link in confirmed_links}
     linked_transactions = {
         transaction.id: transaction
@@ -160,7 +167,7 @@ def list_payment_verification(db: Session, as_of: date | None = None) -> list[di
                 continue
             card_transaction = left if left.account_id == card.id else right if right.account_id == card.id else None
             other_transaction = right if card_transaction is left else left if card_transaction is right else None
-            if card_transaction and other_transaction and card_transaction.amount_cents > 0 and other_transaction.amount_cents < 0 and account_types.get(other_transaction.account_id) in {"checking", "savings", "cash"}:
+            if card_transaction and other_transaction and card_transaction.amount_cents > 0 and other_transaction.amount_cents < 0 and account_types.get(other_transaction.account_id) in {"checking", "savings", "cash", "external"}:
                 matched_count += 1
                 matched_dates.append(max(card_transaction.transaction_date, other_transaction.transaction_date))
         possible_payments = db.scalars(
@@ -179,7 +186,7 @@ def list_payment_verification(db: Session, as_of: date | None = None) -> list[di
                 "age_days": (as_of - transaction.transaction_date).days,
             }
             for transaction in possible_payments
-            if transaction.id not in linked_ids and _looks_like_card_payment(transaction)
+            if transaction.id not in linked_ids and transaction.id not in dismissed_ids and _looks_like_card_payment(transaction)
         ]
         results.append({
             "account_id": card.id,
@@ -187,8 +194,145 @@ def list_payment_verification(db: Session, as_of: date | None = None) -> list[di
             "matched_payments": matched_count,
             "latest_matched_date": max(matched_dates).isoformat() if matched_dates else None,
             "warnings": warnings,
+            "external_payments": sum(
+                1
+                for link in confirmed_links
+                if any(
+                    transaction and transaction.account_id == card.id
+                    for transaction in (linked_transactions.get(link.from_transaction_id), linked_transactions.get(link.to_transaction_id))
+                )
+                and any(
+                    transaction and account_types.get(transaction.account_id) == "external"
+                    for transaction in (linked_transactions.get(link.from_transaction_id), linked_transactions.get(link.to_transaction_id))
+                )
+            ),
         })
     return results
+
+
+def settle_payment_from_external(
+    db: Session,
+    *,
+    transaction_id: int,
+    external_account_id: int | None = None,
+    external_account_name: str | None = None,
+    actor: str = "local-user",
+) -> dict:
+    card_transaction = get_live_transaction(db, transaction_id)
+    if not card_transaction:
+        raise LookupError("Card payment transaction not found")
+    card_account = db.get(Account, card_transaction.account_id)
+    if not card_account or card_account.account_type != "credit_card" or card_transaction.amount_cents <= 0:
+        raise ValueError("Choose a positive transaction from a credit-card account")
+    if db.scalar(select(TransferLink.id).where(
+        (TransferLink.from_transaction_id == card_transaction.id) | (TransferLink.to_transaction_id == card_transaction.id)
+    ).limit(1)):
+        raise ValueError("This card payment is already linked")
+
+    changes: list[MutationChange] = []
+    created_account_change: MutationChange | None = None
+    external_account = db.get(Account, external_account_id) if external_account_id else None
+    if external_account_id and (not external_account or external_account.status != "active" or external_account.account_type != "external"):
+        raise ValueError("Choose an active untracked account")
+    if external_account is None:
+        external_account = Account(
+            display_name=(external_account_name or "External").strip(),
+            account_type="external",
+            net_worth_inclusion="never",
+        )
+        db.add(external_account)
+        db.flush()
+        created_account_change = MutationChange(external_account.id, None, full_values(external_account), entity_type="account")
+
+    mirror = Transaction(
+        account_id=external_account.id,
+        transaction_date=card_transaction.transaction_date,
+        amount_cents=-card_transaction.amount_cents,
+        currency=card_transaction.currency,
+        raw_description=f"External: {card_transaction.raw_description}",
+        normalized_payee=card_transaction.normalized_payee,
+        transaction_type="transfer",
+        review_status="confirmed",
+        source_hash=f"external-payment:{card_transaction.id}:{uuid4().hex}",
+        source_reference=f"external-payment:{card_transaction.id}",
+    )
+    db.add(mirror)
+    db.flush()
+    mirror_change = MutationChange(mirror.id, None, full_values(mirror), entity_type="transaction")
+
+    card_before = changed_values(card_transaction, ["transaction_type", "review_status", "category_id"])
+    card_transaction.transaction_type = "credit_card_payment"
+    card_transaction.review_status = "confirmed"
+    card_transaction.category_id = None
+    card_change = MutationChange(card_transaction.id, card_before, changed_values(card_transaction, ["transaction_type", "review_status", "category_id"]), entity_type="transaction")
+    link = TransferLink(from_transaction_id=mirror.id, to_transaction_id=card_transaction.id, match_confidence=100, confirmed=True)
+    db.add(link)
+    db.flush()
+    changes.extend([
+        MutationChange(link.id, None, full_values(link), entity_type="transfer_link"),
+        mirror_change,
+        card_change,
+    ])
+    if created_account_change:
+        changes.append(created_account_change)
+
+    operation_id = journal_mutation(
+        db,
+        kind="external_payment",
+        entity_type="mixed",
+        actor=actor,
+        description=f'Marked "{card_transaction.raw_description}" paid from {external_account.display_name}',
+        changes=changes,
+    )
+    record_audit_event(db, "external_payment", actor, "transaction", str(card_transaction.id), {"external_account_id": external_account.id, "mirror_transaction_id": mirror.id, "transfer_link_id": link.id, "operation_id": operation_id})
+    db.commit()
+    return {"ok": True, "operation_id": operation_id, "external_account_id": external_account.id, "mirror_transaction_id": mirror.id, "transfer_link_id": link.id}
+
+
+def dismiss_payment_verification(db: Session, *, transaction_id: int, reason: str = "not_a_payment", actor: str = "local-user") -> dict:
+    if reason not in PAYMENT_DISMISSAL_REASONS:
+        raise ValueError("Choose a valid payment-warning dismissal reason")
+    transaction = get_live_transaction(db, transaction_id)
+    if not transaction:
+        raise LookupError("Transaction not found")
+    account = db.get(Account, transaction.account_id)
+    if not account or account.account_type != "credit_card" or transaction.amount_cents <= 0:
+        raise ValueError("Only positive credit-card transactions can be dismissed from payment verification")
+    existing = db.scalar(select(PaymentVerificationDismissal).where(PaymentVerificationDismissal.transaction_id == transaction.id))
+    if existing:
+        return {"id": existing.id, "transaction_id": transaction.id, "reason": existing.reason, "operation_id": None, "already_dismissed": True}
+    dismissal = PaymentVerificationDismissal(transaction_id=transaction.id, reason=reason)
+    db.add(dismissal)
+    db.flush()
+    operation_id = journal_mutation(
+        db,
+        kind="create",
+        entity_type="payment_verification_dismissal",
+        actor=actor,
+        description=f'Dismissed payment warning for "{transaction.raw_description}"',
+        changes=[MutationChange(dismissal.id, None, full_values(dismissal), entity_type="payment_verification_dismissal")],
+    )
+    record_audit_event(db, "payment_verification_dismiss", actor, "transaction", str(transaction.id), {"reason": reason, "operation_id": operation_id})
+    db.commit()
+    return {"id": dismissal.id, "transaction_id": transaction.id, "reason": reason, "operation_id": operation_id, "already_dismissed": False}
+
+
+def auto_dismiss_reclassified_payment(db: Session, transaction: Transaction) -> PaymentVerificationDismissal | None:
+    if transaction.transaction_type == "credit_card_payment" or transaction.amount_cents <= 0:
+        return None
+    description = transaction.raw_description.upper()
+    if not _contains_payment_phrase(description, PAYMENT_CONTEXT_TERMS):
+        return None
+    account = db.get(Account, transaction.account_id)
+    if not account or account.account_type != "credit_card":
+        return None
+    existing = db.scalar(select(PaymentVerificationDismissal).where(PaymentVerificationDismissal.transaction_id == transaction.id))
+    if existing:
+        return None
+    dismissal = PaymentVerificationDismissal(transaction_id=transaction.id, reason="not_a_payment")
+    db.add(dismissal)
+    db.flush()
+    return dismissal
 
 
 def confirm_transfer_link(db: Session, link: TransferLink, actor: str = "local-user") -> dict:
@@ -292,4 +436,12 @@ def _transaction_payload(transaction: Transaction) -> dict:
 
 def _looks_like_card_payment(transaction: Transaction) -> bool:
     description = transaction.raw_description.upper()
-    return transaction.transaction_type == "credit_card_payment" or "PAYMENT" in description or "AUTOPAY" in description
+    if transaction.transaction_type == "credit_card_payment":
+        return True
+    if transaction.review_status not in PAYMENT_HEURISTIC_STATUSES:
+        return False
+    return _contains_payment_phrase(description, PAYMENT_CONTEXT_TERMS) and not _contains_payment_phrase(description, PAYMENT_EXCLUSION_TERMS)
+
+
+def _contains_payment_phrase(description: str, phrases: tuple[str, ...]) -> bool:
+    return any(re.search(rf"(?<![A-Z0-9]){re.escape(phrase)}(?![A-Z0-9])", description) for phrase in phrases)

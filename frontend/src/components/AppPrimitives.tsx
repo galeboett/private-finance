@@ -5,13 +5,14 @@ import { useEffect, useRef } from "react";
 import type { TxnFilter } from "../lib/filters";
 import { useDrillDown } from "../lib/useDrillDown";
 
-type Toast = { tone: "success" | "error" | "info"; message: string; operationId?: string; unconflictedOnly?: boolean };
+type Toast = { tone: "success" | "error" | "info"; message: string; operationId?: string; unconflictedOnly?: boolean; action?: { label: string } };
 type FilterOption = { value: string; label: string };
 
-export function UndoToast({ toast, busy, onUndo, onDismiss }: { toast: Toast; busy: boolean; onUndo: (operationId: string, unconflictedOnly: boolean) => void; onDismiss: () => void }) {
+export function UndoToast({ toast, busy, onUndo, onAction, onDismiss }: { toast: Toast; busy: boolean; onUndo: (operationId: string, unconflictedOnly: boolean) => void; onAction?: () => void; onDismiss: () => void }) {
   return <div className={`toast ${toast.tone}`} style={{ margin: "16px 20px 0" }} role="status" aria-live="polite">
     {toast.tone === "success" ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
     <span>{toast.message}</span>
+    {toast.action && onAction ? <button className="toastAction primary" onClick={onAction}>{toast.action.label}</button> : null}
     {toast.operationId ? <button className="toastAction" onClick={() => onUndo(toast.operationId!, Boolean(toast.unconflictedOnly))} disabled={busy}>{toast.unconflictedOnly ? "Undo safe rows" : "Undo"}</button> : null}
     <button className="toastClose" onClick={onDismiss} aria-label="Dismiss notification"><X size={14} /></button>
   </div>;

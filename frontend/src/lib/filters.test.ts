@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeTxnFilter, encodeTxnFilter, readAppRoute, routeUrl, type TxnFilter } from "./filters";
+import { decodeTxnFilter, encodeTxnFilter, freshAccountNavigationFilter, readAppRoute, routeUrl, type TxnFilter } from "./filters";
 
 describe("transaction filter URL codec", () => {
   it("round-trips every supported non-default filter", () => {
@@ -28,5 +28,12 @@ describe("transaction filter URL codec", () => {
     const parsed = new URL(url, "http://localhost");
     expect(url).toBe("/accounts/42/transactions?types=expense&dateFrom=2026-07-01");
     expect(readAppRoute(parsed)).toEqual({ view: "account", accountId: 42, filters: { dateFrom: "2026-07-01", types: ["expense"] } });
+  });
+
+  it("resets filters for left-nav account intent while drill-down filters stay intact", () => {
+    const investigation: TxnFilter = { accounts: ["4"], search: "PAYMENT FROM CHK", dateFrom: "2026-05-21", dateTo: "2026-05-21", types: ["credit_card_payment"] };
+    expect(freshAccountNavigationFilter(12)).toEqual({ accounts: ["12"] });
+    expect(routeUrl("account", 12, freshAccountNavigationFilter(12))).toBe("/accounts/12/transactions?accounts=12");
+    expect(decodeTxnFilter(encodeTxnFilter(investigation))).toEqual(investigation);
   });
 });

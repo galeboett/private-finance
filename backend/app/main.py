@@ -22,14 +22,15 @@ from .bootstrap import initialize_database
 from .config import settings
 from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
-from .models import Account, AppUser, Category, CategoryRule, ExpenseAllocation, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, RefundLink, SecurityMetadata, SecurityPrice, SessionToken, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
+from .models import Account, AppUser, Category, CategoryRule, DuplicatePairDecision, ExpenseAllocation, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, PaymentVerificationDismissal, RefundLink, SecurityMetadata, SecurityPrice, SessionToken, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, HoldingLotCreate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, ManualTransactionCreate, MonthlyAllocationRequest, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, RefundConfirmRequest, RefundLinkCreate, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkDuplicateResolutionRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, DuplicateSelectionPreviewRequest, DuplicateSelectionResolutionRequest, ExternalPaymentRequest, HistoricalRefundBulkRequest, HoldingLotCreate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, ManualTransactionCreate, MonthlyAllocationRequest, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, PaymentVerificationDismissRequest, RefundConfirmRequest, RefundLinkCreate, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
 from .services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_timeseries
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
-from .services.duplicates import pending_duplicate_pairs, resolve_all_exact_duplicates, resolve_duplicate
+from .services.duplicates import duplicate_queue_summary, link_historical_refund_pairs, pending_duplicate_pairs, preview_duplicate_selection, preview_historical_refund_links, preview_safe_duplicate_resolution, resolve_all_exact_duplicates, resolve_duplicate, resolve_duplicate_selection, resolve_safe_duplicate_reimports
+from .services.duplicate_scan import scan_ledger_duplicates
 from .services.importers import annotate_import_interpretation, commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
 from .services.import_inbox import confirm_pending_import, discard_pending_import, inbox_directory, pending_import_batches, scan_import_inbox, stage_uploaded_import
 from .services.history_cleanup import apply_categorized_history_sign_cleanup, preview_categorized_history_sign_cleanup
@@ -39,10 +40,10 @@ from .services.reconciliation import list_reconciliation_statuses, reconciliatio
 from .services.refunds import OverRefundError, confirm_refund_link, create_manual_refund_link, create_refund_suggestions, delete_refund_link, list_manual_refund_candidates, list_refund_links, reject_refund_link
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
 from .services.sign_profiles import profile_payload, resolution_payload, resolve_sign_preview, save_sign_profile
-from .services.snapshots import net_worth_contributors, net_worth_series, net_worth_stats, refresh_holding_net_worth_snapshot, upsert_net_worth_snapshot
+from .services.snapshots import account_is_anchored, current_account_value, net_worth_contributors, net_worth_series, net_worth_stats, net_worth_unanchored_accounts, refresh_holding_net_worth_snapshot, upsert_net_worth_snapshot
 from .services.transaction_filters import parse_csv_ints, parse_csv_values, transaction_filter_conditions
 from .services.transaction_queries import get_live_transaction, live_transaction_filters, live_transaction_select
-from .services.transfers import confirm_transfer_link, create_transfer_suggestions, list_payment_verification, list_unconfirmed_transfers, reject_transfer_link
+from .services.transfers import auto_dismiss_reclassified_payment, confirm_transfer_link, create_transfer_suggestions, dismiss_payment_verification, list_payment_verification, list_unconfirmed_transfers, reject_transfer_link, settle_payment_from_external
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
@@ -75,6 +76,14 @@ def normalize_transaction_updates(updates: dict) -> dict:
     if updates.get("transaction_type") in CATEGORYLESS_TRANSACTION_TYPES:
         updates["category_id"] = None
     return updates
+
+
+def append_payment_reclassification_dismissal(db: Session, transaction: Transaction, updates: dict, changes: list[MutationChange]) -> None:
+    if "transaction_type" not in updates or transaction.transaction_type == TransactionType.CREDIT_CARD_PAYMENT.value:
+        return
+    dismissal = auto_dismiss_reclassified_payment(db, transaction)
+    if dismissal:
+        changes.append(MutationChange(dismissal.id, None, full_values(dismissal), entity_type="payment_verification_dismissal"))
 
 
 def normalized_rule_category(db: Session, category_id: int | None, transaction_type: TransactionType | str) -> int | None:
@@ -236,6 +245,7 @@ def operation_bulk_update(payload: OperationBulkUpdateRequest, request: Request,
         for key, value in updates.items():
             setattr(transaction, key, value)
         changes.append(MutationChange(transaction.id, before, changed_values(transaction, updates.keys())))
+        append_payment_reclassification_dismissal(db, transaction, updates, changes)
     operation_id = journal_mutation(db, kind="bulk_update", entity_type="transaction", actor=actor_for_session(session), description=f"Updated {len(transactions)} transactions", changes=changes)
     db.commit()
     return {"ok": True, "updated": len(transactions), "operation_id": operation_id}
@@ -319,6 +329,7 @@ def bootstrap_state(db: Session = Depends(get_db)):
     return {
         "configured": ensure_setup_state(db),
         "categories": [{"id": category.id, "key": category.key, "label": category.label, "parent_id": category.parent_id} for category in db.scalars(select(Category).order_by(Category.label.asc())).all()],
+        "net_worth_notice": net_worth_unanchored_accounts(db),
     }
 
 
@@ -337,6 +348,7 @@ def create_account(payload: AccountCreate, request: Request, session: SessionTok
         account_type=payload.account_type,
         currency=payload.currency,
         last_four=payload.last_four,
+        net_worth_inclusion="never" if payload.account_type == "external" else payload.net_worth_inclusion,
     )
     db.add(account)
     db.flush()
@@ -363,13 +375,29 @@ def list_accounts(session: SessionToken = Depends(current_session), db: Session 
     result = []
     recent_activity_start = date.today() - timedelta(days=30)
     for account in accounts:
+        anchored = account_is_anchored(db, account.id)
         latest_running_balance = db.scalar(
             live_transaction_select(Transaction.account_id == account.id, Transaction.running_balance_cents.is_not(None))
             .order_by(Transaction.transaction_date.desc(), Transaction.id.desc())
             .limit(1)
         )
         latest_holding_date = db.scalar(select(func.max(HoldingSnapshot.snapshot_date)).where(HoldingSnapshot.account_id == account.id))
-        if account.account_type in {"brokerage", "retirement"} and latest_holding_date:
+        latest_anchor_date = max(
+            filter(None, [
+                db.scalar(select(func.max(NetWorthSnapshot.snapshot_date)).where(NetWorthSnapshot.account_id == account.id)),
+                db.scalar(select(func.max(StatementCheckpoint.statement_date)).where(StatementCheckpoint.account_id == account.id)),
+            ]),
+            default=None,
+        )
+        if account.account_type == "external":
+            sidebar_balance_cents = None
+            sidebar_balance_kind = "excluded"
+            sidebar_balance_as_of = None
+        elif account.net_worth_inclusion == "auto" and not anchored:
+            sidebar_balance_cents = None
+            sidebar_balance_kind = "unanchored"
+            sidebar_balance_as_of = None
+        elif account.account_type in {"brokerage", "retirement"} and latest_holding_date:
             sidebar_balance_cents = db.scalar(
                 select(func.coalesce(func.sum(HoldingSnapshot.market_value_cents), 0)).where(
                     HoldingSnapshot.account_id == account.id, HoldingSnapshot.snapshot_date == latest_holding_date
@@ -377,6 +405,10 @@ def list_accounts(session: SessionToken = Depends(current_session), db: Session 
             )
             sidebar_balance_kind = "investment_snapshot"
             sidebar_balance_as_of = latest_holding_date.isoformat()
+        elif anchored:
+            sidebar_balance_cents = current_account_value(db, account)
+            sidebar_balance_kind = "anchored_balance"
+            sidebar_balance_as_of = latest_anchor_date.isoformat() if latest_anchor_date else None
         elif latest_running_balance:
             sidebar_balance_cents = latest_running_balance.running_balance_cents
             sidebar_balance_kind = "running_balance"
@@ -401,7 +433,9 @@ def list_accounts(session: SessionToken = Depends(current_session), db: Session 
             "currency": account.currency,
             "status": account.status,
             "last_four": account.last_four,
-            "sidebar_balance_cents": sidebar_balance_cents or 0,
+            "net_worth_inclusion": account.net_worth_inclusion,
+            "is_anchored": anchored,
+            "sidebar_balance_cents": sidebar_balance_cents,
             "sidebar_balance_kind": sidebar_balance_kind,
             "sidebar_balance_as_of": sidebar_balance_as_of,
         })
@@ -444,12 +478,16 @@ def update_account(account_id: int, payload: AccountUpdate, request: Request, se
         raise HTTPException(status_code=404, detail="Account not found")
     updates = payload.model_dump(exclude_unset=True)
     changed_fields = {"institution_id" if key == "institution_name" else key for key in updates}
+    if updates.get("account_type") == "external":
+        changed_fields.add("net_worth_inclusion")
     before = changed_values(account, changed_fields)
     if "institution_name" in updates:
         institution = upsert_institution(db, updates.pop("institution_name"))
         account.institution_id = institution.id if institution else None
     for key, value in updates.items():
         setattr(account, key, value)
+    if account.account_type == "external":
+        account.net_worth_inclusion = "never"
     operation_id = journal_mutation(db, kind="update", entity_type="account", actor=actor_for_session(session), description=f'Updated account "{account.display_name}"', changes=[MutationChange(account.id, before, changed_values(account, changed_fields))])
     record_audit_event(db, "account_update", "local-user", "account", str(account.id), payload.model_dump(exclude_unset=True))
     db.commit()
@@ -540,6 +578,8 @@ def _delete_transaction_row(db: Session, transaction: Transaction) -> None:
     db.execute(delete(ExpenseAllocation).where(ExpenseAllocation.transaction_id == transaction.id))
     db.execute(delete(TransferLink).where((TransferLink.from_transaction_id == transaction.id) | (TransferLink.to_transaction_id == transaction.id)))
     db.execute(delete(RefundLink).where((RefundLink.expense_transaction_id == transaction.id) | (RefundLink.refund_transaction_id == transaction.id)))
+    db.execute(delete(PaymentVerificationDismissal).where(PaymentVerificationDismissal.transaction_id == transaction.id))
+    db.execute(delete(DuplicatePairDecision).where((DuplicatePairDecision.transaction_a_id == transaction.id) | (DuplicatePairDecision.transaction_b_id == transaction.id)))
     record_audit_event(
         db,
         "transaction_delete",
@@ -808,6 +848,8 @@ async def imports_preview(account_id: int, sign_convention: Literal["auto", "pre
     account = db.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    if account.account_type == "external":
+        raise HTTPException(status_code=400, detail="Untracked accounts do not accept imports")
     content = await file.read()
     if len(content) > settings.import_file_size_limit_mb * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File too large")
@@ -831,6 +873,8 @@ async def imports_commit(request: Request, account_id: int, preset_id: int | Non
     account = db.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    if account.account_type == "external":
+        raise HTTPException(status_code=400, detail="Untracked accounts do not accept imports")
     preset = db.get(ImportPreset, preset_id) if preset_id else None
     content = await file.read()
     if len(content) > settings.import_file_size_limit_mb * 1024 * 1024:
@@ -890,6 +934,8 @@ async def stage_manual_import(request: Request, account_id: int, sign_convention
     account = db.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    if account.account_type == "external":
+        raise HTTPException(status_code=400, detail="Untracked accounts do not accept imports")
     content = await file.read()
     try:
         result = stage_uploaded_import(db, account=account, filename=file.filename or "import.csv", content=content, sign_convention=sign_convention)
@@ -1205,6 +1251,7 @@ def bulk_update_transactions(payload: BulkTransactionUpdateRequest, request: Req
             if transaction_type.value in CATEGORYLESS_TRANSACTION_TYPES:
                 transaction.category_id = None
             journal_changes.append(MutationChange(transaction.id, before, changed_values(transaction, fields)))
+            append_payment_reclassification_dismissal(db, transaction, {"transaction_type": transaction_type.value}, journal_changes)
     elif field == "category":
         try:
             category_id = int(value)
@@ -1333,13 +1380,15 @@ def update_transaction(transaction_id: int, payload: TransactionReviewUpdate, re
     for key, value in updates.items():
         setattr(transaction, key, value)
     actor = actor_for_session(session)
+    changes = [MutationChange(transaction.id, before, changed_values(transaction, updates.keys()))]
+    append_payment_reclassification_dismissal(db, transaction, updates, changes)
     operation_id = journal_mutation(
         db,
         kind="update",
         entity_type="transaction",
         actor=actor,
         description=f'Updated transaction "{transaction.raw_description}"',
-        changes=[MutationChange(transaction.id, before, changed_values(transaction, updates.keys()))],
+        changes=changes,
     )
     record_audit_event(db, "transaction_update", actor, "transaction", str(transaction.id), {**updates, "operation_id": operation_id})
     db.commit()
@@ -1549,8 +1598,84 @@ def review_inbox(session: SessionToken = Depends(current_session), db: Session =
 
 
 @app.get("/api/duplicates/pending")
-def list_pending_duplicates(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
-    return pending_duplicate_pairs(db)
+def list_pending_duplicates(limit: int = Query(default=25, ge=1, le=100), offset: int = Query(default=0, ge=0), tier: Literal["exact", "cross_source", "probable", "mirrored", "import"] | None = None, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return pending_duplicate_pairs(db, limit=limit, offset=offset, tier_filter=tier)
+
+
+@app.get("/api/duplicates/summary")
+def get_duplicate_queue_summary(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return duplicate_queue_summary(db)
+
+
+@app.get("/api/duplicates/bulk-preview")
+def get_duplicate_bulk_preview(strategy: Literal["keep_existing", "use_new_import"], session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return preview_safe_duplicate_resolution(db, strategy=strategy)
+
+
+@app.post("/api/duplicates/resolve-safe")
+def resolve_safe_duplicates(payload: BulkDuplicateResolutionRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    try:
+        result = resolve_safe_duplicate_reimports(db, strategy=payload.strategy, preview_token=payload.preview_token, actor=actor_for_session(session))
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    db.commit()
+    return result
+
+
+@app.get("/api/duplicates/historical-refunds-preview")
+def get_historical_refund_bulk_preview(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return preview_historical_refund_links(db)
+
+
+@app.post("/api/duplicates/link-historical-refunds")
+def link_historical_refunds(payload: HistoricalRefundBulkRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    try:
+        result = link_historical_refund_pairs(db, preview_token=payload.preview_token, actor=actor_for_session(session))
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    db.commit()
+    return result
+
+
+@app.post("/api/duplicates/selection-preview")
+def get_duplicate_selection_preview(payload: DuplicateSelectionPreviewRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    try:
+        return preview_duplicate_selection(db, transaction_ids=payload.transaction_ids, action=payload.action)
+    except (LookupError, ValueError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/duplicates/resolve-selection")
+def resolve_selected_duplicates(payload: DuplicateSelectionResolutionRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    try:
+        result = resolve_duplicate_selection(
+            db,
+            transaction_ids=payload.transaction_ids,
+            action=payload.action,
+            preview_token=payload.preview_token,
+            actor=actor_for_session(session),
+        )
+    except (LookupError, ValueError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    db.commit()
+    return result
+
+
+@app.get("/api/duplicates/scan/results")
+def ledger_duplicate_scan_results(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return pending_duplicate_pairs(db, limit=25)
+
+
+@app.post("/api/duplicates/scan")
+def scan_duplicates(request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    result = scan_ledger_duplicates(db, actor=actor_for_session(session))
+    db.commit()
+    return {**result, "queue": duplicate_queue_summary(db)}
 
 
 @app.post("/api/duplicates/resolve-exact")
@@ -1612,12 +1737,45 @@ def apply_rule(rule_id: int, payload: RuleApplyRequest, request: Request, sessio
         if apply_rule_to_transaction(rule, transaction):
             updated += 1
             changes.append(MutationChange(transaction.id, before, changed_values(transaction, ["category_id", "transaction_type", "review_status"])))
+            append_payment_reclassification_dismissal(db, transaction, {"transaction_type": rule.suggested_transaction_type}, changes)
 
     operation_id = journal_mutation(db, kind="bulk_update", entity_type="transaction", actor=actor_for_session(session), description=f'Applied rule "{rule.match_text}" to {updated} transactions', changes=changes) if changes else None
 
     record_audit_event(db, "rule_apply", "local-user", "category_rule", str(rule.id), {"scope": payload.scope, "matched": matched, "updated": updated})
     db.commit()
     return {"matched": matched, "updated": updated, "operation_id": operation_id}
+
+
+@app.post("/api/rules/{rule_id}/apply-to/{transaction_id}")
+def apply_rule_to_row(rule_id: int, transaction_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    rule = db.get(CategoryRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    transaction = get_live_transaction(db, transaction_id)
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if not rule_matches_transaction(rule, transaction):
+        raise HTTPException(status_code=400, detail="This rule does not match the selected transaction")
+    fields = ["category_id", "transaction_type", "review_status"]
+    before = changed_values(transaction, fields)
+    changed = apply_rule_to_transaction(rule, transaction)
+    changes: list[MutationChange] = []
+    if changed:
+        changes.append(MutationChange(transaction.id, before, changed_values(transaction, fields), entity_type="transaction"))
+        append_payment_reclassification_dismissal(db, transaction, {"transaction_type": rule.suggested_transaction_type}, changes)
+    actor = actor_for_session(session)
+    operation_id = journal_mutation(
+        db,
+        kind="update",
+        entity_type="mixed" if len({change.entity_type for change in changes}) > 1 else "transaction",
+        actor=actor,
+        description=f'Applied rule "{rule.match_text}" to one transaction',
+        changes=changes,
+    ) if changes else None
+    record_audit_event(db, "rule_apply_to_transaction", actor, "category_rule", str(rule.id), {"transaction_id": transaction.id, "updated": changed, "operation_id": operation_id})
+    db.commit()
+    return {"matched": 1, "updated": 1 if changed else 0, "transaction_id": transaction.id, "operation_id": operation_id}
 
 
 @app.get("/api/rules/{rule_id}/preview")
@@ -1725,6 +1883,34 @@ def get_unconfirmed_transfers(session: SessionToken = Depends(current_session), 
 @app.get("/api/transfers/payments")
 def get_payment_verification(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     return list_payment_verification(db)
+
+
+@app.post("/api/transfers/payments/{transaction_id}/dismiss")
+def dismiss_payment_warning(transaction_id: int, payload: PaymentVerificationDismissRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    try:
+        return dismiss_payment_verification(db, transaction_id=transaction_id, reason=payload.reason, actor=actor_for_session(session))
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/transfers/payments/{transaction_id}/external")
+def settle_external_payment(transaction_id: int, payload: ExternalPaymentRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    try:
+        return settle_payment_from_external(
+            db,
+            transaction_id=transaction_id,
+            external_account_id=payload.external_account_id,
+            external_account_name=payload.external_account_name,
+            actor=actor_for_session(session),
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.post("/api/transfers/detect")
@@ -1936,6 +2122,8 @@ def save_manual_net_worth_snapshot(payload: NetWorthSnapshotUpsert, request: Req
     account = db.get(Account, payload.account_id)
     if not account or account.status != "active" or account.last_four == UNASSIGNED_ACCOUNT_MARKER:
         raise HTTPException(status_code=400, detail="Choose an active account")
+    if account.account_type == "external":
+        raise HTTPException(status_code=400, detail="Untracked accounts are excluded from net worth")
     snapshot = db.scalar(select(NetWorthSnapshot).where(NetWorthSnapshot.account_id == payload.account_id, NetWorthSnapshot.snapshot_date == payload.snapshot_date))
     before = full_values(snapshot) if snapshot else None
     snapshot = upsert_net_worth_snapshot(db, account_id=payload.account_id, snapshot_date=payload.snapshot_date, balance_cents=payload.balance_cents, source="manual")
@@ -2159,6 +2347,8 @@ APP_EXPORT_TABLES = [
     ExpenseAllocation,
     TransferLink,
     RefundLink,
+    PaymentVerificationDismissal,
+    DuplicatePairDecision,
     HoldingSnapshot,
     HoldingLot,
     NetWorthSnapshot,
@@ -2179,6 +2369,8 @@ APP_EXPORT_ENTITY_TYPES = {
     ExpenseAllocation: "expense_allocation",
     TransferLink: "transfer_link",
     RefundLink: "refund_link",
+    PaymentVerificationDismissal: "payment_verification_dismissal",
+    DuplicatePairDecision: "duplicate_pair_decision",
     HoldingSnapshot: "holding_snapshot",
     HoldingLot: "holding_lot",
     NetWorthSnapshot: "net_worth_snapshot",

@@ -7,7 +7,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
-from ..models import Account, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, RefundLink, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
+from ..models import Account, DuplicatePairDecision, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, PaymentVerificationDismissal, RefundLink, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
 from .dedupe import canonical_source_hash, find_merge_match, is_categorized_history_reference
 from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 
@@ -218,4 +218,6 @@ def _delete_transaction_row_for_merge(db: Session, transaction: Transaction) -> 
     db.execute(delete(TransactionSplit).where(TransactionSplit.transaction_id == transaction.id))
     db.execute(delete(TransferLink).where((TransferLink.from_transaction_id == transaction.id) | (TransferLink.to_transaction_id == transaction.id)))
     db.execute(delete(RefundLink).where((RefundLink.expense_transaction_id == transaction.id) | (RefundLink.refund_transaction_id == transaction.id)))
+    db.execute(delete(PaymentVerificationDismissal).where(PaymentVerificationDismissal.transaction_id == transaction.id))
+    db.execute(delete(DuplicatePairDecision).where((DuplicatePairDecision.transaction_a_id == transaction.id) | (DuplicatePairDecision.transaction_b_id == transaction.id)))
     db.delete(transaction)

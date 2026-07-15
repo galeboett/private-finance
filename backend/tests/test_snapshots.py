@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import Account, HoldingSnapshot, NetWorthSnapshot, Transaction
+from app.models import Account, HoldingSnapshot, NetWorthSnapshot, StatementCheckpoint, Transaction
 from app.services.snapshots import backfill_net_worth_snapshots, net_worth_contributors, net_worth_series, net_worth_stats, upsert_net_worth_snapshot
 from app.main import save_manual_net_worth_snapshot
 from app.models import SessionToken
@@ -137,3 +137,37 @@ def test_net_worth_contributors_rank_accounts_by_asset_change():
             ("Brokerage", 8000, "9876"),
             ("Checking", 3000, "1234"),
         ]
+
+
+def test_unanchored_auto_is_disclosed_while_always_is_included_and_never_is_excluded():
+    with Session(_engine()) as db:
+        auto = Account(display_name="Old Card", account_type="credit_card")
+        always = Account(display_name="Include history", account_type="checking", net_worth_inclusion="always")
+        never = Account(display_name="Spending only", account_type="checking", net_worth_inclusion="never")
+        external = Account(display_name="External", account_type="external", net_worth_inclusion="always")
+        db.add_all([auto, always, never, external])
+        db.flush()
+        for index, account in enumerate((auto, always, never, external)):
+            db.add(Transaction(account_id=account.id, transaction_date=date(2026, 7, 1), amount_cents=1000 * (index + 1), raw_description="History", transaction_type="income", review_status="confirmed", source_hash=f"anchor-{index}"))
+        db.commit()
+
+        result = net_worth_series(db, from_date=date(2026, 7, 1), to_date=date(2026, 7, 1))
+
+        assert result["series"][0]["total_cents"] == 2000
+        assert result["series"][0]["by_account"] == {str(always.id): 2000}
+        assert result["unanchored_accounts"] == [{"id": auto.id, "name": "Old Card"}]
+
+
+def test_statement_checkpoint_anchors_balance_and_rolls_activity_forward():
+    with Session(_engine()) as db:
+        checking = Account(display_name="Checking", account_type="checking")
+        db.add(checking)
+        db.flush()
+        db.add(StatementCheckpoint(account_id=checking.id, statement_date=date(2026, 7, 1), statement_balance_cents=10000, source="manual"))
+        db.add(Transaction(account_id=checking.id, transaction_date=date(2026, 7, 2), amount_cents=-1250, raw_description="Spend", transaction_type="expense", review_status="confirmed", source_hash="checkpoint-spend"))
+        db.commit()
+
+        result = net_worth_series(db, from_date=date(2026, 7, 1), to_date=date(2026, 7, 2))
+
+        assert [row["total_cents"] for row in result["series"]] == [10000, 8750]
+        assert result["unanchored_accounts"] == []

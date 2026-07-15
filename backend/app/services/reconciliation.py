@@ -138,7 +138,7 @@ def reconciliation_status(db: Session, account: Account) -> dict[str, Any]:
 
 
 def list_reconciliation_statuses(db: Session) -> list[dict[str, Any]]:
-    accounts = db.scalars(select(Account).where(Account.status == "active").order_by(Account.display_name, Account.id)).all()
+    accounts = db.scalars(select(Account).where(Account.status == "active", Account.account_type != "external").order_by(Account.display_name, Account.id)).all()
     return [reconciliation_status(db, account) for account in accounts]
 
 

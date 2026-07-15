@@ -8,11 +8,49 @@ from typing import Iterable, Literal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import Account, HoldingSnapshot, NetWorthSnapshot, Transaction
+from ..models import Account, HoldingSnapshot, NetWorthSnapshot, StatementCheckpoint, Transaction
 from .transaction_queries import live_transaction_filters
 
 
 SnapshotBucket = Literal["day", "week", "month"]
+
+
+def account_is_anchored(db: Session, account_id: int) -> bool:
+    return bool(
+        db.scalar(select(NetWorthSnapshot.id).where(NetWorthSnapshot.account_id == account_id).limit(1))
+        or db.scalar(select(StatementCheckpoint.id).where(StatementCheckpoint.account_id == account_id).limit(1))
+    )
+
+
+def net_worth_unanchored_accounts(db: Session) -> list[dict]:
+    anchored_ids = set(db.scalars(select(NetWorthSnapshot.account_id).distinct()).all())
+    anchored_ids.update(db.scalars(select(StatementCheckpoint.account_id).distinct()).all())
+    accounts = db.scalars(
+        select(Account).where(
+            Account.status == "active",
+            Account.account_type != "external",
+            Account.net_worth_inclusion == "auto",
+        ).order_by(Account.display_name, Account.id)
+    ).all()
+    return [{"id": account.id, "name": account.display_name} for account in accounts if account.id not in anchored_ids]
+
+
+def current_account_value(db: Session, account: Account, point_date: date | None = None) -> int | None:
+    point_date = point_date or date.today()
+    anchors = list(db.scalars(
+        select(NetWorthSnapshot).where(NetWorthSnapshot.account_id == account.id, NetWorthSnapshot.snapshot_date <= point_date).order_by(NetWorthSnapshot.snapshot_date)
+    ).all())
+    existing_dates = {anchor.snapshot_date for anchor in anchors}
+    for checkpoint in db.scalars(
+        select(StatementCheckpoint).where(StatementCheckpoint.account_id == account.id, StatementCheckpoint.statement_date <= point_date).order_by(StatementCheckpoint.statement_date)
+    ).all():
+        if checkpoint.statement_date not in existing_dates:
+            anchors.append(NetWorthSnapshot(account_id=account.id, snapshot_date=checkpoint.statement_date, balance_cents=checkpoint.statement_balance_cents, source=checkpoint.source))
+    anchors.sort(key=lambda anchor: anchor.snapshot_date)
+    transactions = list(db.scalars(
+        select(Transaction).where(*live_transaction_filters(Transaction.account_id == account.id, Transaction.transaction_date <= point_date)).order_by(Transaction.transaction_date, Transaction.id)
+    ).all())
+    return _account_value_at(account, point_date, anchors, transactions, anchored=bool(anchors))
 
 
 def upsert_net_worth_snapshot(db: Session, *, account_id: int, snapshot_date: date, balance_cents: int, source: str) -> NetWorthSnapshot:
@@ -85,18 +123,26 @@ def backfill_net_worth_snapshots(db: Session) -> int:
 
 def net_worth_series(db: Session, *, from_date: date | None = None, to_date: date | None = None, bucket: SnapshotBucket = "day") -> dict:
     to_date = to_date or date.today()
+    accounts = db.scalars(select(Account).where(Account.status == "active").order_by(Account.display_name, Account.id)).all()
+    included_account_ids = [account.id for account in accounts if account.account_type != "external" and account.net_worth_inclusion != "never"]
     earliest_snapshot = db.scalar(select(func.min(NetWorthSnapshot.snapshot_date)))
-    earliest_transaction = db.scalar(select(func.min(Transaction.transaction_date)).where(*live_transaction_filters()))
-    earliest = min((value for value in (earliest_snapshot, earliest_transaction) if value is not None), default=to_date)
+    earliest_checkpoint = db.scalar(select(func.min(StatementCheckpoint.statement_date)))
+    earliest_transaction = db.scalar(select(func.min(Transaction.transaction_date)).where(*live_transaction_filters(Transaction.account_id.in_(included_account_ids)))) if included_account_ids else None
+    earliest = min((value for value in (earliest_snapshot, earliest_checkpoint, earliest_transaction) if value is not None), default=to_date)
     from_date = from_date or earliest
     if from_date > to_date:
         raise ValueError("from date must be on or before to date")
 
     points = _bucket_dates(from_date, to_date, bucket)
-    accounts = db.scalars(select(Account).where(Account.status == "active").order_by(Account.display_name, Account.id)).all()
     snapshots_by_account: dict[int, list[NetWorthSnapshot]] = defaultdict(list)
     for snapshot in db.scalars(select(NetWorthSnapshot).where(NetWorthSnapshot.snapshot_date <= to_date).order_by(NetWorthSnapshot.account_id, NetWorthSnapshot.snapshot_date)).all():
         snapshots_by_account[snapshot.account_id].append(snapshot)
+    for checkpoint in db.scalars(select(StatementCheckpoint).where(StatementCheckpoint.statement_date <= to_date).order_by(StatementCheckpoint.account_id, StatementCheckpoint.statement_date)).all():
+        anchors = snapshots_by_account[checkpoint.account_id]
+        if any(anchor.snapshot_date == checkpoint.statement_date for anchor in anchors):
+            continue
+        anchors.append(NetWorthSnapshot(account_id=checkpoint.account_id, snapshot_date=checkpoint.statement_date, balance_cents=checkpoint.statement_balance_cents, source=checkpoint.source))
+        anchors.sort(key=lambda anchor: anchor.snapshot_date)
     transactions_by_account: dict[int, list[Transaction]] = defaultdict(list)
     for transaction in db.scalars(select(Transaction).where(*live_transaction_filters(Transaction.transaction_date <= to_date)).order_by(Transaction.account_id, Transaction.transaction_date, Transaction.id)).all():
         transactions_by_account[transaction.account_id].append(transaction)
@@ -105,10 +151,18 @@ def net_worth_series(db: Session, *, from_date: date | None = None, to_date: dat
     for point_date in points:
         by_account: dict[str, int] = {}
         for account in accounts:
-            value = _account_value_at(account, point_date, snapshots_by_account.get(account.id, []), transactions_by_account.get(account.id, []))
-            by_account[str(account.id)] = value
+            snapshots = snapshots_by_account.get(account.id, [])
+            value = _account_value_at(
+                account,
+                point_date,
+                snapshots,
+                transactions_by_account.get(account.id, []),
+                anchored=bool(snapshots),
+            )
+            if value is not None:
+                by_account[str(account.id)] = value
         series.append({"date": point_date.isoformat(), "total_cents": sum(by_account.values()), "by_account": by_account})
-    return {"from": from_date.isoformat(), "to": to_date.isoformat(), "bucket": bucket, "series": series}
+    return {"from": from_date.isoformat(), "to": to_date.isoformat(), "bucket": bucket, "series": series, "unanchored_accounts": net_worth_unanchored_accounts(db)}
 
 
 def net_worth_stats(db: Session, *, from_date: date, to_date: date) -> dict:
@@ -140,6 +194,7 @@ def net_worth_stats(db: Session, *, from_date: date, to_date: date) -> dict:
         "max_date": maximum["date"],
         "best_day": best,
         "worst_day": worst,
+        "unanchored_accounts": result["unanchored_accounts"],
     }
 
 
@@ -147,7 +202,7 @@ def net_worth_contributors(db: Session, *, from_date: date, to_date: date) -> di
     result = net_worth_series(db, from_date=from_date, to_date=to_date, bucket="day")
     rows = result["series"]
     if not rows:
-        return {"from": from_date.isoformat(), "to": to_date.isoformat(), "start_cents": 0, "end_cents": 0, "change_cents": 0, "accounts": []}
+        return {"from": from_date.isoformat(), "to": to_date.isoformat(), "start_cents": 0, "end_cents": 0, "change_cents": 0, "accounts": [], "unanchored_accounts": result["unanchored_accounts"]}
     accounts = {account.id: account for account in db.scalars(select(Account)).all()}
     start_by_account = rows[0]["by_account"]
     end_by_account = rows[-1]["by_account"]
@@ -182,10 +237,16 @@ def net_worth_contributors(db: Session, *, from_date: date, to_date: date) -> di
         "end_cents": end_total,
         "change_cents": end_total - start_total,
         "accounts": contributions,
+        "unanchored_accounts": result["unanchored_accounts"],
     }
 
 
-def _account_value_at(account: Account, point_date: date, snapshots: list[NetWorthSnapshot], transactions: list[Transaction]) -> int:
+def _account_value_at(account: Account, point_date: date, snapshots: list[NetWorthSnapshot], transactions: list[Transaction], *, anchored: bool | None = None) -> int | None:
+    anchored = bool(snapshots) if anchored is None else anchored
+    if account.account_type == "external" or account.net_worth_inclusion == "never":
+        return None
+    if account.net_worth_inclusion == "auto" and not anchored:
+        return None
     snapshot_dates = [snapshot.snapshot_date for snapshot in snapshots]
     snapshot_index = bisect_right(snapshot_dates, point_date) - 1
     snapshot = snapshots[snapshot_index] if snapshot_index >= 0 else None

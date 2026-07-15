@@ -59,7 +59,11 @@ def aggregate_timeseries(db: Session, filters: TransactionFilter, bucket: Litera
 
 
 def _filtered_transactions(db: Session, filters: TransactionFilter) -> list[Transaction]:
-    return list(db.scalars(select(Transaction).where(*transaction_filter_conditions(filters))).all())
+    return list(db.scalars(
+        select(Transaction)
+        .join(Account, Account.id == Transaction.account_id)
+        .where(Account.account_type != "external", *transaction_filter_conditions(filters))
+    ).all())
 
 
 def _aggregate_reporting_categories(db: Session, filters: TransactionFilter) -> list[dict]:

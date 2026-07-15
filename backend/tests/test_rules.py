@@ -1,13 +1,13 @@
 from datetime import date
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.bootstrap import migrate_category_rules_for_optional_category
 from app.db import Base
-from app.main import apply_rule, apply_rule_to_transaction, create_rule, rule_matches_transaction
-from app.models import Account, Category, CategoryRule, SessionToken, Transaction
+from app.main import apply_rule, apply_rule_to_row, apply_rule_to_transaction, create_rule, rule_matches_transaction
+from app.models import Account, Category, CategoryRule, PaymentVerificationDismissal, SessionToken, Transaction
 from app.schemas import RuleApplyRequest, RuleCreate, TransactionType
 
 
@@ -84,6 +84,31 @@ def test_card_payment_rule_needs_no_category_and_clears_existing_category():
         assert transaction.category_id is None
         assert transaction.transaction_type == "credit_card_payment"
         assert transaction.review_status == "confirmed"
+
+
+def test_apply_rule_to_one_row_confirms_and_journals_reclassification_dismissal():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        card = Account(display_name="Card", account_type="credit_card")
+        category = Category(key="fees", label="Fees")
+        db.add_all([card, category])
+        db.flush()
+        transaction = Transaction(account_id=card.id, transaction_date=date(2026, 7, 1), amount_cents=2900, raw_description="ONLINE PAYMENT FEE", transaction_type="credit_card_payment", review_status="needs_review", source_hash="rule-one-row")
+        rule = CategoryRule(category_id=category.id, field_name="raw_description", match_text="ONLINE PAYMENT FEE", suggested_transaction_type="expense", priority=100)
+        db.add_all([transaction, rule])
+        db.commit()
+        request = Request({"type": "http", "headers": [(b"x-csrf-token", b"csrf")]})
+        session = SessionToken(user_id=7, csrf_token="csrf")
+
+        result = apply_rule_to_row(rule.id, transaction.id, request, session, db)
+
+        assert result["updated"] == 1
+        assert result["operation_id"]
+        assert transaction.transaction_type == "expense"
+        assert transaction.category_id == category.id
+        assert transaction.review_status == "confirmed"
+        assert db.scalar(select(PaymentVerificationDismissal).where(PaymentVerificationDismissal.transaction_id == transaction.id)) is not None
 
 
 def test_existing_category_rules_table_migrates_to_nullable_category():

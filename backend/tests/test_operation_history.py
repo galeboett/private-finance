@@ -1,7 +1,7 @@
 from datetime import date
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
@@ -83,6 +83,31 @@ def test_later_change_blocks_undo_and_partial_undo_skips_conflicted_rows():
         assert result["undone"] == 1
         assert db.get(Transaction, first.id).user_note is None
         assert db.get(Transaction, second.id).user_note == "Later correction"
+
+
+def test_large_import_undo_does_not_exceed_sqlite_expression_depth():
+    with _session() as db:
+        account = Account(display_name="Checking", account_type="checking")
+        db.add(account)
+        db.flush()
+        rows = [_transaction(account.id, f"large-import-{index}") for index in range(1_205)]
+        db.add_all(rows)
+        db.flush()
+        import_id = journal_mutation(
+            db,
+            kind="import",
+            entity_type="transaction",
+            actor="user:1",
+            description="Imported a large history file",
+            changes=[MutationChange(row.id, None, changed_values(row, ["deleted_at"])) for row in rows],
+        )
+        db.commit()
+
+        result = undo_operation(db, operation_id=import_id, actor="user:1")
+        db.commit()
+
+        assert result["undone"] == 1_205
+        assert all(row.deleted_at is not None for row in db.scalars(select(Transaction)).all())
 
 
 def test_import_undo_soft_deletes_transaction_and_restores_holding_on_redo():

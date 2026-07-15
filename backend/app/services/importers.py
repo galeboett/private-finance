@@ -97,7 +97,7 @@ def suggest_account_for_import(db: Session, filename: str, content: bytes) -> Ac
         raise ValueError("Could not detect import preset")
     preview = preview_import(content, preset_type)
     proposed = _proposed_account_from_import(filename, preset_type, preview)
-    accounts = db.scalars(select(Account).where(Account.status == "active")).all()
+    accounts = db.scalars(select(Account).where(Account.status == "active", Account.account_type != "external")).all()
     best_account: Account | None = None
     best_score = 0
     best_reason = "No obvious existing account match was found."
@@ -722,7 +722,7 @@ def _find_or_create_history_account(db: Session, account_name: str) -> tuple[Acc
         characterization = infer_account_characterization(cleaned)
         expected_institution = characterization.institution_name.casefold() if characterization.institution_name else None
         expected_last_four = infer_last_four(cleaned)
-        active_accounts = db.scalars(select(Account).where(Account.status == "active")).all()
+        active_accounts = db.scalars(select(Account).where(Account.status == "active", Account.account_type != "external")).all()
 
         def same_institution(account: Account) -> bool:
             account_institution = account.institution.name.casefold() if account.institution else infer_account_characterization(account.display_name, account.account_type).institution_name
@@ -1361,7 +1361,7 @@ def commit_import(db: Session, account, preset: ImportPreset | None, filename: s
 def _resolve_brokerage_account(db: Session, selected_account: Account, row: dict) -> tuple[Account, str | None]:
     account_name = (row.get("account_name") or "").strip()
     account_number = "".join(char for char in (row.get("account_number") or "") if char.isdigit())
-    query = select(Account).where(Account.status == "active")
+    query = select(Account).where(Account.status == "active", Account.account_type != "external")
     if selected_account.institution_id:
         query = query.where(Account.institution_id == selected_account.institution_id)
     else:

@@ -51,6 +51,7 @@ class Account(TimestampMixin, Base):
     account_type: Mapped[str] = mapped_column(String(40), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+    net_worth_inclusion: Mapped[str] = mapped_column(String(20), default="auto", nullable=False)
     last_four: Mapped[str | None] = mapped_column(String(8))
     institution: Mapped["Institution | None"] = relationship(back_populates="accounts")
     presets: Mapped[list["ImportPreset"]] = relationship(back_populates="account")
@@ -226,6 +227,24 @@ class RefundLink(TimestampMixin, Base):
     refund_transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), nullable=False, index=True)
     match_confidence: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class PaymentVerificationDismissal(TimestampMixin, Base):
+    __tablename__ = "payment_verification_dismissals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), unique=True, nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class DuplicatePairDecision(TimestampMixin, Base):
+    __tablename__ = "duplicate_pair_decisions"
+    __table_args__ = (UniqueConstraint("transaction_a_id", "transaction_b_id", name="uq_duplicate_pair_decision_pair"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transaction_a_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), nullable=False, index=True)
+    transaction_b_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), nullable=False, index=True)
+    decision: Mapped[str] = mapped_column(String(30), nullable=False)
 
 
 class HoldingSnapshot(TimestampMixin, Base):

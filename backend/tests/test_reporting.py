@@ -4,8 +4,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import Account, Category, ExpenseAllocation, NetWorthSnapshot, Transaction, TransactionSplit
-from app.services.reporting import category_totals, latest_net_worth_by_account
+from app.models import Account, Category, ExpenseAllocation, NetWorthSnapshot, StatementCheckpoint, Transaction, TransactionSplit
+from app.services.reporting import category_totals, dashboard_summary, latest_net_worth_by_account
 
 
 def test_category_totals_only_count_active_expense_splits_in_date_range():
@@ -88,3 +88,18 @@ def test_latest_net_worth_accounts_include_manual_non_investment_balances():
             "latest_date": "2026-07-01",
             "market_value_cents": 45000000,
         }]
+
+
+def test_dashboard_net_worth_uses_anchored_current_values_not_unanchored_history():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        anchored = Account(display_name="Checking", account_type="checking")
+        unanchored = Account(display_name="Old card", account_type="credit_card")
+        session.add_all([anchored, unanchored])
+        session.flush()
+        session.add(StatementCheckpoint(account_id=anchored.id, statement_date=date.today(), statement_balance_cents=25000, source="manual"))
+        session.add(Transaction(account_id=unanchored.id, transaction_date=date.today(), amount_cents=-999999, raw_description="Lifetime history", transaction_type="expense", review_status="confirmed", source_hash="unanchored-dashboard"))
+        session.commit()
+
+        assert dashboard_summary(session)["net_worth_snapshot_cents"] == 25000

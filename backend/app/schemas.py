@@ -33,6 +33,13 @@ class AccountType(StrEnum):
     LOAN = "loan"
     BROKERAGE = "brokerage"
     RETIREMENT = "retirement"
+    EXTERNAL = "external"
+
+
+class NetWorthInclusion(StrEnum):
+    AUTO = "auto"
+    ALWAYS = "always"
+    NEVER = "never"
 
 
 class AccountStatus(StrEnum):
@@ -66,6 +73,7 @@ class AccountCreate(BaseModel):
     account_type: AccountType
     currency: str = "USD"
     last_four: str | None = None
+    net_worth_inclusion: NetWorthInclusion = NetWorthInclusion.AUTO
 
 
 class AccountUpdate(BaseModel):
@@ -75,6 +83,7 @@ class AccountUpdate(BaseModel):
     currency: str | None = None
     last_four: str | None = None
     status: AccountStatus | None = None
+    net_worth_inclusion: NetWorthInclusion | None = None
 
 
 class CategoryCreate(BaseModel):
@@ -119,7 +128,25 @@ class OperationBulkUpdateRequest(BaseModel):
 
 
 class DuplicateResolutionRequest(BaseModel):
-    action: Literal["remove_new", "keep_both", "replace_old"]
+    action: Literal["remove_new", "keep_both", "replace_old", "remove_sign_artifact"]
+
+
+class BulkDuplicateResolutionRequest(BaseModel):
+    strategy: Literal["keep_existing", "use_new_import"]
+    preview_token: str = Field(min_length=64, max_length=64)
+
+
+class HistoricalRefundBulkRequest(BaseModel):
+    preview_token: str = Field(min_length=64, max_length=64)
+
+
+class DuplicateSelectionPreviewRequest(BaseModel):
+    transaction_ids: list[int] = Field(min_length=1, max_length=500)
+    action: Literal["keep_both", "remove_new", "prefer_authoritative_history"]
+
+
+class DuplicateSelectionResolutionRequest(DuplicateSelectionPreviewRequest):
+    preview_token: str = Field(min_length=64, max_length=64)
 
 
 class RuleCreate(BaseModel):
@@ -159,6 +186,15 @@ class TransferLinkCreate(BaseModel):
     to_transaction_id: int
     match_confidence: int = 0
     confirmed: bool = False
+
+
+class PaymentVerificationDismissRequest(BaseModel):
+    reason: Literal["not_a_payment", "external_source", "other"] = "not_a_payment"
+
+
+class ExternalPaymentRequest(BaseModel):
+    external_account_id: int | None = None
+    external_account_name: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class RefundLinkCreate(BaseModel):

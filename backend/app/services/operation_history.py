@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..models import (
     Account,
     Category,
     CategoryRule,
+    DuplicatePairDecision,
     ExpenseAllocation,
     HoldingLot,
     HoldingSnapshot,
@@ -21,6 +23,7 @@ from ..models import (
     NetWorthSnapshot,
     Operation,
     OperationChange,
+    PaymentVerificationDismissal,
     RefundLink,
     SecurityMetadata,
     SecurityPrice,
@@ -41,10 +44,12 @@ ENTITY_MODELS = {
     "net_worth_snapshot": NetWorthSnapshot,
     "category": Category,
     "category_rule": CategoryRule,
+    "duplicate_pair_decision": DuplicatePairDecision,
     "transaction_split": TransactionSplit,
     "expense_allocation": ExpenseAllocation,
     "transfer_link": TransferLink,
     "refund_link": RefundLink,
+    "payment_verification_dismissal": PaymentVerificationDismissal,
     "security_metadata": SecurityMetadata,
     "security_price": SecurityPrice,
     "statement_checkpoint": StatementCheckpoint,
@@ -142,8 +147,11 @@ def undo_operation(db: Session, *, operation_id: str, actor: str, unconflicted_o
         before = _decode_image(change.before_json)
         after = _decode_image(change.after_json)
         entity = db.get(model, _primary_key(model, change.entity_id))
-        if isinstance(entity, (Transaction, HoldingSnapshot)):
-            snapshot_scopes[model].add((entity.account_id, entity.transaction_date if isinstance(entity, Transaction) else entity.snapshot_date))
+        if isinstance(entity, Transaction):
+            if entity.running_balance_cents is not None:
+                snapshot_scopes[Transaction].add((entity.account_id, entity.transaction_date))
+        elif isinstance(entity, HoldingSnapshot):
+            snapshot_scopes[HoldingSnapshot].add((entity.account_id, entity.snapshot_date))
         elif model is HoldingSnapshot:
             scope_image = before or after or {}
             if scope_image.get("account_id") and scope_image.get("snapshot_date"):
@@ -187,18 +195,28 @@ def _operation_summary(operation: Operation, change_count: int) -> dict[str, Any
 def _later_conflicts(db: Session, operation: Operation, changes: list[OperationChange]) -> list[str]:
     if not changes:
         return []
-    conditions = [and_(OperationChange.entity_type == (change.entity_type or operation.entity_type), OperationChange.entity_id == change.entity_id) for change in changes]
     last_change_id = max(change.id for change in changes)
-    rows = db.execute(
-        select(OperationChange.entity_type, OperationChange.entity_id)
-        .where(
-            OperationChange.id > last_change_id,
-            or_(*conditions),
-        )
-        .distinct()
-    ).all()
-    mixed = len({change.entity_type or operation.entity_type for change in changes}) > 1
-    return sorted({f"{entity_type}:{entity_id}" if mixed else entity_id for entity_type, entity_id in rows})
+    entity_ids_by_type: dict[str, set[str]] = defaultdict(set)
+    for change in changes:
+        entity_ids_by_type[change.entity_type or operation.entity_type].add(change.entity_id)
+
+    conflicts: set[tuple[str, str]] = set()
+    for entity_type, entity_ids in entity_ids_by_type.items():
+        ordered_ids = sorted(entity_ids)
+        for offset in range(0, len(ordered_ids), 500):
+            rows = db.execute(
+                select(OperationChange.entity_type, OperationChange.entity_id)
+                .where(
+                    OperationChange.id > last_change_id,
+                    OperationChange.entity_type == entity_type,
+                    OperationChange.entity_id.in_(ordered_ids[offset : offset + 500]),
+                )
+                .distinct()
+            ).all()
+            conflicts.update(rows)
+
+    mixed = len(entity_ids_by_type) > 1
+    return sorted(f"{entity_type}:{entity_id}" if mixed else entity_id for entity_type, entity_id in conflicts)
 
 
 def _decode_image(value: str | None) -> dict[str, Any] | None:
@@ -216,7 +234,9 @@ def _apply_image(db: Session, model: type, entity: Any | None, target: dict[str,
     if target is None:
         if entity is None:
             return
-        if model is Transaction:
+        if model is Transaction and str(entity.source_hash).startswith("external-payment:"):
+            db.delete(entity)
+        elif model is Transaction:
             entity.deleted_at = datetime.now(UTC).replace(tzinfo=None)
         else:
             db.delete(entity)

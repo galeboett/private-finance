@@ -101,3 +101,16 @@ def test_reporting_date_category_aggregate_preserves_splits_and_monthly_allocati
 
         assert aggregate == [{"category_id": insurance.id, "category": "Insurance", "total_cents": -1000, "count": 2}]
         assert matched_ids == [annual.id, split.id]
+
+
+def test_external_account_rows_are_excluded_from_financial_aggregates():
+    with _session() as db:
+        external = Account(display_name="Old Checking", account_type="external", net_worth_inclusion="never")
+        db.add(external)
+        db.flush()
+        db.add(Transaction(account_id=external.id, transaction_date=date(2026, 7, 1), amount_cents=-50000, raw_description="External mirror", transaction_type="expense", review_status="confirmed", source_hash="external-aggregate"))
+        db.commit()
+
+        assert aggregate_by_category(db, TransactionFilter()) == []
+        assert aggregate_by_account(db, TransactionFilter()) == []
+        assert aggregate_timeseries(db, TransactionFilter(), "month") == []

@@ -72,6 +72,8 @@ The app builds a full personal finance picture by turning account exports into a
 - Select **View transactions** to open the transaction ledger with the chosen dates already applied.
 - Select **Clear** or press Escape to remove the range selection.
 - Imported running balances and brokerage positions create durable snapshots. Between known balances, the app reconstructs checking and savings history from ledger movements and forward-fills investment values.
+- An account in **Automatic** net-worth mode is included only after it has a real balance anchor: a statement balance, imported/manual balance, or holdings snapshot. Unanchored accounts show `—` in the sidebar and appear in the Net Worth warning banner instead of treating lifetime activity as today's balance.
+- On an account page, use the **Net worth** selector to keep automatic anchoring, explicitly include an unanchored history, or exclude the account. Untracked accounts are always excluded.
 - On **Net Worth**, use **Add a manual balance** for accounts without an imported value, such as a home or vehicle. Choose the account and date, enter the balance, and save; the change supports Undo and appears in Activity.
 - Use **Add transaction** on an account page to enter money out or money in manually. Enter a positive dollar amount and choose the direction; the form writes the canonical negative/positive ledger sign, confirms the deliberate entry, and records it in Activity with Undo.
 - On **Net Worth**, **Add transaction** is limited to brokerage and retirement accounts and records the row as investment activity. Use **Add tax lot** under Holding details when an export does not provide acquisition date and total basis.
@@ -81,10 +83,12 @@ The app builds a full personal finance picture by turning account exports into a
 ## Reconciling an Account
 
 - Open an account and enter the ending balance and date from its bank or card statement under **Statement balance**.
+- Saving the first statement balance also anchors that account for net-worth calculations.
 - The account badge shows **Reconciled** when the ledger reaches the same balance. If it is off, **Investigate difference** filters the ledger to activity since the preceding checkpoint.
 - Imports containing running balances create checkpoints automatically. Existing running-balance history is backfilled when the app starts.
 - Statement checkpoints appear in Activity and support Undo. Manual checkpoints take precedence over imported balances for the same account and date.
-- Credit-card account pages also verify confirmed payment links. A payment credit with no matching bank-side debit after five days appears as a warning with an investigation shortcut.
+- Credit-card account pages also verify confirmed payment links. A payment credit with no matching bank-side debit after five days appears as a warning with an investigation shortcut. Detection requires card-payment context such as `PAYMENT FROM`, `ONLINE PAYMENT`, or `AUTOPAY`; fee, interest, return, benefit, reward, and protection descriptions are excluded.
+- If a warning is not a payment, choose **Not a payment**. The dismissal appears in Activity and supports Undo. Reclassifying the row as an expense, refund, or another non-payment type dismisses the warning in the same operation.
 
 ## Fixing Mistakes and Reviewing Changes
 
@@ -110,6 +114,13 @@ The app builds a full personal finance picture by turning account exports into a
 - For history imported before sign normalization was added, open **Settings → Smart import → Normalize previously imported categorized history** and select **Preview cleanup**.
 - Review each account's historical date range and any later direct-CSV range before applying. Direct CSV rows are identified by their import source and are never changed by this cleanup. A warning appears if direct rows overlap the historical range, repeat the same bank reference, or if two account records contain mostly the same historical transactions.
 - Type `NORMALIZE` and apply. The app first creates a timestamped safety backup, then adjusts active and deleted historical transaction amounts/types, dependent splits and monthly allocations, and corrects Venmo to a cash account. Including deleted history ensures a later restore does not reintroduce the old sign convention. The cleanup appears as one Activity operation and can be undone.
+
+## Replacing a Categorized History Workbook
+
+- A clean replacement must remove the old import lineage rather than move its transactions to Trash. Trashed rows still reserve their source fingerprints and would make the replacement file appear already recorded.
+- The constrained maintenance service matches import batches by the exact workbook filename, previews every transaction and dependent record, requires a current preview token plus `PURGE HISTORY`, and records an audit event. It removes matching transactions, staging rows, refund/transfer links, duplicate decisions, dismissals, splits, allocations, holding lots, and import batches while preserving accounts, institutions, categories, rules, snapshots, checkpoints, other batches, and other transactions.
+- Create and verify an online SQLite backup immediately before applying the purge. Afterward, restart the app and upload the edited workbook once under **Import → Smart import → Categorized history import**. Choose **Charges are positive; refunds are negative** for the legacy cleaned-history convention, or **Charges are already negative; refunds are positive** only if the workbook itself was converted to canonical signs.
+- After import, record the inserted/skipped totals, confirm no unexpected accounts or categories were created, then scan for duplicates and regenerate refund suggestions.
 
 ## Automated vs Manual
 
@@ -145,12 +156,14 @@ Save rule turns one reviewed transaction into a future suggestion.
 - It stores a "description contains this text" rule with the category and type you selected.
 - Future imports that contain the same text are prefilled with that category and transaction type, and stay in review until you confirm them.
 - Rules do not rewrite older transactions retroactively.
-- After saving a rule, you can optionally apply it to unreviewed transactions or all previous matching transactions.
+- After saving a rule, **Apply & confirm this row** handles only the transaction in front of you without a batch preview. You can still optionally apply it to all unreviewed transactions or all previous matching transactions.
+- Account-ledger category editing uses the same save-rule control as Review, including an editable description pattern.
 - Existing saved rules are also listed in the Review Inbox with the same apply options.
 - Applying a rule to existing transactions sets the category and type and marks those transactions confirmed, since you chose to run the rule deliberately.
 - Saved rules can be edited or deleted later through the rules API, so a mistaken rule is never permanent.
 - If multiple rules match, lower priority numbers run first. The default priority is 100.
 - Card payment and Transfer rules intentionally have no category. They classify and confirm matching rows while clearing any stale category, so moving money between your own accounts is not counted as spending.
+- Clicking an account in the left navigation opens a fresh account ledger and clears search/date/category/type chips. Investigation and drill-down links keep the filters they intentionally construct.
 
 ## Brokerage Files With Multiple Accounts
 
@@ -179,3 +192,21 @@ Later, the app can safely add account suggestions:
 - suggest a likely account but still ask for confirmation
 
 The safest future behavior is suggested account matching, not silent account creation.
+
+## Ledger-Wide Duplicate Scan
+
+- In **Review**, choose **Scan ledger for duplicates** to check existing history, including rows that were not flagged when originally imported.
+- Results are grouped as cross-source history/CSV overlap, exact duplicates, probable duplicates, or mirrored-sign artifacts. Queue-wide removal remains restricted to safe exact/cross-source reimports. For other exact and probable results, select reviewed pairs on the current page and apply one bulk **Keep both** decision; selected exact pairs may also be removed after a confirmation preview, while probable pairs cannot be bulk-deleted.
+- The queue is loaded 25 pairs at a time and can be filtered by result type. The bulk actions are intentionally narrower than “all exact”: they act only when the source reference also matches or when the pair is an exact categorized-history/bank overlap.
+- **Keep existing** leaves the established ledger facts in place and moves the redundant imported rows to Trash. **Use new imports** applies the newest imported bank facts and import-source label to the established records before retiring the redundant rows; keeping the established record identity preserves categories, notes, labels, splits, allocations, and links.
+- Both bulk directions open a confirmation preview showing the complete queue-wide pair count, affected accounts, selected and retired sources, and the signed ledger-balance adjustment. Confirmation uses a preview token and is rejected if the queue changes before submission. The resulting operation is undoable from Activity.
+- An opposite-sign pair is not automatically wrong. It may be a duplicated sign-normalization result, or it may be a real refund/reversal. **Remove positive copy** keeps the negative expense and moves the positive row to Trash; use it only after verifying that no money was actually returned.
+- When opposite-sign rows match the strict intentional-history pattern—same account/date/description, equal opposite amounts, expense plus refund, matching category, and the same categorized-history batch—**Link historical refunds** previews the complete scope and total refund value. Confirmation creates explicit refund links and badges without deleting rows or changing spending, cash flow, balances, or net worth; the whole action is one Activity operation with Undo.
+- **Keep both** is remembered for that normalized pair, so later scans do not ask about it again. Confirmed transfers and refunds are not proposed as duplicates.
+- After resolving duplicates on a credit-card account, use the offered transfer-matching rerun so the surviving payment can clear payment verification.
+
+## Payments From Untracked Accounts
+
+- For a stale card-payment warning whose checking-side history is unavailable, choose **Paid from untracked account**.
+- Pick an existing untracked account or create one inline. The app creates an equal-and-opposite synthetic transfer row and a confirmed transfer link; it does not add the payment to spending, cash flow, imports, or net worth.
+- The action appears in Activity and can be undone. The untracked account can remain as the counterparty for future historical card payments.
