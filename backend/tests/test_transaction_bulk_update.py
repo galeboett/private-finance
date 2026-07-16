@@ -1,11 +1,13 @@
 from datetime import date
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.db import Base
-from app.main import bulk_update_transactions, operation_bulk_update
+from app.main import bulk_update_transactions, operation_bulk_update, update_transaction
 from app.models import Account, Category, Operation, OperationChange, SessionToken, Transaction
 from app.schemas import BulkTransactionUpdateRequest, OperationBulkUpdateRequest, TransactionReviewUpdate
 from app.services.operation_history import undo_operation
@@ -134,3 +136,31 @@ def test_bulk_card_payment_confirmation_clears_categories():
         assert all(row.transaction_type == "credit_card_payment" for row in rows)
         assert all(row.category_id is None for row in rows)
         assert all(row.review_status == "confirmed" for row in rows)
+
+
+def test_refund_confirmation_requires_category_for_single_and_bulk_updates():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        account = Account(display_name="Card", account_type="credit_card")
+        category = Category(key="returns", label="Returns")
+        db.add_all([account, category])
+        db.flush()
+        rows = [
+            Transaction(account_id=account.id, transaction_date=date(2026, 7, index), amount_cents=1000 * index, raw_description=f"Refund {index}", transaction_type="refund", review_status="needs_review", source_hash=f"refund-confirm-{index}")
+            for index in (1, 2)
+        ]
+        db.add_all(rows)
+        db.commit()
+        request = Request({"type": "http", "headers": [(b"x-csrf-token", b"csrf")]})
+        session = SessionToken(user_id=42, csrf_token="csrf")
+
+        with pytest.raises(HTTPException, match="Choose a category before confirming this refund"):
+            update_transaction(rows[0].id, TransactionReviewUpdate(review_status="confirmed"), request, session, db)
+        with pytest.raises(HTTPException, match="Choose a category before confirming this refund"):
+            operation_bulk_update(OperationBulkUpdateRequest(entity_type="transaction", ids=[row.id for row in rows], patch=TransactionReviewUpdate(transaction_type="refund", review_status="confirmed")), request, session, db)
+
+        result = operation_bulk_update(OperationBulkUpdateRequest(entity_type="transaction", ids=[row.id for row in rows], patch=TransactionReviewUpdate(category_id=category.id, transaction_type="refund", review_status="confirmed")), request, session, db)
+
+        assert result["updated"] == 2
+        assert all(row.category_id == category.id and row.review_status == "confirmed" for row in rows)

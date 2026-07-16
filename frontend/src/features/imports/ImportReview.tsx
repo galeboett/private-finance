@@ -1,4 +1,5 @@
 import { Landmark, RefreshCw } from "lucide-react";
+import { StatementBalanceReview } from "./StatementBalanceReview";
 
 export type ImportSignProfile = {
   id: number;
@@ -37,9 +38,22 @@ export type InboxBatch = {
   match_reason: string | null;
   row_count: number;
   warnings: string[];
-  preview: Array<Record<string, string | number | null>>;
+  preview: Array<Record<string, unknown>>;
   created_at: string;
   sign_decision: SignDecision | null;
+};
+
+export type StatementBalancePreview = {
+  row_kind: "statement_balance";
+  institution: string | null;
+  statement_date: string | null;
+  date_label: string | null;
+  candidates: Array<{ label: string; balance_cents: number; context: string }>;
+  selected_index: number | null;
+  selected_balance_cents: number | null;
+  selected_balance_label: string | null;
+  confidence: "high" | "low" | "user_confirmed";
+  warnings: string[];
 };
 
 export type ImportInboxState = { folder: string; pending: InboxBatch[] };
@@ -57,16 +71,17 @@ type Props = {
   busyAction: string | null;
   onScan: () => void;
   onConfirm: (batch: InboxBatch) => void;
+  onConfirmStatement: (batch: InboxBatch, selection: { statement_date: string; balance_cents: number; candidate_index: number | null }) => Promise<void>;
   onDiscard: (batch: InboxBatch) => void;
 };
 
-export function ImportReview({ inbox, lastScan, busyAction, onScan, onConfirm, onDiscard }: Props) {
+export function ImportReview({ inbox, lastScan, busyAction, onScan, onConfirm, onConfirmStatement, onDiscard }: Props) {
   return (
     <div className="importInboxPanel">
       <div className="importInboxHeader">
         <div>
           <strong>Import Inbox</strong>
-          <span>Copy statement CSVs into this private local folder, then scan when you want the app to look for files.</span>
+          <span>Copy CSV, OFX/QFX, or statement PDF files into this private local folder, then scan when you want the app to look for them.</span>
           <code>{inbox.folder || "The inbox folder will be created when the backend starts."}</code>
         </div>
         <button className="primaryButton" onClick={onScan} disabled={busyAction !== null}>
@@ -83,10 +98,19 @@ export function ImportReview({ inbox, lastScan, busyAction, onScan, onConfirm, o
       ) : null}
       {inbox.pending.length > 0 ? (
         <div className="pendingInboxList">
-          {inbox.pending.map((batch) => (
+          {inbox.pending.map((batch) => batch.preset_type === "pdf_statement" && batch.preview[0]?.row_kind === "statement_balance" ? (
+            <StatementBalanceReview
+              key={batch.id}
+              batch={batch}
+              preview={batch.preview[0] as StatementBalancePreview}
+              busy={busyAction !== null}
+              onConfirm={onConfirmStatement}
+              onDiscard={onDiscard}
+            />
+          ) : (
             <article className="pendingInboxCard" key={batch.id}>
               <div className="pendingInboxTitle">
-                <div><strong>{batch.filename}</strong><span>{batch.preset_type ?? "Detected CSV"} · {batch.row_count} rows</span></div>
+                <div><strong>{batch.filename}</strong><span><span className="fileTypeBadge">{fileTypeLabel(batch)}</span> {batch.preset_type ?? "Detected import"} · {batch.row_count} rows</span></div>
                 <span className="statusBadge suggested">{batch.match_confidence}% match</span>
               </div>
               <div className="matchedAccountCard">
@@ -110,4 +134,10 @@ export function ImportReview({ inbox, lastScan, busyAction, onScan, onConfirm, o
       ) : <p className="emptyText">No files are waiting for confirmation.</p>}
     </div>
   );
+}
+
+function fileTypeLabel(batch: InboxBatch): string {
+  if (batch.preset_type === "ofx_statement") return batch.filename.toLowerCase().endsWith(".qfx") ? "QFX" : "OFX";
+  if (batch.preset_type === "pdf_statement") return "PDF";
+  return "CSV";
 }

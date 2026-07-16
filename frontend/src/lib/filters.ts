@@ -3,6 +3,7 @@ export type TransactionView = "live" | "trash";
 export type TransactionSort = "date" | "amount";
 export type SortDirection = "asc" | "desc";
 export type NetWorthPeriod = "1M" | "6M" | "1Y" | "Max";
+export type ReportPeriod = "this_month" | "this_year" | "last_12_months" | "all";
 
 export interface TxnFilter {
   accounts?: string[];
@@ -116,6 +117,29 @@ export function routeUrl(view: RouteView, accountId: number | null, filter: TxnF
 
 export function freshAccountNavigationFilter(accountId: number): TxnFilter {
   return { accounts: [String(accountId)] };
+}
+
+export function isTransactionInReportPeriod(transactionDate: string, period: ReportPeriod, now = new Date()): boolean {
+  if (period === "all") return true;
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const thisMonth = `${year}-${month}`;
+  if (period === "this_month") return transactionDate.slice(0, 7) === thisMonth;
+  if (period === "this_year") return transactionDate.slice(0, 4) === String(year);
+  const start = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+  const startKey = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}`;
+  return transactionDate.slice(0, 7) >= startKey && transactionDate.slice(0, 7) <= thisMonth;
+}
+
+export function isMonthInReportPeriod(month: string, period: ReportPeriod, now = new Date()): boolean {
+  if (period === "all") return true;
+  const year = now.getFullYear();
+  const currentMonth = `${year}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  if (period === "this_month") return month === currentMonth;
+  if (period === "this_year") return month.startsWith(String(year));
+  const start = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+  const startKey = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}`;
+  return month >= startKey && month <= currentMonth;
 }
 
 function decodeList(value: string | null): string[] {

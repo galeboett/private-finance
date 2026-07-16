@@ -29,6 +29,7 @@ import { api, apiUrl, bumpTransactionsVersion, getTransactionsVersion, parseApiJ
 import { readAppRoute, routeUrl, type RouteView } from "./app/router";
 import { BulkActionBar, CashFlowGraphic, DrillDownLink, MultiSelectFilter, PanelTitle, UndoToast } from "./components/AppPrimitives";
 import { DeleteConfirmInline, type DeleteTarget } from "./components/DeleteConfirmInline";
+import { PrimaryNav } from "./components/PrimaryNav";
 import { AccountPage } from "./features/accounts/AccountPage";
 import type { ReconciliationStatus } from "./features/accounts/ReconciliationBadge";
 import { ImportReview, type InboxBatch, type ImportInboxScan, type ImportInboxState, type SignDecision } from "./features/imports/ImportReview";
@@ -36,16 +37,17 @@ import { SignConventionPrompt, type ImportSignConvention } from "./features/impo
 import { HoldingsPanel, type HoldingRow } from "./features/networth/HoldingsPanel";
 import { UnanchoredBanner } from "./features/networth/UnanchoredBanner";
 import { RefundLinkPicker } from "./features/refunds/RefundLinkPicker";
-import { RefundSuggestions, type RefundLink } from "./features/refunds/RefundSuggestions";
+import { RefundCategorizationNudge, RefundSuggestions, type RefundCandidate, type RefundLink, type RefundSelection, type RefundSuggestionGroup } from "./features/refunds/RefundSuggestions";
 import { SaveRuleControl } from "./features/rules/SaveRuleControl";
 import { SavedRulesPanel } from "./features/rules/SavedRulesPanel";
 import { LedgerDuplicateScan, type DuplicatePair } from "./features/review/LedgerDuplicateScan";
+import { filterReviewQueue, isUncategorizedRefund, type ReviewQueueFilter } from "./features/review/reviewQueue";
 import type { DuplicateTransaction } from "./features/review/TransactionCompareCard";
 import { TransferReview, type TransferCandidate } from "./features/review/TransferReview";
 import type { PaymentVerificationStatus, PaymentWarning } from "./features/transfers/PaymentVerification";
 import { ManualTransactionForm } from "./features/transactions/ManualTransactionForm";
-import { encodeTxnFilter, freshAccountNavigationFilter, type NetWorthPeriod, type TxnFilter } from "./lib/filters";
-import { transactionTypeUsesCategory } from "./lib/transactionTypes";
+import { encodeTxnFilter, freshAccountNavigationFilter, isMonthInReportPeriod, isTransactionInReportPeriod, type NetWorthPeriod, type ReportPeriod, type TxnFilter } from "./lib/filters";
+import { transactionTypeRequiresCategory, transactionTypeUsesCategory } from "./lib/transactionTypes";
 import { useSelection } from "./lib/useSelection";
 type BootstrapCategory = { id: number; key: string; label: string; parent_id: number | null };
 type DashboardSummary = {
@@ -100,8 +102,8 @@ type MonthlyAllocationDraft = { transactionId: number; category_id: number | "";
 type ImportPreview = {
   preset_type: string;
   sign_convention?: "preset" | "reverse";
-  sign_decision?: SignDecision;
-  rows: Array<Record<string, string | number | null>>;
+  sign_decision?: SignDecision | null;
+  rows: Array<Record<string, any>>;
   warnings: string[];
 };
 
@@ -277,7 +279,6 @@ type AllocationRow = { asset_class: string; market_value_cents: number };
 type TransactionSortKey = "date" | "amount";
 type SortDirection = "asc" | "desc";
 type BulkTransactionField = "institution" | "account" | "description" | "details" | "type" | "category" | "date" | "labels";
-type ReportPeriod = "this_month" | "this_year" | "last_12_months" | "all";
 type FilterOption = { value: string; label: string };
 
 type AppView = RouteView;
@@ -522,47 +523,6 @@ function toggleValue<T>(current: T[], value: T) {
   return current.includes(value) ? current.filter((item) => item !== value) : [...current, value];
 }
 
-function monthKeyFromDate(value: string): string {
-  return value.slice(0, 7);
-}
-
-function isTransactionInReportPeriod(transactionDate: string, period: ReportPeriod, now = new Date()): boolean {
-  if (period === "all") {
-    return true;
-  }
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const thisMonth = `${year}-${month}`;
-  const thisYear = String(year);
-  if (period === "this_month") {
-    return monthKeyFromDate(transactionDate) === thisMonth;
-  }
-  if (period === "this_year") {
-    return transactionDate.slice(0, 4) === thisYear;
-  }
-  const start = new Date(now.getFullYear(), now.getMonth() - 11, 1);
-  const startKey = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}`;
-  return monthKeyFromDate(transactionDate) >= startKey && monthKeyFromDate(transactionDate) <= thisMonth;
-}
-
-function isMonthInReportPeriod(month: string, period: ReportPeriod, now = new Date()): boolean {
-  if (period === "all") {
-    return true;
-  }
-  const year = now.getFullYear();
-  const monthNum = String(now.getMonth() + 1).padStart(2, "0");
-  const thisMonth = `${year}-${monthNum}`;
-  if (period === "this_month") {
-    return month === thisMonth;
-  }
-  if (period === "this_year") {
-    return month.startsWith(String(year));
-  }
-  const start = new Date(now.getFullYear(), now.getMonth() - 11, 1);
-  const startKey = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}`;
-  return month >= startKey && month <= thisMonth;
-}
-
 function reportPeriodFilter(period: ReportPeriod, now = new Date()): TxnFilter {
   if (period === "all") return {};
   const year = now.getFullYear();
@@ -682,7 +642,7 @@ export function App() {
   const [allocationRows, setAllocationRows] = useState<AllocationRow[]>([]);
   const [holdingRows, setHoldingRows] = useState<HoldingRow[]>([]);
   const [transferCandidates, setTransferCandidates] = useState<TransferCandidate[]>([]);
-  const [refundSuggestions, setRefundSuggestions] = useState<RefundLink[]>([]);
+  const [refundSuggestions, setRefundSuggestions] = useState<RefundSuggestionGroup[]>([]);
   const [refundPicker, setRefundPicker] = useState<RefundPickerState | null>(null);
   const refundSearchTimer = useRef<number | null>(null);
   const [duplicatePairs, setDuplicatePairs] = useState<DuplicatePair[]>([]);
@@ -726,6 +686,7 @@ export function App() {
   const [historyCleanupConfirm, setHistoryCleanupConfirm] = useState("");
   const [bulkReviewCategoryId, setBulkReviewCategoryId] = useState<number | "">("");
   const [bulkReviewType, setBulkReviewType] = useState("expense");
+  const [reviewQueueFilter, setReviewQueueFilter] = useState<ReviewQueueFilter>("all");
   const [selectedTransactionAccountFilters, setSelectedTransactionAccountFilters] = useState<number[]>(() => (initialRoute.current.filters.accounts ?? []).map(Number).filter(Number.isFinite));
   const [selectedTransactionMonthFilters, setSelectedTransactionMonthFilters] = useState<string[]>(() => initialRoute.current.filters.months ?? []);
   const [selectedTransactionYearFilters, setSelectedTransactionYearFilters] = useState<string[]>(() => initialRoute.current.filters.years ?? []);
@@ -973,7 +934,7 @@ export function App() {
       api<AllocationRow[]>("/api/investments/allocation"),
       api<HoldingRow[]>("/api/investments/holdings"),
       api<TransferCandidate[]>("/api/transfers/unconfirmed"),
-      api<RefundLink[]>("/api/refunds/suggestions"),
+      api<RefundSuggestionGroup[]>("/api/refunds/suggestions"),
       api<DuplicatePair[]>("/api/duplicates/pending"),
       api<ReconciliationStatus[]>("/api/reconciliation"),
       api<PaymentVerificationStatus[]>("/api/transfers/payments"),
@@ -1302,17 +1263,17 @@ export function App() {
     setToast(null);
     setImportPreview(null);
     if (!selectedAccountId) {
-      showToast({ tone: "error", message: "Choose or add the account this CSV belongs to first." });
+      showToast({ tone: "error", message: "Choose or add the account this file belongs to first." });
       return;
     }
     if (!selectedFile) {
-      showToast({ tone: "error", message: "Choose a CSV file before previewing." });
+      showToast({ tone: "error", message: "Choose a CSV, OFX/QFX, or PDF file before previewing." });
       return;
     }
     setBusyAction("import");
     try {
       const uploadFile = await importFileForUpload();
-      if (!uploadFile) throw new Error("Choose a CSV file before previewing.");
+      if (!uploadFile) throw new Error("Choose a supported import file before previewing.");
       const form = new FormData();
       form.append("file", uploadFile);
       const response = await fetch(apiUrl(`/api/imports/preview?account_id=${selectedAccountId}&sign_convention=${signOverride}`), {
@@ -1342,7 +1303,7 @@ export function App() {
     setBusyAction("import");
     try {
       const uploadFile = await importFileForUpload();
-      if (!uploadFile) throw new Error("Choose a CSV file before staging.");
+      if (!uploadFile) throw new Error("Choose a supported import file before staging.");
       const form = new FormData();
       form.append("file", uploadFile);
       const response = await fetch(apiUrl(`/api/imports/stage?account_id=${selectedAccountId}&sign_convention=${importSignConvention}`), {
@@ -1881,7 +1842,7 @@ export function App() {
     try {
       const result = await api<{ created: number; removed: number; limit: number; limited: boolean; operation_id?: string }>("/api/refunds/detect", { method: "POST", headers: { "x-csrf-token": csrf } });
       await loadData();
-      showToast({ tone: "success", message: result.created ? result.limited ? `Showing the ${result.limit} highest-confidence refund matches.` : `Found ${result.created} likely refund match${result.created === 1 ? "" : "es"}.` : "No likely refund matches found.", operationId: result.operation_id });
+      showToast({ tone: "success", message: result.created ? result.limited ? `Showing ${result.limit} refunds with the strongest ranked expense recommendations.` : `Found ${result.created} refund${result.created === 1 ? "" : "s"} with ranked expense recommendations.` : "No likely refund matches found.", operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Refund scan failed." });
     } finally {
@@ -1889,32 +1850,67 @@ export function App() {
     }
   }
 
-  async function confirmRefundSuggestion(link: RefundLink) {
-    const allowOverRefund = link.would_exceed_expense && window.confirm(`Linked refunds would total ${formatMoney(link.linked_refund_cents)}, more than the ${formatMoney(link.expense_amount_cents)} expense. Link it anyway?`);
-    if (link.would_exceed_expense && !allowOverRefund) return;
-    setBusyAction(`refund-confirm-${link.id}`);
+  function refundCandidateForSelection(selection: RefundSelection) {
+    const group = refundSuggestions.find((item) => item.refund_transaction.id === selection.refund_transaction_id);
+    return group?.candidates.find((candidate) => candidate.expense_transaction.id === selection.expense_transaction_id);
+  }
+
+  async function confirmRefundSelections(selections: RefundSelection[]) {
+    if (selections.length === 0) return;
+    const overRefund = selections.map(refundCandidateForSelection).find((candidate) => candidate?.would_exceed_expense);
+    const allowOverRefund = Boolean(overRefund) && window.confirm(
+      overRefund
+        ? `This expense already has ${formatMoney(overRefund.existing_linked_refund_cents)} in linked refunds. The selected refund would bring the total to ${formatMoney(overRefund.linked_refund_cents)} against a ${formatMoney(overRefund.expense_amount_cents)} expense. Link it anyway?`
+        : "Link the selected matches?",
+    );
+    if (overRefund && !allowOverRefund) return;
+    setBusyAction("refund-confirm-selection");
     try {
-      const result = await api<{ operation_id: string }>(`/api/refunds/${link.id}/confirm`, { method: "POST", headers: { "x-csrf-token": csrf }, body: JSON.stringify({ allow_over_refund: allowOverRefund }) });
+      const result = await api<{ confirmed: number; operation_id: string }>("/api/refunds/confirm-selection", { method: "POST", headers: { "x-csrf-token": csrf }, body: JSON.stringify({ selections, allow_over_refund: allowOverRefund }) });
       await loadData();
-      showToast({ tone: "success", message: "Refund linked to its original expense.", operationId: result.operation_id });
+      showToast({ tone: "success", message: `${result.confirmed} refund${result.confirmed === 1 ? "" : "s"} linked to the selected expense${result.confirmed === 1 ? "" : "s"}.`, operationId: result.operation_id });
     } catch (error) {
-      showToast({ tone: "error", message: error instanceof Error ? error.message : "Refund could not be confirmed." });
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "The selected refunds could not be confirmed." });
     } finally {
       setBusyAction(null);
     }
   }
 
-  async function rejectRefundSuggestion(linkId: number) {
-    setBusyAction(`refund-reject-${linkId}`);
+  async function rejectRefundSelections(selections: RefundSelection[], bulk = true) {
+    if (selections.length === 0) return;
+    if (bulk && !window.confirm(`Reject the currently selected expense option for ${selections.length} refund${selections.length === 1 ? "" : "s"}? Other recommendations will remain available.`)) return;
+    setBusyAction("refund-reject-selection");
     try {
-      const result = await api<{ operation_id: string }>(`/api/refunds/${linkId}/reject`, { method: "POST", headers: { "x-csrf-token": csrf } });
+      const result = await api<{ rejected: number; operation_id?: string }>("/api/refunds/reject-candidates", { method: "POST", headers: { "x-csrf-token": csrf }, body: JSON.stringify({ selections }) });
       await loadData();
-      showToast({ tone: "info", message: "Refund suggestion dismissed.", operationId: result.operation_id });
+      showToast({ tone: "info", message: `${result.rejected} refund candidate${result.rejected === 1 ? "" : "s"} dismissed.`, operationId: result.operation_id });
     } catch (error) {
-      showToast({ tone: "error", message: error instanceof Error ? error.message : "Refund suggestion could not be dismissed." });
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "The refund candidates could not be dismissed." });
     } finally {
       setBusyAction(null);
     }
+  }
+
+  async function settleRefundsWithoutExpense(refundIds: number[]) {
+    if (refundIds.length === 0 || !window.confirm(`Keep ${refundIds.length} selected transaction${refundIds.length === 1 ? "" : "s"} as categorized refunds without linking an expense?`)) return;
+    setBusyAction("refund-no-expense");
+    try {
+      const result = await api<{ resolved: number; operation_id?: string }>("/api/refunds/no-expense", { method: "POST", headers: { "x-csrf-token": csrf }, body: JSON.stringify({ refund_transaction_ids: refundIds }) });
+      await loadData();
+      showToast({ tone: "success", message: `${result.resolved} refund${result.resolved === 1 ? "" : "s"} marked reviewed without an expense link.`, operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "The refunds could not be settled." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function confirmRefundSuggestion(suggestion: RefundSuggestionGroup, candidate: RefundCandidate) {
+    return confirmRefundSelections([{ refund_transaction_id: suggestion.refund_transaction.id, expense_transaction_id: candidate.expense_transaction.id }]);
+  }
+
+  function rejectRefundSuggestion(suggestion: RefundSuggestionGroup, candidate: RefundCandidate) {
+    return rejectRefundSelections([{ refund_transaction_id: suggestion.refund_transaction.id, expense_transaction_id: candidate.expense_transaction.id }], false);
   }
 
   async function loadRefundPicker(expenseId: number, search = "") {
@@ -1970,8 +1966,8 @@ export function App() {
       showToast({ tone: "error", message: "Choose an account before confirming this transaction." });
       return;
     }
-    if (transaction.transaction_type === "expense" && !transaction.category_id) {
-      showToast({ tone: "error", message: "Choose a category before confirming an expense." });
+    if (transactionTypeRequiresCategory(transaction.transaction_type) && !transaction.category_id) {
+      showToast({ tone: "error", message: `Choose a category before confirming this ${transaction.transaction_type}.` });
       return;
     }
     const operationId = await updateTransaction(transaction.id, { review_status: "confirmed" });
@@ -2257,7 +2253,8 @@ export function App() {
     }
   }
 
-  const missingCategoryTransactions = transactions.filter((transaction) => transaction.transaction_type === "expense" && !transaction.category_id);
+  const missingCategoryTransactions = transactions.filter((transaction) => transactionTypeRequiresCategory(transaction.transaction_type) && !transaction.category_id);
+  const refundSuggestionByTransactionId = useMemo(() => new Map(refundSuggestions.map((suggestion) => [suggestion.refund_transaction.id, suggestion])), [refundSuggestions]);
   const missingCategoryCountByAccount = useMemo(() => {
     const counts = new Map<number, number>();
     for (const transaction of missingCategoryTransactions) {
@@ -2390,7 +2387,9 @@ export function App() {
       .some((value) => String(value).toLowerCase().includes(normalizedTransactionSearch));
   };
   const duplicateCandidateIds = new Set(duplicatePairs.map((pair) => pair.candidate.id));
-  const reviewTransactions = transactions.filter((transaction) => ["needs_review", "suggested", "possible_duplicate"].includes(transaction.review_status) && !duplicateCandidateIds.has(transaction.id) && transactionMatchesSearch(transaction));
+  const reviewQueueTransactions = filterReviewQueue(transactions, duplicateCandidateIds, "all");
+  const uncategorizedRefunds = reviewQueueTransactions.filter(isUncategorizedRefund);
+  const reviewTransactions = filterReviewQueue(transactions, duplicateCandidateIds, reviewQueueFilter).filter(transactionMatchesSearch);
   const visibleReviewTransactions = reviewTransactions.slice(0, 5);
   const activeAccounts = accounts.filter((account) => account.status === "active");
   const importableAccounts = activeAccounts.filter((account) => account.account_type !== "external");
@@ -2522,7 +2521,7 @@ export function App() {
       }]
     : taxonomyTree;
   const latestCashFlowRows = periodCashFlowRows.slice(-4).reverse();
-  const reviewCount = reviewTransactions.length;
+  const reviewCount = reviewQueueTransactions.length;
   const accountNeedingTaxonomy = accounts.find((account) => !taxonomyOverrides[String(account.id)] && !account.institution_name);
   const transactionFilterChips: Array<{ key: string; label: string; onRemove: () => void }> = [];
   if (activeView === "account" && focusedAccount) {
@@ -2591,6 +2590,30 @@ export function App() {
       showToast({ tone: "success", message: `Imported ${result.inserted} rows from ${batch.filename}. ${result.skipped} duplicates skipped.`, operationId: result.operation_id });
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Inbox import could not be confirmed." });
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function confirmStatementBalanceBatch(
+    batch: InboxBatch,
+    selection: { statement_date: string; balance_cents: number; candidate_index: number | null },
+  ) {
+    setBusyAction(`inbox-confirm-${batch.id}`);
+    try {
+      await api(`/api/imports/${batch.id}/statement-preview`, {
+        method: "PATCH",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify(selection),
+      });
+      const result = await api<{ inserted: number; operation_id?: string }>(`/api/imports/${batch.id}/confirm`, {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+      });
+      await loadData();
+      showToast({ tone: "success", message: `Statement balance from ${batch.filename} now anchors ${batch.account_name}.`, operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "Statement balance could not be confirmed." });
     } finally {
       setBusyAction(null);
     }
@@ -2762,24 +2785,7 @@ export function App() {
           <strong>Private Finance</strong>
           <span>Local plan</span>
         </div>
-        <nav>
-          {primaryNavItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                className={activeView === item.id ? "navItem active" : "navItem"}
-                key={item.id}
-                title={item.label}
-                onClick={() => {
-                  navigateToView(item.id);
-                }}
-              >
-                <Icon size={16} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-        </nav>
+        <PrimaryNav items={primaryNavItems} activeView={activeView} reviewCount={reviewCount} onNavigate={navigateToView} />
         {sidebarTaxonomyTree.map((section) => {
           const sectionCollapseKey = `section::${section.label}`;
           const sectionCollapsed = section.label === "Archived Accounts"
@@ -3278,6 +3284,7 @@ export function App() {
                   busyAction={busyAction}
                   onScan={() => void scanImportInbox()}
                   onConfirm={(batch) => void confirmInboxBatch(batch)}
+                  onConfirmStatement={confirmStatementBalanceBatch}
                   onDiscard={(batch) => void discardInboxBatch(batch)}
                 />
                 <div className="historyImportPanel">
@@ -3399,11 +3406,11 @@ export function App() {
                   </div>
                 ) : null}
                 <div className="compactForm">
-                  <input type="file" accept=".csv" onChange={(event) => chooseImportFile(event.target.files?.[0] ?? null)} />
+                  <input type="file" accept=".csv,.ofx,.qfx,.pdf,text/csv,application/pdf" onChange={(event) => chooseImportFile(event.target.files?.[0] ?? null)} />
                   <div className="buttonRow">
                     <button className="secondaryButton" onClick={() => void analyzeSelectedImport()}>
                       <Sparkles size={16} />
-                      Analyze CSV
+                      Analyze file
                     </button>
                     <button className="secondaryButton" onClick={() => void previewSelectedImport()} disabled={!selectedAccountId || !selectedFile || busyAction !== null}>
                       <Search size={16} />
@@ -3679,12 +3686,19 @@ export function App() {
             suggestions={refundSuggestions}
             busy={busyAction}
             onDetect={() => void detectRefunds()}
-            onConfirm={(link) => void confirmRefundSuggestion(link)}
-            onReject={(linkId) => void rejectRefundSuggestion(linkId)}
+            onConfirm={(suggestion, candidate) => void confirmRefundSuggestion(suggestion, candidate)}
+            onReject={(suggestion, candidate) => void rejectRefundSuggestion(suggestion, candidate)}
+            onBulkConfirm={(selections) => void confirmRefundSelections(selections)}
+            onBulkReject={(selections) => void rejectRefundSelections(selections)}
+            onNoExpense={(refundIds) => void settleRefundsWithoutExpense(refundIds)}
           />
 
           <section className="toolPanel reviewInboxPanel" id="review-inbox">
             <PanelTitle icon={ListChecks} title="Review Inbox" subtitle={`${reviewTransactions.length} items need a human decision.`} />
+            <div className="reviewQueueFilters" role="group" aria-label="Review inbox filters">
+              <button type="button" className={reviewQueueFilter === "all" ? "filterToggle active" : "filterToggle"} onClick={() => setReviewQueueFilter("all")}>All review items <span>{reviewQueueTransactions.length}</span></button>
+              <button type="button" className={reviewQueueFilter === "uncategorized_refunds" ? "filterToggle active" : "filterToggle"} onClick={() => setReviewQueueFilter("uncategorized_refunds")} disabled={uncategorizedRefunds.length === 0}>Uncategorized refunds <span>{uncategorizedRefunds.length}</span></button>
+            </div>
             <label className="transactionSearchBox reviewSearch"><Search size={14} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search review transactions" /></label>
             {visibleReviewTransactions.length > 0 ? (
               <div className="selectionToolbar reviewBulkToolbar">
@@ -3731,7 +3745,9 @@ export function App() {
               />
             ) : null}
             <div className="reviewEditor">
-              {visibleReviewTransactions.map((transaction) => (
+              {visibleReviewTransactions.map((transaction) => {
+                const refundSuggestion = refundSuggestionByTransactionId.get(transaction.id);
+                return (
                 <div className="inlineDeleteGroup" key={transaction.id}>
                   <article className={selectedTransactionIds.includes(transaction.id) ? "reviewCard selected" : "reviewCard"}>
                     <div className="reviewCardTop">
@@ -3796,6 +3812,7 @@ export function App() {
                       disabled={transactionTypeUsesCategory(transaction.transaction_type) && !transaction.category_id}
                       onSave={(matchText) => saveRuleFromTransaction(transaction, matchText)}
                     />
+                    {transaction.transaction_type === "refund" && refundSuggestion ? <RefundCategorizationNudge suggestion={refundSuggestion} busy={busyAction} formatMoney={formatMoney} onConfirm={(suggestion, candidate) => void confirmRefundSuggestion(suggestion, candidate)} onReject={(suggestion, candidate) => void rejectRefundSuggestion(suggestion, candidate)} /> : null}
                     <div className="reviewActions">
                       <button className="dangerTextButton" onClick={() => requestDelete({ kind: "transaction", id: transaction.id, label: transaction.raw_description })}>
                         Delete
@@ -3819,8 +3836,8 @@ export function App() {
                     />
                   ) : null}
                 </div>
-              ))}
-              {reviewTransactions.length === 0 ? <p className="emptyText">No items waiting for review. New imports will appear here before reports rely on them.</p> : null}
+              );})}
+              {reviewTransactions.length === 0 ? <p className="emptyText">{reviewQueueFilter === "uncategorized_refunds" ? "No uncategorized refunds are waiting." : "No items waiting for review. New imports will appear here before reports rely on them."}</p> : null}
             </div>
           </section>
 
@@ -4038,8 +4055,9 @@ export function App() {
               <span>Action</span>
             </div>
             {pagedTransactions.map((transaction) => {
-              const needsCategory = transaction.transaction_type === "expense" && !transaction.category_id;
+              const needsCategory = transactionTypeRequiresCategory(transaction.transaction_type) && !transaction.category_id;
               const categoryLabel = categories.find((category) => category.id === transaction.category_id)?.label;
+              const refundSuggestion = refundSuggestionByTransactionId.get(transaction.id);
               const editorOpen = categoryEditor?.transactionId === transaction.id;
               const isFocused = focusedTransactionId === transaction.id;
               const isEditing = transactionView === "live" && editingTransactionId === transaction.id;
@@ -4254,6 +4272,7 @@ export function App() {
                     </button>
                   </div>
                 ) : null}
+                {isEditing && transaction.transaction_type === "refund" && refundSuggestion ? <RefundCategorizationNudge suggestion={refundSuggestion} busy={busyAction} formatMoney={formatMoney} onConfirm={(suggestion, candidate) => void confirmRefundSuggestion(suggestion, candidate)} onReject={(suggestion, candidate) => void rejectRefundSuggestion(suggestion, candidate)} /> : null}
                 {isEditing ? (
                   <SaveRuleControl
                     compact
@@ -4407,7 +4426,7 @@ export function App() {
                     onChange={(value) => { setImportSignConvention(value); setImportPreview(null); }}
                     onRemember={(value) => void rememberImportSignConvention(value)}
                   />
-                  <input type="file" accept=".csv,text/csv" onChange={(event) => chooseImportFile(event.target.files?.[0] ?? null)} />
+                  <input type="file" accept=".csv,.ofx,.qfx,.pdf,text/csv,application/pdf" onChange={(event) => chooseImportFile(event.target.files?.[0] ?? null)} />
                   <div className="buttonRow">
                     <button className="secondaryButton" onClick={() => void analyzeSelectedImport()} disabled={!selectedFile}>
                       Analyze

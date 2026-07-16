@@ -209,6 +209,20 @@ class RefundConfirmRequest(BaseModel):
     allow_over_refund: bool = False
 
 
+class RefundSelection(BaseModel):
+    refund_transaction_id: int
+    expense_transaction_id: int
+
+
+class RefundSelectionRequest(BaseModel):
+    selections: list[RefundSelection] = Field(min_length=1)
+    allow_over_refund: bool = False
+
+
+class RefundNoExpenseRequest(BaseModel):
+    refund_transaction_ids: list[int] = Field(min_length=1)
+
+
 class HoldingMetadataUpdate(BaseModel):
     symbol: str
     user_description: str | None = None
@@ -232,6 +246,12 @@ class NetWorthSnapshotUpsert(BaseModel):
 class StatementCheckpointCreate(BaseModel):
     statement_date: date
     statement_balance_cents: int
+
+
+class StatementBalancePreviewUpdate(BaseModel):
+    statement_date: date
+    balance_cents: int
+    candidate_index: int | None = Field(default=None, ge=0)
 
 
 class DeleteConfirmRequest(BaseModel):

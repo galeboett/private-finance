@@ -86,6 +86,29 @@ def test_card_payment_rule_needs_no_category_and_clears_existing_category():
         assert transaction.review_status == "confirmed"
 
 
+def test_refund_rule_requires_and_applies_category():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        card = Account(display_name="Card", account_type="credit_card")
+        shopping = Category(key="shopping-refund", label="Shopping")
+        db.add_all([card, shopping])
+        db.flush()
+        refund = Transaction(account_id=card.id, transaction_date=date(2026, 7, 8), amount_cents=2500, raw_description="ACME RETURN", transaction_type="income", review_status="needs_review", source_hash="refund-rule")
+        db.add(refund)
+        db.commit()
+        request = Request({"type": "http", "headers": [(b"x-csrf-token", b"csrf")]})
+        session = SessionToken(user_id=7, csrf_token="csrf")
+
+        created = create_rule(RuleCreate(category_id=shopping.id, field_name="raw_description", match_text="ACME RETURN", suggested_transaction_type=TransactionType.REFUND), request, session, db)
+        result = apply_rule(created["id"], RuleApplyRequest(scope="unreviewed"), request, session, db)
+
+        assert result["updated"] == 1
+        assert refund.transaction_type == "refund"
+        assert refund.category_id == shopping.id
+        assert refund.review_status == "confirmed"
+
+
 def test_apply_rule_to_one_row_confirms_and_journals_reclassification_dismissal():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)

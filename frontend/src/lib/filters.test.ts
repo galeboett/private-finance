@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeTxnFilter, encodeTxnFilter, freshAccountNavigationFilter, readAppRoute, routeUrl, type TxnFilter } from "./filters";
+import { decodeTxnFilter, encodeTxnFilter, freshAccountNavigationFilter, isMonthInReportPeriod, isTransactionInReportPeriod, readAppRoute, routeUrl, type TxnFilter } from "./filters";
 
 describe("transaction filter URL codec", () => {
   it("round-trips every supported non-default filter", () => {
@@ -35,5 +35,16 @@ describe("transaction filter URL codec", () => {
     expect(freshAccountNavigationFilter(12)).toEqual({ accounts: ["12"] });
     expect(routeUrl("account", 12, freshAccountNavigationFilter(12))).toBe("/accounts/12/transactions?accounts=12");
     expect(decodeTxnFilter(encodeTxnFilter(investigation))).toEqual(investigation);
+  });
+});
+
+describe("report-period predicates", () => {
+  const now = new Date(2026, 6, 15);
+
+  it("keeps transaction and monthly rows on the same last-12-month boundary", () => {
+    expect(isTransactionInReportPeriod("2025-08-01", "last_12_months", now)).toBe(true);
+    expect(isMonthInReportPeriod("2025-08", "last_12_months", now)).toBe(true);
+    expect(isTransactionInReportPeriod("2025-07-31", "last_12_months", now)).toBe(false);
+    expect(isMonthInReportPeriod("2025-07", "last_12_months", now)).toBe(false);
   });
 });

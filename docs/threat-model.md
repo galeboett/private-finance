@@ -1,5 +1,7 @@
 # Threat Model
 
+For the detailed, point-in-time privacy and data-retention audit, see [Privacy Risks and Data-Handling Assessment](privacy-risks.md).
+
 ## In Scope
 
 - malicious websites attempting to reach the localhost app
@@ -23,4 +25,3 @@
 - encrypted backup archive rather than file copy
 - recent re-auth for exports and settings changes
 - zip-bomb and XLSX parser hardening beyond CSV-first support
-

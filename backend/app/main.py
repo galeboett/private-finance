@@ -13,7 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -22,22 +22,24 @@ from .bootstrap import initialize_database
 from .config import settings
 from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
-from .models import Account, AppUser, Category, CategoryRule, DuplicatePairDecision, ExpenseAllocation, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, PaymentVerificationDismissal, RefundLink, SecurityMetadata, SecurityPrice, SessionToken, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
+from .models import Account, AppUser, Category, CategoryRule, DuplicatePairDecision, ExpenseAllocation, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, PaymentVerificationDismissal, RefundLink, RefundPairDecision, RefundReviewResolution, SecurityMetadata, SecurityPrice, SessionToken, StatementCheckpoint, StatementPdfPattern, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkDuplicateResolutionRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, DuplicateSelectionPreviewRequest, DuplicateSelectionResolutionRequest, ExternalPaymentRequest, HistoricalRefundBulkRequest, HoldingLotCreate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, ManualTransactionCreate, MonthlyAllocationRequest, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, PaymentVerificationDismissRequest, RefundConfirmRequest, RefundLinkCreate, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkDuplicateResolutionRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, DuplicateSelectionPreviewRequest, DuplicateSelectionResolutionRequest, ExternalPaymentRequest, HistoricalRefundBulkRequest, HoldingLotCreate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, ManualTransactionCreate, MonthlyAllocationRequest, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, PaymentVerificationDismissRequest, RefundConfirmRequest, RefundLinkCreate, RefundNoExpenseRequest, RefundSelectionRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementBalancePreviewUpdate, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
 from .services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_timeseries
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
 from .services.duplicates import duplicate_queue_summary, link_historical_refund_pairs, pending_duplicate_pairs, preview_duplicate_selection, preview_historical_refund_links, preview_safe_duplicate_resolution, resolve_all_exact_duplicates, resolve_duplicate, resolve_duplicate_selection, resolve_safe_duplicate_reimports
 from .services.duplicate_scan import scan_ledger_duplicates
-from .services.importers import annotate_import_interpretation, commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
+from .services.importers import PreviewResult, annotate_import_interpretation, commit_categorized_history, commit_import, commit_reviewed_categorized_history, decode_text, detect_preset_from_content, preview_import, review_categorized_history, suggest_account_for_import
 from .services.import_inbox import confirm_pending_import, discard_pending_import, inbox_directory, pending_import_batches, scan_import_inbox, stage_uploaded_import
+from .services.importers_ofx import parse_ofx, suggest_ofx_account
+from .services.statement_pdf import extract_statement_pdf, saved_pdf_pattern, statement_preview_row, suggest_pdf_account, update_statement_preview
 from .services.history_cleanup import apply_categorized_history_sign_cleanup, preview_categorized_history_sign_cleanup
 from .services.mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .services.operation_history import OperationConflict, list_operations, operation_detail, undo_operation
 from .services.reconciliation import list_reconciliation_statuses, reconciliation_status, save_manual_checkpoint
-from .services.refunds import OverRefundError, confirm_refund_link, create_manual_refund_link, create_refund_suggestions, delete_refund_link, list_manual_refund_candidates, list_refund_links, reject_refund_link
+from .services.refunds import OverRefundError, confirm_refund_link, confirm_refund_selections, create_manual_refund_link, create_refund_suggestions, delete_refund_link, list_manual_refund_candidates, list_refund_links, list_refund_suggestion_groups, reject_refund_candidates, reject_refund_link, resolve_refunds_without_expense
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
 from .services.sign_profiles import profile_payload, resolution_payload, resolve_sign_preview, save_sign_profile
 from .services.snapshots import account_is_anchored, current_account_value, net_worth_contributors, net_worth_series, net_worth_stats, net_worth_unanchored_accounts, refresh_holding_net_worth_snapshot, upsert_net_worth_snapshot
@@ -57,6 +59,7 @@ app.add_middleware(LocalhostSecurityMiddleware)
 
 UNASSIGNED_ACCOUNT_MARKER = "SYSTEM"
 CATEGORYLESS_TRANSACTION_TYPES = {TransactionType.TRANSFER.value, TransactionType.CREDIT_CARD_PAYMENT.value}
+CATEGORY_REQUIRED_FOR_CONFIRMATION = {TransactionType.EXPENSE.value, TransactionType.REFUND.value}
 
 
 def actor_for_session(session: SessionToken) -> str:
@@ -76,6 +79,15 @@ def normalize_transaction_updates(updates: dict) -> dict:
     if updates.get("transaction_type") in CATEGORYLESS_TRANSACTION_TYPES:
         updates["category_id"] = None
     return updates
+
+
+def validate_transaction_confirmation(transaction: Transaction, updates: dict) -> None:
+    next_status = updates.get("review_status", transaction.review_status)
+    next_type = updates.get("transaction_type", transaction.transaction_type)
+    next_category_id = updates.get("category_id", transaction.category_id)
+    if next_status == ReviewStatus.CONFIRMED.value and next_type in CATEGORY_REQUIRED_FOR_CONFIRMATION and next_category_id is None:
+        noun = "refund" if next_type == TransactionType.REFUND.value else "expense"
+        raise HTTPException(status_code=400, detail=f"Choose a category before confirming this {noun}")
 
 
 def append_payment_reclassification_dismissal(db: Session, transaction: Transaction, updates: dict, changes: list[MutationChange]) -> None:
@@ -239,6 +251,8 @@ def operation_bulk_update(payload: OperationBulkUpdateRequest, request: Request,
             raise HTTPException(status_code=400, detail="Choose a valid account")
     if "category_id" in updates and updates["category_id"] is not None and not db.get(Category, updates["category_id"]):
         raise HTTPException(status_code=400, detail="Category not found")
+    for transaction in transactions:
+        validate_transaction_confirmation(transaction, updates)
     changes: list[MutationChange] = []
     for transaction in transactions:
         before = changed_values(transaction, updates.keys())
@@ -578,6 +592,8 @@ def _delete_transaction_row(db: Session, transaction: Transaction) -> None:
     db.execute(delete(ExpenseAllocation).where(ExpenseAllocation.transaction_id == transaction.id))
     db.execute(delete(TransferLink).where((TransferLink.from_transaction_id == transaction.id) | (TransferLink.to_transaction_id == transaction.id)))
     db.execute(delete(RefundLink).where((RefundLink.expense_transaction_id == transaction.id) | (RefundLink.refund_transaction_id == transaction.id)))
+    db.execute(delete(RefundPairDecision).where((RefundPairDecision.expense_transaction_id == transaction.id) | (RefundPairDecision.refund_transaction_id == transaction.id)))
+    db.execute(delete(RefundReviewResolution).where(RefundReviewResolution.refund_transaction_id == transaction.id))
     db.execute(delete(PaymentVerificationDismissal).where(PaymentVerificationDismissal.transaction_id == transaction.id))
     db.execute(delete(DuplicatePairDecision).where((DuplicatePairDecision.transaction_a_id == transaction.id) | (DuplicatePairDecision.transaction_b_id == transaction.id)))
     record_audit_event(
@@ -811,6 +827,22 @@ async def imports_analyze(file: UploadFile = File(...), session: SessionToken = 
     content = await file.read()
     if len(content) > settings.import_file_size_limit_mb * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File too large")
+    filename = file.filename or "import.csv"
+    suffix = Path(filename).suffix.casefold()
+    if suffix in {".ofx", ".qfx"}:
+        try:
+            account, confidence, reason, proposed = suggest_ofx_account(db, content)
+            parsed = parse_ofx(content)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"preset_type": "ofx_statement", "suggested_account_id": account.id if account else None, "match_confidence": confidence, "reason": reason, "proposed_account": proposed, "warnings": parsed.warnings}
+    if suffix == ".pdf":
+        try:
+            pdf_preview = extract_statement_pdf(content, filename)
+            account, confidence, reason, proposed = suggest_pdf_account(db, filename, pdf_preview)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"preset_type": "pdf_statement", "suggested_account_id": account.id if account else None, "match_confidence": confidence, "reason": reason, "proposed_account": proposed, "warnings": pdf_preview.warnings}
     try:
         suggestion = suggest_account_for_import(db, file.filename or "import.csv", content)
     except ValueError as error:
@@ -853,6 +885,23 @@ async def imports_preview(account_id: int, sign_convention: Literal["auto", "pre
     content = await file.read()
     if len(content) > settings.import_file_size_limit_mb * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File too large")
+    filename = file.filename or "import.csv"
+    suffix = Path(filename).suffix.casefold()
+    if suffix in {".ofx", ".qfx"}:
+        try:
+            parsed = parse_ofx(content)
+            preview = annotate_import_interpretation(PreviewResult(rows=parsed.rows, warnings=parsed.warnings, detected_preset="ofx_statement"), account)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"preset_type": "ofx_statement", "sign_convention": "preset", "sign_decision": None, "rows": preview.rows[:25], "warnings": preview.warnings}
+    if suffix == ".pdf":
+        try:
+            pattern = saved_pdf_pattern(db, account)
+            pdf_preview = extract_statement_pdf(content, filename, preferred_label=pattern.balance_label if pattern else None)
+            row = statement_preview_row(pdf_preview, account)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"preset_type": "pdf_statement", "sign_convention": "preset", "sign_decision": None, "rows": [row], "warnings": pdf_preview.warnings}
     try:
         preset_type = detect_preset_from_content(decode_text(content), file.filename or "import.csv")
     except ValueError as error:
@@ -1029,6 +1078,26 @@ def confirm_inbox_import(batch_id: int, request: Request, session: SessionToken 
         raise HTTPException(status_code=400, detail=str(error)) from error
     db.commit()
     return result
+
+
+@app.patch("/api/imports/{batch_id}/statement-preview")
+def edit_statement_balance_preview(batch_id: int, payload: StatementBalancePreviewUpdate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    batch = db.get(ImportBatch, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Import batch not found")
+    try:
+        result = update_statement_preview(
+            db,
+            batch,
+            statement_date=payload.statement_date,
+            balance_cents=payload.balance_cents,
+            candidate_index=payload.candidate_index,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    db.commit()
+    return {"preview": result, "pending": pending_import_batches(db)}
 
 
 @app.post("/api/imports/{batch_id}/discard")
@@ -1376,6 +1445,7 @@ def update_transaction(transaction_id: int, payload: TransactionReviewUpdate, re
     next_account = db.get(Account, updates.get("account_id", transaction.account_id))
     if next_review_status == "confirmed" and (not next_account or next_account.last_four == UNASSIGNED_ACCOUNT_MARKER):
         raise HTTPException(status_code=400, detail="Choose an account before confirming this transaction")
+    validate_transaction_confirmation(transaction, updates)
     before = changed_values(transaction, updates.keys())
     for key, value in updates.items():
         setattr(transaction, key, value)
@@ -1580,7 +1650,10 @@ def delete_monthly_allocation(transaction_id: int, request: Request, session: Se
 def review_inbox(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     rows = db.scalars(
         live_transaction_select(
-            Transaction.review_status.in_(["needs_review", "suggested", "possible_duplicate"]),
+            or_(
+                Transaction.review_status.in_(["needs_review", "suggested", "possible_duplicate"]),
+                and_(Transaction.transaction_type == TransactionType.REFUND.value, Transaction.category_id.is_(None)),
+            ),
         )
     ).all()
     return [
@@ -1944,7 +2017,7 @@ def reject_transfer(link_id: int, request: Request, session: SessionToken = Depe
 
 @app.get("/api/refunds/suggestions")
 def get_refund_suggestions(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
-    return list_refund_links(db, confirmed=False)
+    return list_refund_suggestion_groups(db)
 
 
 @app.get("/api/refunds/expenses/{expense_transaction_id}")
@@ -1964,6 +2037,40 @@ def get_refund_candidates(expense_transaction_id: int, search: str | None = None
 def detect_refunds(request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
     return create_refund_suggestions(db, actor=actor_for_session(session))
+
+
+@app.post("/api/refunds/confirm-selection")
+def confirm_refund_selection(payload: RefundSelectionRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    selections = [(row.refund_transaction_id, row.expense_transaction_id) for row in payload.selections]
+    try:
+        return confirm_refund_selections(db, selections=selections, allow_over_refund=payload.allow_over_refund, actor=actor_for_session(session))
+    except OverRefundError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/refunds/reject-candidates")
+def reject_refund_candidate_selection(payload: RefundSelectionRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    try:
+        return reject_refund_candidates(db, selections=[(row.refund_transaction_id, row.expense_transaction_id) for row in payload.selections], actor=actor_for_session(session))
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/refunds/no-expense")
+def settle_refunds_without_expense(payload: RefundNoExpenseRequest, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    try:
+        return resolve_refunds_without_expense(db, refund_ids=payload.refund_transaction_ids, actor=actor_for_session(session))
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.post("/api/refund-links")
@@ -2352,6 +2459,8 @@ APP_EXPORT_TABLES = [
     HoldingSnapshot,
     HoldingLot,
     NetWorthSnapshot,
+    StatementCheckpoint,
+    StatementPdfPattern,
     SecurityMetadata,
     SecurityPrice,
 ]
@@ -2374,6 +2483,8 @@ APP_EXPORT_ENTITY_TYPES = {
     HoldingSnapshot: "holding_snapshot",
     HoldingLot: "holding_lot",
     NetWorthSnapshot: "net_worth_snapshot",
+    StatementCheckpoint: "statement_checkpoint",
+    StatementPdfPattern: "statement_pdf_pattern",
     SecurityMetadata: "security_metadata",
     SecurityPrice: "security_price",
 }

@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from ..models import DuplicatePairDecision, ExpenseAllocation, PaymentVerificationDismissal, RefundLink, Transaction, TransactionSplit, TransferLink
+from ..models import DuplicatePairDecision, ExpenseAllocation, PaymentVerificationDismissal, RefundLink, RefundPairDecision, RefundReviewResolution, Transaction, TransactionSplit, TransferLink
 
 
 def purge_expired_trash(db: Session, *, retention_days: int) -> int:
@@ -23,6 +23,8 @@ def purge_expired_trash(db: Session, *, retention_days: int) -> int:
     db.execute(delete(ExpenseAllocation).where(ExpenseAllocation.transaction_id.in_(ids)))
     db.execute(delete(TransferLink).where((TransferLink.from_transaction_id.in_(ids)) | (TransferLink.to_transaction_id.in_(ids))))
     db.execute(delete(RefundLink).where((RefundLink.expense_transaction_id.in_(ids)) | (RefundLink.refund_transaction_id.in_(ids))))
+    db.execute(delete(RefundPairDecision).where((RefundPairDecision.expense_transaction_id.in_(ids)) | (RefundPairDecision.refund_transaction_id.in_(ids))))
+    db.execute(delete(RefundReviewResolution).where(RefundReviewResolution.refund_transaction_id.in_(ids)))
     db.execute(delete(PaymentVerificationDismissal).where(PaymentVerificationDismissal.transaction_id.in_(ids)))
     db.execute(delete(DuplicatePairDecision).where((DuplicatePairDecision.transaction_a_id.in_(ids)) | (DuplicatePairDecision.transaction_b_id.in_(ids))))
     db.execute(delete(Transaction).where(Transaction.id.in_(ids)))

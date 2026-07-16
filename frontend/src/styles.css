@@ -2264,6 +2264,61 @@ textarea {
   background: #fbfcfb;
 }
 
+.navItemCount {
+  margin-left: auto;
+  min-width: 1.35rem;
+  padding: 0.08rem 0.38rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.13);
+  color: inherit;
+  font-size: 0.68rem;
+  text-align: center;
+}
+
+.reviewQueueFilters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.75rem 0;
+}
+
+.reviewQueueFilters .filterToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.reviewQueueFilters .filterToggle span {
+  min-width: 1.25rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  background: rgba(20, 28, 47, 0.08);
+  font-size: 0.7rem;
+}
+
+.refundCategorizationNudge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0.65rem 0;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid rgba(64, 101, 223, 0.28);
+  border-radius: 10px;
+  background: rgba(76, 111, 230, 0.08);
+}
+
+.refundCategorizationNudge > div:first-child {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.refundCategorizationNudge span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .duplicateReviewPanel {
   grid-column: 1 / -1;
   min-width: 0;
@@ -2365,6 +2420,19 @@ textarea {
   background: var(--surface-2);
   box-shadow: 0 8px 18px rgba(28, 39, 58, 0.12);
 }
+
+.fileTypeBadge { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 999px; background: var(--blue-soft); color: var(--blue); font-size: 0.68rem; font-weight: 800; letter-spacing: 0.05em; }
+.statementBalanceCard .pendingInboxTitle strong { display: inline-flex; align-items: center; gap: 7px; }
+.statementCandidates { margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
+.statementCandidates legend { padding: 0 6px; font-size: 0.78rem; font-weight: 700; }
+.statementCandidates label { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 0; cursor: pointer; }
+.statementCandidates label + label { border-top: 1px solid var(--line); }
+.statementCandidates label span { display: grid; gap: 2px; }
+.statementCandidates label span strong { font-size: 0.82rem; }
+.statementCandidates label span:not(strong), .statementCandidates label span { font-size: 0.74rem; color: var(--muted); }
+.statementBalanceFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.statementBalanceFields label { display: grid; gap: 5px; font-size: 0.76rem; font-weight: 700; }
+@media (max-width: 720px) { .statementBalanceFields { grid-template-columns: 1fr; } }
 
 .duplicateSelectionBar > span {
   margin-right: auto;
@@ -3922,6 +3990,238 @@ select.editableCell {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface-2);
+}
+
+.refundSuggestionCard.selected {
+  border-color: #7395ef;
+  box-shadow: 0 0 0 2px rgba(59, 106, 232, 0.1);
+}
+
+.refundBulkSticky {
+  position: sticky;
+  top: 8px;
+  z-index: 24;
+}
+
+.refundBulkSticky .bulkSelectionBar {
+  box-shadow: 0 8px 20px rgba(21, 37, 74, 0.12);
+}
+
+.refundGroupHeader {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.refundGroupHeader > div {
+  display: grid;
+  gap: 3px;
+}
+
+.refundGroupHeader > div span,
+.refundCandidateNavigator > div:first-child span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.refundGroupSelect {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.refundGroupSelect input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--blue);
+}
+
+.refundCandidateNavigator {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.refundCandidateNavigator > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.refundCandidateChips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.refundCandidateChips button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 50px;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.refundCandidateChips button small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.refundCandidateChips button.active {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
+}
+
+.refundCandidateChips button.active small {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.refundMatchReasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.refundMatchReasons span {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: var(--blue-soft);
+  color: #29498f;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.refundExistingContext {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(59, 106, 232, 0.22);
+  border-radius: 8px;
+  background: var(--blue-soft);
+  font-size: 12px;
+}
+
+.refundExistingContext.warning {
+  border-color: rgba(184, 120, 0, 0.35);
+  background: var(--yellow-soft);
+}
+
+.refundExistingContext > div,
+.refundExistingContext li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.refundExistingContext > div span {
+  color: var(--muted);
+  text-align: right;
+}
+
+.refundExistingContext ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 8px 0 0;
+  border-top: 1px solid rgba(59, 106, 232, 0.18);
+  list-style: none;
+}
+
+.refundExistingContext li span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.refundExistingContext p {
+  margin: 0;
+  font-weight: 800;
+}
+
+.refundReviewActions {
+  align-items: center;
+}
+
+.refundBulkConfirmModal {
+  width: min(860px, 100%);
+}
+
+.refundBulkConfirmRows {
+  display: grid;
+  gap: 7px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.refundBulkConfirmRows > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.refundBulkConfirmRows span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.refundBulkConfirmRows strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.refundBulkConfirmRows small {
+  color: var(--muted);
+}
+
+@media (max-width: 720px) {
+  .refundGroupHeader {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .refundGroupSelect {
+    grid-column: 1 / -1;
+  }
+
+  .refundCandidateNavigator {
+    align-items: flex-start;
+  }
+
+  .refundCandidateChips {
+    width: 100%;
+  }
+
+  .refundBulkSticky {
+    top: 0;
+  }
+
+  .refundBulkConfirmRows > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .refundWarning {

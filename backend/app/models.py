@@ -229,6 +229,24 @@ class RefundLink(TimestampMixin, Base):
     confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class RefundPairDecision(TimestampMixin, Base):
+    __tablename__ = "refund_pair_decisions"
+    __table_args__ = (UniqueConstraint("refund_transaction_id", "expense_transaction_id", name="uq_refund_pair_decision_pair"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    refund_transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), nullable=False, index=True)
+    expense_transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), nullable=False, index=True)
+    decision: Mapped[str] = mapped_column(String(30), nullable=False)
+
+
+class RefundReviewResolution(TimestampMixin, Base):
+    __tablename__ = "refund_review_resolutions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    refund_transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), unique=True, nullable=False, index=True)
+    resolution: Mapped[str] = mapped_column(String(30), nullable=False)
+
+
 class PaymentVerificationDismissal(TimestampMixin, Base):
     __tablename__ = "payment_verification_dismissals"
 
@@ -296,6 +314,16 @@ class StatementCheckpoint(TimestampMixin, Base):
     statement_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     statement_balance_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     source: Mapped[str] = mapped_column(String(30), nullable=False)
+
+
+class StatementPdfPattern(TimestampMixin, Base):
+    __tablename__ = "statement_pdf_patterns"
+    __table_args__ = (UniqueConstraint("institution_id", name="uq_statement_pdf_pattern_institution"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), nullable=False, index=True)
+    balance_label: Mapped[str] = mapped_column(String(120), nullable=False)
+    date_label: Mapped[str | None] = mapped_column(String(120))
 
 
 class SecurityMetadata(TimestampMixin, Base):

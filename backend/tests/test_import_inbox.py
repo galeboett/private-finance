@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -6,11 +9,18 @@ from app.db import Base
 from app.models import Account, HoldingSnapshot, ImportBatch, ImportSignProfile, Institution, Operation, StagingRow, Transaction
 from app.services.import_inbox import confirm_pending_import, discard_pending_import, pending_import_batches, scan_import_inbox, stage_uploaded_import
 from app.services.importers import commit_import
+from app.services.statement_pdf import BalanceCandidate, StatementPdfPreview
 
 
 CARD_CSV = b"Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n07/10/2026,07/11/2026,Market,Shopping,Sale,-42.50,\n"
 CARD_CSV_FORMAT_VARIANT = b"\xef\xbb\xbfTransaction Date,Post Date,Description,Category,Type,Amount,Memo\r\n07/10/2026,07/11/2026,Market,Shopping,Sale,-42.50,\r\n\r\n"
 GENERIC_MAPPED_CSV = b"PF Date,PF Description,PF Amount\n2026-07-09,Local Cafe,-12.34\n"
+OFX_CHECKING = b"""OFXHEADER:100
+<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS>
+<BANKACCTFROM><BANKID>021000021<ACCTID>1234567890<ACCTTYPE>CHECKING
+<BANKTRANLIST><STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20260701<TRNAMT>-5.25<FITID>QFX-1<NAME>CAFE</BANKTRANLIST>
+<LEDGERBAL><BALAMT>100.00<DTASOF>20260701
+</STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>"""
 
 
 def _database():
@@ -108,6 +118,78 @@ def test_manual_upload_uses_the_pending_review_pipeline(tmp_path, monkeypatch):
         db.commit()
         assert committed["inserted"] == 1
         assert db.scalar(select(Transaction)).raw_description == "Market"
+
+
+def test_qfx_scan_uses_account_number_staging_and_fitid_commit(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "import_inbox_dir", tmp_path)
+    source = tmp_path / "checking.qfx"
+    source.write_bytes(OFX_CHECKING)
+    engine = _database()
+    with Session(engine) as db:
+        account = Account(display_name="Checking 7890", account_type="checking", last_four="7890")
+        db.add(account)
+        db.commit()
+
+        scan = scan_import_inbox(db)
+        batch = db.get(ImportBatch, scan["staged"][0]["batch_id"])
+        pending = pending_import_batches(db)[0]
+
+        assert batch.account_id == account.id
+        assert batch.detected_preset == "ofx_statement"
+        assert pending["sign_decision"] is None
+        assert pending["preview"][0]["source_reference"] == "QFX-1"
+
+        result = confirm_pending_import(db, batch, "user:7")
+        db.commit()
+        assert result["inserted"] == 2
+        assert db.scalar(select(Transaction)).source_reference == "QFX-1"
+
+
+def test_rescan_refreshes_an_existing_pending_pdf_preview(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "import_inbox_dir", tmp_path)
+    content = b"synthetic-pdf"
+    source = tmp_path / "boa-checking-6768.pdf"
+    source.write_bytes(content)
+    engine = _database()
+    with Session(engine) as db:
+        institution = Institution(name="Bank of America")
+        account = Account(institution=institution, display_name="BoA Checking", account_type="checking", last_four="6768")
+        db.add(account)
+        db.flush()
+        batch = ImportBatch(
+            account_id=account.id,
+            filename=source.name,
+            file_hash=hashlib.sha256(content).hexdigest(),
+            semantic_hash=hashlib.sha256(content).hexdigest(),
+            status="pending",
+            detected_preset="pdf_statement",
+            source_path=str(source),
+        )
+        db.add(batch)
+        db.flush()
+        old_preview = {"row_index": 1, "row_kind": "statement_balance", "statement_date": "2026-06-17", "candidates": [], "selected_balance_cents": None}
+        db.add(StagingRow(import_batch_id=batch.id, account_id=account.id, row_index=1, row_kind="statement_balance", raw_json=json.dumps(old_preview), normalized_json=json.dumps(old_preview)))
+        db.commit()
+        monkeypatch.setattr(
+            "app.services.import_inbox.extract_statement_pdf",
+            lambda *args, **kwargs: StatementPdfPreview(
+                institution="Bank of America",
+                statement_date="2026-06-17",
+                date_label="Ending balance date",
+                candidates=[BalanceCandidate("Ending Balance", 890458, "Ending balance on June 17, 2026 $8,904.58")],
+                selected_index=0,
+                confidence="high",
+                warnings=[],
+            ),
+        )
+
+        result = scan_import_inbox(db)
+        db.commit()
+        pending = pending_import_batches(db)[0]
+
+        assert result["staged"][0]["refreshed"] is True
+        assert result["skipped"] == []
+        assert pending["preview"][0]["selected_balance_cents"] == 890458
 
 
 def test_mapped_generic_csv_can_be_staged_and_confirmed(tmp_path, monkeypatch):

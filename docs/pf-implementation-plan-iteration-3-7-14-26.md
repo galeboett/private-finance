@@ -181,6 +181,14 @@ The audit identified these follow-ups:
 **Frontend:** `features/imports/StatementBalanceReview.tsx`; inbox file-type badges (CSV/OFX/PDF).
 **Tests:** OFX SGML + XML fixtures (checking, card, investment), FITID dedupe, ledgerbal→checkpoint, PDF pattern registry against synthetic fixtures for BoA/Citi layouts, low-confidence multi-candidate path.
 
+### Phase 9 implementation update — July 15, 2026
+
+Implemented. The inbox and account-selected staging flow accept `.ofx`, `.qfx`, and `.pdf` in addition to CSV. The new hand-rolled OFX reader supports 1.x SGML leaf tags and 2.x XML containers, normalizes `STMTTRN` activity, treats `FITID` as a reliable source reference, writes ledger-balance checkpoints/net-worth snapshots, and records supported investment positions. OFX signs remain canonical-as-provided; the existing plausibility analyzer still adds a visible warning when their distribution contradicts the selected account.
+
+PDF handling remains deliberately balance-only. Local `pdfplumber` extraction produces an editable preview, selects only a single unambiguous labeled balance, presents all candidates when confidence is low, normalizes printed card amounts into negative liabilities, and saves the confirmed balance label per institution. Manually selected PDFs are parsed without being copied into managed staging; inbox PDFs remain user-owned source files. Confirmation writes the checkpoint, net-worth anchor, and learned pattern in one Activity-undoable operation.
+
+`StatementBalanceReview.tsx` owns the new preview UI and file-type badges distinguish CSV/OFX/QFX/PDF. Report-period predicates moved out of the shell during this phase, so `App.tsx` decreased from 5,339 to **5,322 physical lines**. Focused coverage includes SGML checking, XML card/investment fixtures, FITID re-import dedupe, ledger-balance and holding anchors, BoA/Citi synthetic statement layouts, low-confidence multi-candidate behavior, credit-card liability signs, saved institution patterns, and inbox QFX routing. Institution download guidance and data-retention behavior are documented in `docs/statement-ingestion.md`.
+
 ## Phase 10 — Refund Data Flow & Categorization — ~2 days
 *Closes the dashboard gap from Part 2's first answer.*
 
@@ -190,6 +198,14 @@ The audit identified these follow-ups:
 4. **"Uncategorized refunds" nudge:** Review sidebar count + filter chip (`types=refund, category=none`), so leakage is visible instead of silent.
 
 **Frontend:** extend existing category editors; no new components beyond the nudge chip.
+
+### Phase 10 implementation update — July 16, 2026
+
+Implemented. Refunds now share direct category assignment and saved-rule behavior with expenses in Review, bulk review, and the account ledger. Single and bulk confirmation enforce a category for both expense and refund rows at the API boundary, preventing an uncategorized refund from disappearing merely because it was confirmed. Confirmed refunds without categories remain in the Review queue; the primary navigation shows the complete queue count and an **Uncategorized refunds** chip isolates the affected rows.
+
+Open refund suggestions are surfaced beside the refund in both Review and the ledger editor with **Link refund** and **Not this expense** actions. Confirming the link continues to make the original expense category authoritative. Signed category aggregation is pinned by a regression test proving that a $20 refund nets a $120 expense to $100 and that the category drill-down contains both rows. Review-queue and transaction-type behavior have focused Vitest coverage.
+
+`PrimaryNav` and the review-queue policy moved out of the shell. `App.tsx` decreased from the Phase 9 baseline of 5,322 to **5,320 physical lines**. Phase verification: **215 backend tests passed**, **17 Vitest tests passed**, TypeScript/production Vite build succeeded.
 
 ## Phase 11 — Brokerage & Net-Worth UX — ~3 days
 *Assets-first pages, holdings table upgrades, asset editing parity.*
@@ -238,4 +254,4 @@ Phases 6→7 are strictly ordered (duplicate resolution should happen against a 
 - *Duplicate scan over-flagging:* legitimate same-day same-amount purchases exist (the two $6.65 Amazon rows may be real). Tiering plus keep-both memory plus per-pair review remain the default: never bulk auto-delete an ordinary pair below the "exact" tier, and even exact bulk resolution stays one journaled, undoable operation. The only probable-tier exception is the constrained, previewed authoritative-history merge documented in the audit above; it preserves the established identity and must not become a generic probable-delete path.
 - *Detector changes regress transfers:* payment-detection v2 tightens keywords; re-run the transfer matcher tests plus a fixture from the real `PAYMENT FROM CHK … CONF#…` shape to prove true positives still match.
 
-**Standing merge gate (unchanged, restated):** `pytest` green, `pnpm build` green, CHANGELOG + App.tsx physical line count updated per phase. Current July 15 worktree verification: **200 backend tests passed**, TypeScript is green, **14 Vitest tests passed**, and the production Vite build succeeds. Repeat this gate before each merge.
+**Standing merge gate (unchanged, restated):** `pytest` green, `pnpm build` green, CHANGELOG + App.tsx physical line count updated per phase. Current July 16 Phase 10 verification: **215 backend tests passed**, TypeScript is green, **17 Vitest tests passed**, and the production Vite build succeeds. Repeat this gate before each merge.

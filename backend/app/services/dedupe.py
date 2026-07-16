@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..models import ImportBatch, Transaction
 
 
-RELIABLE_REFERENCE_PRESETS = {"card_reference", "venmo_activity"}
+RELIABLE_REFERENCE_PRESETS = {"card_reference", "venmo_activity", "ofx_statement"}
 HISTORY_REFERENCE_PREFIX = "categorized-history-row-"
 
 

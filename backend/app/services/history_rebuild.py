@@ -16,6 +16,8 @@ from ..models import (
     ImportBatch,
     PaymentVerificationDismissal,
     RefundLink,
+    RefundPairDecision,
+    RefundReviewResolution,
     StagingRow,
     Transaction,
     TransactionSplit,
@@ -75,6 +77,8 @@ def preview_history_import_purge(db: Session, *, filename: str = HISTORICAL_WORK
         "allocations": _count(db, ExpenseAllocation, ExpenseAllocation.transaction_id.in_(transaction_ids)),
         "transfer_links": _count(db, TransferLink, or_(TransferLink.from_transaction_id.in_(transaction_ids), TransferLink.to_transaction_id.in_(transaction_ids))),
         "refund_links": _count(db, RefundLink, or_(RefundLink.expense_transaction_id.in_(transaction_ids), RefundLink.refund_transaction_id.in_(transaction_ids))),
+        "refund_pair_decisions": _count(db, RefundPairDecision, or_(RefundPairDecision.expense_transaction_id.in_(transaction_ids), RefundPairDecision.refund_transaction_id.in_(transaction_ids))),
+        "refund_review_resolutions": _count(db, RefundReviewResolution, RefundReviewResolution.refund_transaction_id.in_(transaction_ids)),
         "payment_dismissals": _count(db, PaymentVerificationDismissal, PaymentVerificationDismissal.transaction_id.in_(transaction_ids)),
         "duplicate_decisions": _count(db, DuplicatePairDecision, or_(DuplicatePairDecision.transaction_a_id.in_(transaction_ids), DuplicatePairDecision.transaction_b_id.in_(transaction_ids))),
         "holding_lots": _count(db, HoldingLot, HoldingLot.import_batch_id.in_(batch_ids)),
@@ -145,6 +149,8 @@ def purge_history_import_lineage(
     db.execute(delete(ExpenseAllocation).where(ExpenseAllocation.transaction_id.in_(transaction_ids)))
     db.execute(delete(TransferLink).where(or_(TransferLink.from_transaction_id.in_(transaction_ids), TransferLink.to_transaction_id.in_(transaction_ids))))
     db.execute(delete(RefundLink).where(or_(RefundLink.expense_transaction_id.in_(transaction_ids), RefundLink.refund_transaction_id.in_(transaction_ids))))
+    db.execute(delete(RefundPairDecision).where(or_(RefundPairDecision.expense_transaction_id.in_(transaction_ids), RefundPairDecision.refund_transaction_id.in_(transaction_ids))))
+    db.execute(delete(RefundReviewResolution).where(RefundReviewResolution.refund_transaction_id.in_(transaction_ids)))
     db.execute(delete(PaymentVerificationDismissal).where(PaymentVerificationDismissal.transaction_id.in_(transaction_ids)))
     db.execute(delete(DuplicatePairDecision).where(or_(DuplicatePairDecision.transaction_a_id.in_(transaction_ids), DuplicatePairDecision.transaction_b_id.in_(transaction_ids))))
     db.execute(delete(HoldingLot).where(HoldingLot.import_batch_id.in_(batch_ids)))

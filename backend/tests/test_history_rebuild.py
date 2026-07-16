@@ -92,6 +92,8 @@ def test_history_lineage_preview_and_purge_are_exact_scoped_and_release_source_h
             "allocations": 1,
             "transfer_links": 1,
             "refund_links": 1,
+            "refund_pair_decisions": 0,
+            "refund_review_resolutions": 0,
             "payment_dismissals": 1,
             "duplicate_decisions": 1,
             "holding_lots": 1,

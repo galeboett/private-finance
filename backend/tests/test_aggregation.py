@@ -76,6 +76,18 @@ def test_category_and_account_metadata_supports_precise_drill_down_labels():
         assert account["last_four"] == "9876"
 
 
+def test_categorized_refund_nets_category_total_and_drilldown_contains_both_rows():
+    with _session() as db:
+        _, _, _, travel, rows = _seed(db)
+        filters = TransactionFilter(categories=[str(travel.id)], transaction_types=[TransactionType.EXPENSE, TransactionType.REFUND])
+
+        aggregate = aggregate_by_category(db, filters)
+        drilldown_ids = list(db.scalars(select(Transaction.id).where(*transaction_filter_conditions(filters)).order_by(Transaction.id)))
+
+        assert aggregate == [{"category_id": travel.id, "category": "Travel", "total_cents": -10000, "count": 2}]
+        assert drilldown_ids == [rows[2].id, rows[3].id]
+
+
 def test_reporting_date_category_aggregate_preserves_splits_and_monthly_allocations():
     with _session() as db:
         account = Account(display_name="Checking", account_type="checking")

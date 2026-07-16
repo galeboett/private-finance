@@ -22,7 +22,7 @@ The app builds a full personal finance picture by turning account exports into a
    - Create one account for each real-world checking account, savings account, credit card, brokerage account, or retirement account.
    - The account is the container that tells the app where an uploaded file belongs.
 
-2. Add downloaded CSVs to the Import Inbox.
+2. Add downloaded CSV, OFX/QFX, or statement PDF files to the Import Inbox.
    - Copy files into the local folder shown under Settings → Smart import → Import Inbox.
    - When two accounts produce generic names such as `stmt.csv`, create one subfolder per account and include the last four digits: `boa-checking-1016/stmt.csv` and `boa-checking-6768/stmt.csv`. The scanner searches subfolders and uses the full relative path for account matching.
    - The default folder is `~/PrivateFinance/import-inbox`, outside the source repository. Set `PF_IMPORT_INBOX` to choose another location.
@@ -31,6 +31,8 @@ The app builds a full personal finance picture by turning account exports into a
    - Files without a confident account match are left untouched and listed for manual Smart import.
    - For an unfamiliar CSV layout, choose its date, description, and amount columns once. This browser remembers the mapping for later files with the same headers.
    - The import preview shows how each amount will be interpreted. Normally, charges/withdrawals are negative and refunds/deposits are positive. If a raw file uses the opposite convention, choose **Reverse detected signs**, preview again, and stage only after the interpretation is correct.
+   - OFX/QFX transactions use the institution's `FITID` as a reliable dedupe reference. Statement balances and supported investment positions in the same file become net-worth anchors when confirmed.
+   - PDF import is balance-only. Choose the statement date and ending balance from the preview; ambiguous candidates are never selected automatically. See `docs/statement-ingestion.md` for institution guidance and privacy details.
 
 3. Preview the normalized rows.
    - The app detects the file family from known headers.
@@ -44,7 +46,7 @@ The app builds a full personal finance picture by turning account exports into a
    - If an issuer reuses a reference with a different date or amount, the row is imported as **Possible duplicate** and linked to the existing transaction for review instead of being silently discarded.
    - Other raw CSV formats use an account-independent normalized transaction fingerprint, with compatibility checks for older fingerprints. Account cleanup reconciles ordinary CSV fingerprints when it merges account records, so a temporary internal account ID cannot defeat a later re-import check.
    - Categorized-history importing remains a separate one-time workflow and is not included in this raw-CSV reference-matching behavior.
-   - Source files are never moved or deleted, and confirmed imports are recorded in the mutation journal.
+   - Inbox source files are never moved or deleted, and confirmed imports are recorded in the mutation journal. A manually selected PDF is parsed in memory and is not copied into managed staging; only its confirmed date and balance are saved.
    - Download suffixes such as `(1)` do not determine duplicates. The app compares exact bytes, normalized parsed rows, and reliable issuer references, so renamed/reformatted copies are skipped while genuinely changed files are staged.
 
 5. Review and categorize.
