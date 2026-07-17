@@ -2550,15 +2550,22 @@ export function useFinanceController() {
     totalCents: section.rows.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0),
     groups: buildTaxonomyGroups(section.rows, accountBalances, taxonomyOverrides),
   }));
+  const sidebarAccountSection = {
+    label: "Accounts",
+    rows: activeAccounts,
+    emptyText: "No accounts yet.",
+    totalCents: activeAccounts.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0),
+    groups: buildTaxonomyGroups(activeAccounts, accountBalances, taxonomyOverrides),
+  };
   const sidebarTaxonomyTree = archivedAccounts.length > 0
-    ? [...taxonomyTree, {
+    ? [sidebarAccountSection, {
         label: "Archived Accounts",
         rows: archivedAccounts,
         emptyText: "",
         totalCents: archivedAccounts.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0),
         groups: buildTaxonomyGroups(archivedAccounts, accountBalances, taxonomyOverrides),
       }]
-    : taxonomyTree;
+    : [sidebarAccountSection];
   const latestCashFlowRows = periodCashFlowRows.slice(-4).reverse();
   const reviewCount = reviewQueueTransactions.length;
   const accountNeedingTaxonomy = accounts.find((account) => !taxonomyOverrides[String(account.id)] && !account.institution_name);

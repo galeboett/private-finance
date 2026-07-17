@@ -47,6 +47,7 @@ type NetWorthStats = {
 type AllocationRow = { asset_class: string; market_value_cents: number };
 
 const uncategorizedFilterValue = "__uncategorized__";
+const spendingPalette = ["#2457c5", "#3b6ae8", "#5d83ed", "#7698f1", "#93acf4", "#b3c5f8"];
 const formatMoney = (cents: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
 
@@ -245,7 +246,7 @@ function SpendingReport({ rows, reportFilter, onPeek }: { rows: CategoryTotal[];
               const hidden = hiddenCategories.includes(id);
               return (
                 <button key={id} className={hidden ? "spendingLegendItem muted" : "spendingLegendItem"} onClick={() => setHiddenCategories((current) => hidden ? current.filter((value) => value !== id) : [...current, id])}>
-                  <span style={{ backgroundColor: `hsl(222 68% ${Math.min(68, 44 + index * 4)}%)` }} />
+                  <span style={{ backgroundColor: spendingPalette[index % spendingPalette.length] }} />
                   {category.category}
                 </button>
               );
@@ -285,7 +286,7 @@ function SpendingReport({ rows, reportFilter, onPeek }: { rows: CategoryTotal[];
                     const y = 250 - stackedHeight - height;
                     stackedHeight += height;
                     const categoryIndex = chartCategories.findIndex((category) => category.category_id === value.category.category_id);
-                    return <rect key={String(value.category.category_id)} x={x} y={y} width={width} height={height} rx="2" fill={`hsl(222 68% ${Math.min(68, 44 + categoryIndex * 4)}%)`}><title>{value.category.category}: {formatMoney(value.amount)}</title></rect>;
+                    return <rect className="spendingStackSegment" key={String(value.category.category_id)} x={x} y={y} width={width} height={height} rx="5" fill={spendingPalette[Math.max(0, categoryIndex) % spendingPalette.length]}><title>{value.category.category}: {formatMoney(value.amount)}</title></rect>;
                   })}
                   <text x={x + width / 2} y="272" textAnchor="middle" className="spendingMonthLabel">{new Date(`${month.month}-01T00:00:00`).toLocaleDateString(undefined, { month: "short", year: monthlyValues.length <= 8 ? "2-digit" : undefined })}</text>
                 </g>
@@ -303,7 +304,7 @@ function SpendingReport({ rows, reportFilter, onPeek }: { rows: CategoryTotal[];
             </div>
             <small className="spendingComparison">{total > 0 ? Math.round((row.amount_cents / total) * 100) : 0}% of categorized spending · {Math.round((row.amount_cents / max) * 100)}% of the largest category</small>
             <div className="barTrack blue">
-              <div style={{ width: `${Math.max(4, Math.round((row.amount_cents / max) * 100))}%`, backgroundColor: `hsl(222 68% ${Math.min(68, 46 + index * 3)}%)` }} />
+              <div style={{ width: `${Math.max(4, Math.round((row.amount_cents / max) * 100))}%`, backgroundColor: spendingPalette[index % spendingPalette.length] }} />
             </div>
           </DrillDownLink>
         ))}

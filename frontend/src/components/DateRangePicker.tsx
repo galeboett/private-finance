@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useState } from "react";
 
 type DateRange = { dateFrom: string; dateTo: string };
@@ -25,9 +25,14 @@ export function DateRangePicker({ dateFrom, dateTo, onApply }: DateRange & { onA
   }
 
   return <div className="dateRangePicker">
-    <button type="button" className={active ? "filterToggle active" : "filterToggle"} onClick={() => setOpen((current) => !current)}>{active ? `${shortDate(dateFrom)} – ${shortDate(dateTo)}` : "Custom…"}</button>
+    <button type="button" className={active ? "filterToggle active" : "filterToggle"} onClick={() => setOpen((current) => !current)}><CalendarDays size={14} />{active ? `${shortDate(dateFrom)} – ${shortDate(dateTo)}` : "Date"}</button>
     {open ? <div className="dateRangePopover" role="dialog" aria-label="Custom transaction date range">
-      <div className="dateRangeQuick"><button type="button" onClick={() => chooseQuick(relativeDateRange("last_90"))}>Last 90 days</button><button type="button" onClick={() => chooseQuick(relativeDateRange("quarter"))}>This quarter</button></div>
+      <div className="dateRangeQuick">
+        <button type="button" onClick={() => chooseQuick(relativeDateRange("last_30"))}>Last 30 days</button>
+        <button type="button" onClick={() => chooseQuick(relativeDateRange("last_90"))}>Last 90 days</button>
+        <button type="button" onClick={() => chooseQuick(relativeDateRange("ytd"))}>YTD</button>
+        <button type="button" onClick={() => chooseQuick(relativeDateRange("last_365"))}>Last 365 days</button>
+      </div>
       <div className="dateRangeMonths">
         <button type="button" className="ghostButton compactIconButton" aria-label="Previous month" onClick={() => setMonth(moveMonth(month, -1))}><ChevronLeft size={15} /></button>
         <MonthCalendar month={month} range={draft} onChoose={chooseDate} />
@@ -59,9 +64,17 @@ export function monthGrid(month: string): Array<string | null> {
   return [...Array(firstWeekday).fill(null), ...Array.from({ length: days }, (_, index) => `${year}-${String(monthNumber).padStart(2, "0")}-${String(index + 1).padStart(2, "0")}`)];
 }
 
-export function relativeDateRange(kind: "last_90" | "quarter", now = new Date()): DateRange {
+export function relativeDateRange(kind: "last_30" | "last_90" | "last_365" | "ytd" | "quarter", now = new Date()): DateRange {
   const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const start = kind === "last_90" ? new Date(end.getFullYear(), end.getMonth(), end.getDate() - 89) : new Date(end.getFullYear(), Math.floor(end.getMonth() / 3) * 3, 1);
+  const start = kind === "last_30"
+    ? new Date(end.getFullYear(), end.getMonth(), end.getDate() - 29)
+    : kind === "last_90"
+      ? new Date(end.getFullYear(), end.getMonth(), end.getDate() - 89)
+      : kind === "last_365"
+        ? new Date(end.getFullYear(), end.getMonth(), end.getDate() - 364)
+        : kind === "ytd"
+          ? new Date(end.getFullYear(), 0, 1)
+          : new Date(end.getFullYear(), Math.floor(end.getMonth() / 3) * 3, 1);
   return { dateFrom: localIsoDate(start), dateTo: localIsoDate(end) };
 }
 

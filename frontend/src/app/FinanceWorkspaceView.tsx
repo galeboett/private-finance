@@ -23,7 +23,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api as rawApi, apiUrl, bumpTransactionsVersion, getTransactionsVersion, parseApiJson, readableApiError, subscribeTransactionsVersion } from "../api/client";
 import { useApiClient } from "../api/hooks";
@@ -31,7 +31,6 @@ import { readAppRoute, routeUrl, type RouteView } from "./router";
 import { BulkActionBar, CashFlowGraphic, DrillDownLink, MultiSelectFilter, PanelTitle, UndoToast } from "../components/AppPrimitives";
 import { DateRangePicker } from "../components/DateRangePicker";
 import { DeleteConfirmInline, type DeleteTarget } from "../components/DeleteConfirmInline";
-import { FilterSummaryBar } from "../components/FilterSummaryBar";
 import { PrimaryNav } from "../components/PrimaryNav";
 import { AccountPage } from "../features/accounts/AccountPage";
 import type { ReconciliationStatus } from "../features/accounts/ReconciliationBadge";
@@ -302,10 +301,9 @@ type DashboardWidgetConfig = Record<DashboardWidgetKey, boolean>;
 
 const primaryNavItems: Array<{ id: AppView; label: string; icon: typeof LayoutDashboard }> = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "all-accounts", label: "All Accounts", icon: Landmark },
+  { id: "all-accounts", label: "Accounts", icon: Landmark },
   { id: "review", label: "Review", icon: ListChecks },
   { id: "history", label: "Activity", icon: History },
-  { id: "settings", label: "Settings", icon: Settings },
 ];
 
 const monthOptions: FilterOption[] = [
@@ -679,17 +677,91 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
     taxonomyTree, toast, toggleAccountSelection, toggleDashboardWidget, toggleHoldingSelection, toggleOperationDetail,
     toggleTaxonomyGroup, toggleTransactionSelection, toggleTransactionSort, totalExpenseCents, totalIncomeCents,
     transactionCategoryOptions, transactionDateFrom, transactionDateTo, transactionFilterChips, transactionHasRefund,
-    transactionPageCount, transactionSearch, transactionSummaryFilter, transactionView, transactionYears, transactions,
+    transactionPageCount, transactionSearch, transactionView, transactionYears, transactions,
     transferCandidates, uncategorizedRefunds, undoLoggedOperation, unlinkRefund, updateCategorizedHistoryRow, updateCategory,
     updateHoldingDescription, updateTransaction, visibleReviewIds, visibleReviewTransactions,
   } = controller;
 
+  const focusedAccountTransactionsForSummary = focusedAccount
+    ? transactions.filter((transaction) => transaction.account_id === focusedAccount.id)
+    : [];
+  const summaryCutoff = new Date();
+  summaryCutoff.setDate(summaryCutoff.getDate() - 29);
+  const summaryCutoffDate = `${summaryCutoff.getFullYear()}-${String(summaryCutoff.getMonth() + 1).padStart(2, "0")}-${String(summaryCutoff.getDate()).padStart(2, "0")}`;
+  const focusedRefundsCents = focusedAccountTransactionsForSummary
+    .filter((transaction) => transaction.transaction_type === "refund" && transaction.transaction_date >= summaryCutoffDate)
+    .reduce((sum, transaction) => sum + Math.abs(transaction.amount_cents), 0);
+  const focusedSpendByMonth = new Map<string, number>();
+  focusedAccountTransactionsForSummary
+    .filter((transaction) => transaction.transaction_type === "expense")
+    .forEach((transaction) => {
+      const month = transaction.transaction_date.slice(0, 7);
+      focusedSpendByMonth.set(month, (focusedSpendByMonth.get(month) ?? 0) + Math.abs(transaction.amount_cents));
+    });
+  const focusedAverageMonthlySpendCents = focusedSpendByMonth.size > 0
+    ? Math.round(Array.from(focusedSpendByMonth.values()).reduce((sum, amount) => sum + amount, 0) / focusedSpendByMonth.size)
+    : 0;
+
+  function clearTransactionFilters() {
+    if (activeView === "account") navigateToView("all-accounts");
+    setSelectedTransactionAccountFilters(accounts.map((account) => account.id));
+    setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value));
+    setSelectedTransactionYearFilters(transactionYears);
+    setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value));
+    setTransactionDateFrom("");
+    setTransactionDateTo("");
+    setTransactionAmountMin(undefined);
+    setTransactionAmountMax(undefined);
+    setTransactionDirection(undefined);
+    setTransactionSearch("");
+  }
+
+  function renderTransactionFilters(includeAccounts: boolean) {
+    return <div className="transactionFilterRow compactTransactionFilters">
+      {includeAccounts ? <MultiSelectFilter
+        label="Accounts"
+        options={accounts.map((account) => ({ value: String(account.id), label: account.display_name }))}
+        selectedValues={selectedTransactionAccountFilters.map(String)}
+        onToggle={(value) => setSelectedTransactionAccountFilters((current) => toggleValue(current, Number(value)))}
+        onSelectAll={() => setSelectedTransactionAccountFilters(accounts.map((account) => account.id))}
+        onDeselectAll={() => setSelectedTransactionAccountFilters([])}
+      /> : null}
+      <MultiSelectFilter
+        label="Months"
+        options={monthOptions}
+        selectedValues={selectedTransactionMonthFilters}
+        onToggle={(value) => setSelectedTransactionMonthFilters((current) => toggleValue(current, value))}
+        onSelectAll={() => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value))}
+        onDeselectAll={() => setSelectedTransactionMonthFilters([])}
+      />
+      <MultiSelectFilter
+        label="Years"
+        options={transactionYears.map((year) => ({ value: year, label: year }))}
+        selectedValues={selectedTransactionYearFilters}
+        onToggle={(value) => setSelectedTransactionYearFilters((current) => toggleValue(current, value))}
+        onSelectAll={() => setSelectedTransactionYearFilters(transactionYears)}
+        onDeselectAll={() => setSelectedTransactionYearFilters([])}
+      />
+      <MultiSelectFilter
+        label="Categories"
+        options={transactionCategoryOptions}
+        selectedValues={selectedTransactionCategoryFilters}
+        onToggle={(value) => setSelectedTransactionCategoryFilters((current) => toggleValue(current, value))}
+        onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
+        onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
+      />
+      <DateRangePicker dateFrom={transactionDateFrom} dateTo={transactionDateTo} onApply={(range) => { setTransactionDateFrom(range.dateFrom); setTransactionDateTo(range.dateTo); }} />
+      <button type="button" className={transactionHasRefund ? "filterToggle active" : "filterToggle"} onClick={() => setTransactionHasRefund((current) => !current)}>↩ Has refund</button>
+      <button type="button" className="filterToggle clearFiltersButton" onClick={clearTransactionFilters}><RotateCcw size={14} />Clear filters</button>
+    </div>;
+  }
+
   return (
-    <div className="appFrame" style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)` }}>
+    <div className="appFrame" style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)`, "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
       <aside className="sidebar">
         <div className="brandBlock">
+          <span className="brandMark"><Landmark size={16} /></span>
           <strong>Private Finance</strong>
-          <span>Local plan</span>
         </div>
         <PrimaryNav items={primaryNavItems} activeView={activeView} reviewCount={reviewCount} onNavigate={navigateToView} />
         <AccountNav sections={sidebarTaxonomyTree} collapsed={collapsedTaxonomyGroups} activeAccountId={activeView === "account" ? focusedAccountId : null} missingCategoryCountByAccount={missingCategoryCountByAccount} formatMoney={formatMoney} balanceLabel={sidebarBalanceLabel} onToggle={toggleTaxonomyGroup} onOpenAccount={openAccountView} />
@@ -739,6 +811,10 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
               <Plus size={11} />
             </span>
             Add Account
+          </button>
+          <button className={activeView === "settings" ? "navItem sidebarUtilityNav active" : "navItem sidebarUtilityNav"} onClick={() => navigateToView("settings")}>
+            <Settings size={16} />
+            <span>Settings</span>
           </button>
           <button className="taxonomyToggleButton" onClick={() => void handleLogout()}>
             <span className="sidebarActionIcon">
@@ -978,6 +1054,8 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
           <AccountPage
             account={focusedAccount}
             balanceCents={focusedAccountBalanceCents}
+            refundsCents={focusedRefundsCents}
+            averageMonthlySpendCents={focusedAverageMonthlySpendCents}
             missingCategoryCount={focusedMissingCategoryCount}
             reconciliation={focusedReconciliation}
             paymentVerification={focusedPaymentVerification}
@@ -1005,40 +1083,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
               {deleteTarget?.kind === "holding" || deleteTarget?.kind === "holding_bulk" ? <DeleteConfirmInline target={deleteTarget} confirmText={deleteConfirmText} onConfirmTextChange={setDeleteConfirmText} onConfirm={confirmDelete} onCancel={() => { setDeleteTarget(null); setDeleteConfirmText(""); }} /> : null}
               <HoldingsPanel rows={focusedHoldingRows} accounts={[focusedAccount]} csrf={csrf} selectedIds={selectedHoldingIds} formatMoney={formatMoney} formatDate={formatShortDate} onToggleSelection={toggleHoldingSelection} onRequestBulkDelete={requestBulkHoldingDelete} onClearSelection={() => { const ids = new Set(focusedHoldingRows.map((row) => row.id)); setSelectedHoldingIds((current) => current.filter((id) => !ids.has(id))); resetHoldingSelectionAnchor(); }} onUpdateDescription={updateHoldingDescription} onRequestDelete={(row) => requestDelete({ kind: "holding", id: row.id, label: `${row.symbol || row.description || "Holding"} in ${row.account}` })} onLotSaved={async (operationId) => { await loadData(); showToast({ tone: "success", message: "Tax lot updated; basis and gain/loss refreshed.", operationId }); }} onError={(message) => showToast({ tone: "error", message })} />
             </> : undefined}
-          >
-            <FilterSummaryBar filter={transactionSummaryFilter} formatMoney={formatMoney} onPeek={openTransactionPeek} />
-            <div className="transactionDiscovery stickyFilters">
-              <label className="transactionSearchBox"><Search size={16} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search institution, account, description, details, or labels" /></label>
-              <div className="transactionFilterRow">
-              <MultiSelectFilter
-                label="Months"
-                options={monthOptions}
-                selectedValues={selectedTransactionMonthFilters}
-                onToggle={(value) => setSelectedTransactionMonthFilters((current) => toggleValue(current, value))}
-                onSelectAll={() => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value))}
-                onDeselectAll={() => setSelectedTransactionMonthFilters([])}
-              />
-              <MultiSelectFilter
-                label="Years"
-                options={transactionYears.map((year) => ({ value: year, label: year }))}
-                selectedValues={selectedTransactionYearFilters}
-                onToggle={(value) => setSelectedTransactionYearFilters((current) => toggleValue(current, value))}
-                onSelectAll={() => setSelectedTransactionYearFilters(transactionYears)}
-                onDeselectAll={() => setSelectedTransactionYearFilters([])}
-              />
-              <MultiSelectFilter
-                label="Categories"
-                options={transactionCategoryOptions}
-                selectedValues={selectedTransactionCategoryFilters}
-                onToggle={(value) => setSelectedTransactionCategoryFilters((current) => toggleValue(current, value))}
-                onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
-                onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
-              />
-              <DateRangePicker dateFrom={transactionDateFrom} dateTo={transactionDateTo} onApply={(range) => { setTransactionDateFrom(range.dateFrom); setTransactionDateTo(range.dateTo); }} />
-              <button type="button" className={transactionHasRefund ? "filterToggle active" : "filterToggle"} onClick={() => setTransactionHasRefund((current) => !current)}>↩ Has refund</button>
-              </div>
-            </div>
-          </AccountPage>
+          />
         ) : null}
 
         {activeView === "all-accounts" ? (
@@ -1061,46 +1106,6 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                 </button>
               </div>
             </header>
-            <FilterSummaryBar filter={transactionSummaryFilter} formatMoney={formatMoney} onPeek={openTransactionPeek} />
-            <div className="transactionDiscovery stickyFilters">
-              <label className="transactionSearchBox"><Search size={16} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search institution, account, description, details, or labels" /></label>
-              <div className="transactionFilterRow">
-              <MultiSelectFilter
-                label="Accounts"
-                options={accounts.map((account) => ({ value: String(account.id), label: account.display_name }))}
-                selectedValues={selectedTransactionAccountFilters.map(String)}
-                onToggle={(value) => setSelectedTransactionAccountFilters((current) => toggleValue(current, Number(value)))}
-                onSelectAll={() => setSelectedTransactionAccountFilters(accounts.map((account) => account.id))}
-                onDeselectAll={() => setSelectedTransactionAccountFilters([])}
-              />
-              <MultiSelectFilter
-                label="Months"
-                options={monthOptions}
-                selectedValues={selectedTransactionMonthFilters}
-                onToggle={(value) => setSelectedTransactionMonthFilters((current) => toggleValue(current, value))}
-                onSelectAll={() => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value))}
-                onDeselectAll={() => setSelectedTransactionMonthFilters([])}
-              />
-              <MultiSelectFilter
-                label="Years"
-                options={transactionYears.map((year) => ({ value: year, label: year }))}
-                selectedValues={selectedTransactionYearFilters}
-                onToggle={(value) => setSelectedTransactionYearFilters((current) => toggleValue(current, value))}
-                onSelectAll={() => setSelectedTransactionYearFilters(transactionYears)}
-                onDeselectAll={() => setSelectedTransactionYearFilters([])}
-              />
-              <MultiSelectFilter
-                label="Categories"
-                options={transactionCategoryOptions}
-                selectedValues={selectedTransactionCategoryFilters}
-                onToggle={(value) => setSelectedTransactionCategoryFilters((current) => toggleValue(current, value))}
-                onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
-                onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
-              />
-              <DateRangePicker dateFrom={transactionDateFrom} dateTo={transactionDateTo} onApply={(range) => { setTransactionDateFrom(range.dateFrom); setTransactionDateTo(range.dateTo); }} />
-              <button type="button" className={transactionHasRefund ? "filterToggle active" : "filterToggle"} onClick={() => setTransactionHasRefund((current) => !current)}>↩ Has refund</button>
-              </div>
-            </div>
           </div>
         ) : null}
 
@@ -1750,8 +1755,17 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
         )}
 
         {(activeView === "all-accounts" || (activeView === "account" && accountTransactionsVisible)) && (
-        <section className="ledgerPanel ledgerWorkspace">
-          <PanelTitle icon={transactionView === "trash" ? Trash2 : ReceiptText} title={transactionView === "trash" ? "Transaction Trash" : activeView === "account" ? "Account Transactions" : "All Transactions"} subtitle={transactionView === "trash" ? "Restore deleted transactions or permanently remove them." : activeView === "account" ? "Transactions for the selected account." : "A searchable repository for every imported transaction."} />
+        <section className="ledgerPanel ledgerWorkspace" id={activeView === "account" ? "account-transactions" : "all-transactions"}>
+          {transactionView === "trash" ? <PanelTitle icon={Trash2} title="Transaction Trash" subtitle="Restore deleted transactions or permanently remove them." /> : null}
+          {transactionView === "live" ? <div className="transactionControlTop">
+            <div className="transactionModeTabs" role="tablist" aria-label="Transaction views">
+            <button type="button" role="tab" aria-selected={!selectedTransactionCategoryFilters.includes(uncategorizedFilterValue)} className={!selectedTransactionCategoryFilters.includes(uncategorizedFilterValue) ? "active" : ""} onClick={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value))}>All transactions</button>
+            <button type="button" role="tab" aria-selected="false" onClick={() => navigateToView("review")}>Needs review <span>{reviewCount}</span></button>
+            <button type="button" role="tab" aria-selected={selectedTransactionCategoryFilters.length === 1 && selectedTransactionCategoryFilters[0] === uncategorizedFilterValue} className={selectedTransactionCategoryFilters.length === 1 && selectedTransactionCategoryFilters[0] === uncategorizedFilterValue ? "active" : ""} onClick={() => setSelectedTransactionCategoryFilters([uncategorizedFilterValue])}>Uncategorized <span>{missingCategoryTransactions.length}</span></button>
+            </div>
+            <label className="transactionSearchBox"><Search size={15} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search transactions…" /></label>
+          </div> : null}
+          {transactionView === "live" ? renderTransactionFilters(activeView === "all-accounts") : null}
           <div className="trashViewToggle" role="group" aria-label="Transaction view">
             <button className={transactionView === "live" ? "active" : ""} onClick={() => setTransactionView("live")}><ReceiptText size={14} /> Transactions</button>
             <button className={transactionView === "trash" ? "active" : ""} onClick={() => setTransactionView("trash")}><Trash2 size={14} /> Trash</button>
@@ -1764,25 +1778,6 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                   <X size={12} />
                 </button>
               ))}
-              <button
-                type="button"
-                className="clearFilterChips"
-                onClick={() => {
-                  if (activeView === "account") navigateToView("all-accounts");
-                  setSelectedTransactionAccountFilters(accounts.map((account) => account.id));
-                  setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value));
-                  setSelectedTransactionYearFilters(transactionYears);
-                  setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value));
-                  setTransactionDateFrom("");
-                  setTransactionDateTo("");
-                  setTransactionAmountMin(undefined);
-                  setTransactionAmountMax(undefined);
-                  setTransactionDirection(undefined);
-                  setTransactionSearch("");
-                }}
-              >
-                Clear filters
-              </button>
             </div>
           ) : null}
           <div className="ledgerListToolbar">
@@ -1791,21 +1786,6 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                 <strong>{filteredTransactions.length} transaction{filteredTransactions.length === 1 ? "" : "s"}</strong>
                 <span>Showing {pagedTransactions.length}{filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}</span>
               </div>
-              <button
-                type="button"
-                className="secondaryButton compactButton"
-                onClick={() => {
-                  if (allRepositoryTransactionsSelected) {
-                    const repositoryIds = new Set(repositoryTransactionIds);
-                    setSelectedTransactionIds((current) => current.filter((id) => !repositoryIds.has(id)));
-                  } else {
-                    void selectAllMatchingTransactions();
-                  }
-                }}
-                disabled={repositoryTransactionIds.length === 0 || busyAction === "select-all-transactions"}
-              >
-                {allRepositoryTransactionsSelected ? "Clear all" : busyAction === "select-all-transactions" ? "Selecting…" : `Select all ${filteredTransactions.length}`}
-              </button>
             </div>
             {pagedTransactions.length < filteredTransactions.length ? (
               <>
@@ -1881,7 +1861,23 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
           ) : null}
           <div className="ledgerTable">
             <div className="ledgerHeader">
-              <span>Selected</span>
+              <span className="selectAllHeader">
+                <input
+                  type="checkbox"
+                  aria-label={allRepositoryTransactionsSelected ? "Clear transaction selection" : `Select all ${filteredTransactions.length} transactions`}
+                  checked={allRepositoryTransactionsSelected}
+                  disabled={repositoryTransactionIds.length === 0 || busyAction === "select-all-transactions"}
+                  onChange={() => {
+                    if (allRepositoryTransactionsSelected) {
+                      const repositoryIds = new Set(repositoryTransactionIds);
+                      setSelectedTransactionIds((current) => current.filter((id) => !repositoryIds.has(id)));
+                    } else {
+                      void selectAllMatchingTransactions();
+                    }
+                  }}
+                />
+                <small>{busyAction === "select-all-transactions" ? "Selecting…" : "All"}</small>
+              </span>
               <span>
                 <button type="button" className="sortableHeader" onClick={() => toggleTransactionSort("date")}>
                   Date{sortIndicator("date")}

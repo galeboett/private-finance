@@ -5482,3 +5482,1025 @@ a:focus-visible {
   .duplicateBulkButtons { justify-content: stretch; }
   .duplicateBulkButtons button { flex: 1 1 160px; }
 }
+
+/* --- Figma finance dashboard refresh --- */
+
+:root {
+  --bg: #f6f8fc;
+  --surface-2: #f1f4f9;
+  --ink: #171b2e;
+  --muted: #6e768b;
+  --line: #e1e6ef;
+  --blue: #3b6ae8;
+  --blue-soft: #edf2ff;
+  --blue-deep: #172044;
+  --blue-mid: #274a9f;
+  --shadow: 0 10px 30px rgba(35, 51, 88, 0.08);
+  --shadow-soft: 0 4px 16px rgba(35, 51, 88, 0.06);
+}
+
+body {
+  font-family: Inter, "Segoe UI Variable", "Segoe UI", sans-serif;
+  background: var(--bg);
+}
+
+.sidebar {
+  gap: 6px;
+  padding: 16px 12px;
+  overflow-y: auto;
+  background: #fff;
+  color: var(--ink);
+  border-right: 1px solid var(--line);
+  box-shadow: 8px 0 28px rgba(36, 52, 88, 0.035);
+}
+
+.brandBlock {
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 4px 8px 12px;
+}
+
+.brandBlock strong {
+  color: var(--ink);
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+
+.brandMark {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: linear-gradient(145deg, #4b7bf1, #2e5ed4);
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(59, 106, 232, 0.24);
+}
+
+.sidebar nav {
+  gap: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.navItem,
+.sidebarUtilityNav {
+  min-height: 38px;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  color: #4b556b;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.navItem:hover,
+.sidebarUtilityNav:hover {
+  background: #f5f7fb;
+  color: var(--ink);
+}
+
+.navItem.active,
+.sidebarUtilityNav.active {
+  background: var(--blue-soft);
+  color: var(--blue);
+  box-shadow: inset 3px 0 0 var(--blue);
+}
+
+.navItemCount {
+  margin-left: auto;
+  background: #e7edff;
+  color: var(--blue);
+}
+
+.accountNavigation {
+  display: grid;
+  gap: 5px;
+}
+
+.sidebarSection {
+  margin-top: 6px;
+}
+
+.sidebarSectionHeader,
+.accountRootHeader {
+  min-height: 30px;
+  padding: 6px 8px;
+  color: #788195;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+.accountRootHeader {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  text-transform: uppercase;
+}
+
+.sidebarSectionHeader:hover {
+  color: var(--ink);
+  background: #f5f7fb;
+}
+
+.sidebarSectionBalance,
+.sidebarGroupBalance,
+.sidebarAccountBalance {
+  color: #667085;
+  font-size: 10px;
+}
+
+.sidebarSectionBalance.negative,
+.sidebarGroupBalance.negative,
+.sidebarAccountBalance.negative {
+  padding: 2px 6px;
+  background: #fff0f0;
+  color: #ad3f4e;
+  box-shadow: none;
+}
+
+.sidebarInstitutions {
+  display: grid;
+  gap: 3px;
+}
+
+.sidebarInstitutionButton {
+  width: 100%;
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto 14px;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px 6px 14px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #4f586c;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sidebarInstitutionButton:hover,
+.sidebarInstitutionButton.active {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.institutionIcon,
+.categoryIcon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: #f1f4f9;
+  color: #657087;
+}
+
+.sidebarInstitutionButton.active .institutionIcon,
+.institutionIcon.large,
+.categoryIcon {
+  background: #e6edff;
+  color: var(--blue);
+}
+
+.accountTaxonomyScrim {
+  position: fixed;
+  inset: 0;
+  z-index: 68;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.accountTaxonomyFlyout {
+  position: fixed;
+  z-index: 70;
+  top: var(--flyout-top);
+  left: calc(var(--sidebar-width, 244px) + 10px);
+  width: min(310px, calc(100vw - var(--sidebar-width, 244px) - 28px));
+  max-height: calc(100vh - var(--flyout-top) - 18px);
+  overflow: auto;
+  border: 1px solid #dbe2ee;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 22px 54px rgba(28, 42, 76, 0.2);
+}
+
+.accountTaxonomyFlyout > header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 10px;
+  padding: 13px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(12px);
+}
+
+.accountTaxonomyFlyout > header div {
+  display: grid;
+  gap: 2px;
+}
+
+.accountTaxonomyFlyout > header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountTaxonomyFlyout > header span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.flyoutBackButton,
+.flyoutCloseButton {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: #f3f5f9;
+  color: #586176;
+}
+
+.flyoutCategoryList,
+.flyoutAccountList {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.flyoutCategoryList > button {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.flyoutCategoryList > button:hover {
+  border-color: #dce5fa;
+  background: var(--blue-soft);
+}
+
+.flyoutCategoryList > button > span:nth-child(2),
+.flyoutAccount > span:nth-child(2) {
+  display: grid;
+  gap: 2px;
+}
+
+.flyoutCategoryList small,
+.flyoutAccount small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.flyoutCategoryList > button > span:nth-child(3),
+.flyoutAccount > span:last-child {
+  color: #4f586c;
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.flyoutCategoryList .negative,
+.flyoutAccount .negative {
+  color: var(--red) !important;
+}
+
+.flyoutAccount {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.flyoutAccount:hover,
+.flyoutAccount.active {
+  border-color: #dce5fa;
+  background: var(--blue-soft);
+}
+
+.attentionDot {
+  background: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.14);
+}
+
+.sidebarAccounts .flyoutAccount {
+  padding-left: 18px;
+}
+
+.sidebarFooter {
+  display: grid;
+  gap: 5px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.taxonomyToggleButton,
+.addAccountButton {
+  min-height: 36px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #4b556b;
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.taxonomyToggleButton:hover,
+.addAccountButton:hover {
+  background: #f5f7fb;
+  color: var(--ink);
+}
+
+.sidebarActionIcon {
+  background: #eaf0ff;
+  color: var(--blue);
+}
+
+.taxonomyEditor {
+  border-color: var(--line);
+  background: #f8faff;
+}
+
+.taxonomyEditor label,
+.taxonomyEditor p {
+  color: var(--muted);
+}
+
+.taxonomyEditor input,
+.taxonomyEditor select {
+  border-color: var(--line);
+  background: #fff;
+  color: var(--ink);
+}
+
+.taxonomyActions button {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.sidebarResizeHandle::after {
+  background: #d9e0ea;
+}
+
+.sidebarResizeHandle:hover::after {
+  background: var(--blue);
+}
+
+.workspace {
+  background: var(--bg);
+}
+
+.topBar {
+  min-height: 56px;
+  margin-bottom: 18px;
+  padding: 10px 24px 0;
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom: 1px solid var(--line);
+  box-shadow: none;
+}
+
+.reportTabs {
+  gap: 26px;
+}
+
+.reportTab {
+  padding: 14px 0 13px;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.reportTab.active {
+  color: var(--blue);
+}
+
+.periodChip,
+.ghostButton,
+.filterButton,
+.secondaryButton,
+.primaryButton {
+  border-radius: 9px;
+}
+
+.metricTile,
+.reportSurface,
+.toolPanel,
+.phonePanel,
+.dashboardWidget,
+.widgetToggle,
+.ledgerPanel,
+.settingsPanel {
+  border-radius: 14px;
+  border-color: #e1e7f0;
+  box-shadow: var(--shadow-soft);
+}
+
+.metricTile {
+  min-height: 88px;
+  place-items: start;
+  align-content: center;
+  padding: 16px;
+  text-align: left;
+}
+
+.metricTile strong {
+  font-size: 22px;
+  letter-spacing: -0.03em;
+}
+
+.dashboardWidget {
+  background: linear-gradient(145deg, #fff 55%, #f1f5ff 100%);
+}
+
+.stickyAccountChrome {
+  position: relative;
+  top: auto;
+  padding: 16px 0 10px;
+  background: var(--bg);
+  box-shadow: none;
+}
+
+.compactAccountHeader {
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  align-items: center;
+  gap: 20px;
+  margin: 0 24px;
+  padding: 0;
+}
+
+.accountIdentity {
+  min-width: 0;
+}
+
+.accountIdentity h1 {
+  margin: 3px 0 5px;
+  font-size: 24px;
+  letter-spacing: -0.035em;
+}
+
+.accountHeroBalance {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  padding: 0 20px;
+  border-right: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.accountHeroBalance > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.accountHeroBalance > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.accountHeroBalance strong {
+  font-size: 22px;
+  letter-spacing: -0.03em;
+}
+
+.statusBadge.anchored {
+  background: #e8f7ee;
+  color: #1f7a49;
+}
+
+.accountHeroBalance .reconciliationBadge {
+  margin-top: 0;
+}
+
+.accountPageTabs {
+  display: flex;
+  gap: 4px;
+  margin: 14px 24px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.accountPageTabs button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.accountPageTabs button:hover,
+.accountPageTabs button.active {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.accountPageTabs button > span {
+  min-width: 18px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: #fff4d8;
+  color: #8b5e00;
+  text-align: center;
+  font-size: 10px;
+}
+
+.accountSummaryMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 10px 24px 0;
+}
+
+.accountSummaryMetrics > div {
+  display: grid;
+  gap: 4px;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: var(--shadow-soft);
+}
+
+.accountSummaryMetrics span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.accountSummaryMetrics strong {
+  font-size: 19px;
+  letter-spacing: -0.025em;
+}
+
+.accountSummaryMetrics small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.accountCategoryNotice,
+.accountReviewItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 10px 24px 0;
+  padding: 11px 13px;
+  border: 1px solid #f0d7a0;
+  border-radius: 11px;
+  background: #fffaf0;
+}
+
+.accountCategoryNotice > div {
+  display: grid;
+  gap: 2px;
+}
+
+.accountCategoryNotice span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.accountNeedsReviewPanel {
+  display: grid;
+  gap: 10px;
+  margin: 10px 24px 0;
+  padding: 14px;
+  border: 1px solid #dce4f4;
+  border-radius: 13px;
+  background: #fff;
+  box-shadow: var(--shadow-soft);
+}
+
+.accountNeedsReviewPanel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.accountNeedsReviewPanel h2 {
+  margin: 2px 0 0;
+  font-size: 16px;
+}
+
+.accountReviewItem {
+  margin: 0;
+}
+
+.accountSettingsBackdrop {
+  z-index: 85;
+}
+
+.accountSettingsModal {
+  width: min(720px, 100%);
+}
+
+.accountSettingsCheckpoint {
+  grid-template-columns: minmax(180px, 1fr) 150px 140px auto;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.accountSettingsCheckpoint > div {
+  grid-column: 1 / -1;
+}
+
+.filterSummaryBar {
+  margin: 10px 24px 0;
+  border-radius: 12px;
+}
+
+.transactionDiscovery {
+  gap: 10px;
+  margin: 10px 24px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: #fff;
+  box-shadow: var(--shadow-soft);
+}
+
+.transactionDiscovery .transactionSearchBox {
+  min-height: 38px;
+  border-radius: 999px;
+  background: #f8f9fc;
+  box-shadow: none;
+}
+
+.multiFilter {
+  min-width: 138px;
+}
+
+.multiFilter summary,
+.filterToggle {
+  min-height: 38px;
+  border-color: #dfe4ed;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: none;
+}
+
+.filterToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+}
+
+.multiFilter summary span {
+  color: #727b8f;
+  font-size: 10px;
+}
+
+.clearFiltersButton {
+  margin-left: auto;
+  border-color: transparent;
+  background: #f3f5f9;
+  color: #596276;
+}
+
+.dateRangeQuick {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dateRangeQuick button {
+  min-width: 96px;
+}
+
+.ledgerPanel {
+  margin: 12px 24px 24px;
+  padding: 18px;
+}
+
+.transactionModeTabs {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.transactionModeTabs button {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 750;
+}
+
+.transactionModeTabs button:hover,
+.transactionModeTabs button.active {
+  border-color: #dce5fa;
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.transactionModeTabs button span {
+  min-width: 20px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #fff4d8;
+  color: #916000;
+  font-size: 10px;
+}
+
+.ledgerHeader {
+  padding: 11px 8px;
+  border-radius: 9px 9px 0 0;
+  background: #f7f9fc;
+}
+
+.ledgerRow {
+  padding: 10px 8px;
+}
+
+.selectAllHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.selectAllHeader input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--blue);
+}
+
+.selectAllHeader small {
+  font-size: 9px;
+}
+
+.spendingTrendPanel {
+  padding: 18px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fff 0%, #f7f9ff 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.spendingTrendHeader h3 {
+  font-size: 18px;
+  letter-spacing: -0.02em;
+}
+
+.spendingLegendItem {
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.spendingLegendItem > span {
+  border-radius: 3px;
+}
+
+.spendingTrendChart {
+  padding: 8px 4px 0;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.spendingGridLine {
+  stroke: #e5eaf2;
+}
+
+.spendingStackSegment {
+  transition: opacity 0.15s ease;
+}
+
+.spendingStackSegment:hover {
+  opacity: 0.78;
+}
+
+.barList {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.spendingBarRow {
+  padding: 13px;
+  border-radius: 11px;
+  background: #fff;
+  box-shadow: var(--shadow-soft);
+}
+
+.spendingBarRow .barTrack {
+  height: 7px;
+  background: #edf1f7;
+}
+
+.accountTaxonomyFlyout.secondary {
+  z-index: 71;
+  left: calc(var(--sidebar-width, 244px) + 328px);
+}
+
+.accountTaxonomyFlyout.secondary > header {
+  background: #f8faff;
+}
+
+.flyoutCategoryList > button.active {
+  border-color: #cbd9ff;
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.categoryIcon.large {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+}
+
+.transactionControlTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.transactionControlTop .transactionModeTabs {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.transactionControlTop .transactionSearchBox {
+  flex: 0 1 310px;
+  min-height: 34px;
+  border-radius: 999px;
+  background: #f8f9fc;
+  box-shadow: none;
+}
+
+.compactTransactionFilters {
+  gap: 7px;
+  margin: 8px 0 6px;
+  padding: 0;
+}
+
+.compactTransactionFilters .multiFilter {
+  min-width: 112px;
+}
+
+.compactTransactionFilters .multiFilter summary,
+.compactTransactionFilters .filterToggle {
+  min-height: 32px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.compactTransactionFilters .clearFiltersButton {
+  margin-left: auto;
+}
+
+.ledgerWorkspace .trashViewToggle,
+.ledgerWorkspace .transactionFilterChips,
+.ledgerWorkspace .ledgerListToolbar {
+  margin-top: 7px;
+  margin-bottom: 7px;
+}
+
+.ledgerPanel.ledgerWorkspace {
+  padding: 14px;
+}
+
+@media (max-width: 1100px) {
+  .brandBlock {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+
+  .brandBlock strong,
+  .sidebarInstitutionButton > span:not(.institutionIcon),
+  .sidebarInstitutionButton > .sidebarGroupBalance,
+  .accountRootHeader > span,
+  .sidebarUtilityNav span {
+    display: none;
+  }
+
+  .sidebarInstitutionButton {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    padding: 6px;
+  }
+
+  .compactAccountHeader {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .accountHeroBalance {
+    border-right: 0;
+  }
+
+  .compactAccountHeader .accountActionBar {
+    grid-column: 1 / -1;
+  }
+
+  .accountSummaryMetrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .compactAccountHeader,
+  .accountSummaryMetrics {
+    grid-template-columns: 1fr;
+  }
+
+  .accountHeroBalance {
+    justify-items: start;
+    padding: 12px 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .accountPageTabs,
+  .transactionModeTabs,
+  .transactionFilterRow {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+
+  .accountPageTabs button,
+  .transactionModeTabs button,
+  .filterToggle,
+  .multiFilter {
+    flex: 0 0 auto;
+  }
+
+  .accountSummaryMetrics > div {
+    min-height: 90px;
+  }
+
+  .barList {
+    grid-template-columns: 1fr;
+  }
+
+  .clearFiltersButton {
+    margin-left: 0;
+  }
+
+  .transactionControlTop {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .transactionControlTop .transactionSearchBox {
+    flex-basis: auto;
+    width: 100%;
+  }
+
+  .accountTaxonomyFlyout.secondary {
+    left: calc(var(--sidebar-width, 244px) + 24px);
+    top: calc(var(--flyout-top) + 54px);
+  }
+}
