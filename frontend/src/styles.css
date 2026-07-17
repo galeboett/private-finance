@@ -5253,30 +5253,85 @@ a:focus-visible {
   flex: 0 0 auto;
 }
 
-.saveRuleControl {
+.postCategorizationPrompt {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.8fr) auto;
-  gap: 10px;
-  align-items: end;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-2);
+  grid-template-columns: auto minmax(220px, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin: 10px 14px;
+  padding: 12px 14px;
+  border: 1px solid #b9cdfb;
+  border-radius: 12px;
+  background: #f4f7ff;
+  box-shadow: 0 6px 18px rgba(35, 78, 170, 0.08);
 }
 
-.saveRuleControl > div,
-.saveRuleControl label {
+.postCategorizationPrompt.confirmation {
+  border-color: #a8dcc0;
+  background: #f2fbf6;
+}
+
+.rulePromptIcon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--blue);
+  color: #fff;
+}
+
+.postCategorizationPrompt.confirmation .rulePromptIcon {
+  background: #258557;
+}
+
+.rulePromptCopy {
   display: grid;
   gap: 3px;
+  min-width: 0;
 }
 
-.saveRuleControl span {
+.rulePromptCopy strong,
+.rulePromptCopy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rulePromptCopy span,
+.rulePromptEditor small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rulePromptActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.rulePromptEditor {
+  display: grid;
+  grid-column: 2 / -1;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(130px, 0.8fr) minmax(150px, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.rulePromptEditor label {
+  display: grid;
+  gap: 4px;
   color: var(--muted);
   font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-.saveRuleControl.compact {
-  margin: 0 10px 8px 36px;
+.rulePromptEditor small {
+  padding-bottom: 10px;
+  white-space: nowrap;
 }
 
 @media (max-width: 1100px) {
@@ -5290,6 +5345,20 @@ a:focus-visible {
 
   .statementCheckpointForm > div {
     grid-column: 1 / -1;
+  }
+
+  .postCategorizationPrompt {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .rulePromptActions,
+  .rulePromptEditor {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
+  .rulePromptEditor {
+    grid-template-columns: 1fr 1fr;
   }
 }
 .unanchoredBanner {

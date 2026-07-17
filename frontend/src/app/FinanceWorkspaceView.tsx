@@ -40,7 +40,7 @@ import { ManualSnapshotEditor } from "../features/networth/ManualSnapshotEditor"
 import { UnanchoredBanner } from "../features/networth/UnanchoredBanner";
 import { RefundLinkPicker } from "../features/refunds/RefundLinkPicker";
 import { RefundCategorizationNudge, RefundSuggestions, type RefundCandidate, type RefundLink, type RefundSelection, type RefundSuggestionGroup } from "../features/refunds/RefundSuggestions";
-import { SaveRuleControl } from "../features/rules/SaveRuleControl";
+import { PostCategorizationRulePrompt } from "../features/rules/PostCategorizationRulePrompt";
 import { SavedRulesPanel } from "../features/rules/SavedRulesPanel";
 import { LedgerDuplicateScan, type DuplicatePair } from "../features/review/LedgerDuplicateScan";
 import { filterReviewQueue, isUncategorizedRefund, type ReviewQueueFilter } from "../features/review/reviewQueue";
@@ -633,7 +633,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
     analyzedAccount, appImportFile, applyHistorySignCleanup, applyRule, applyRuleToTransaction, applySavedRule,
     beginEditAccount, bulkConfirmSelectedReviewTransactions, bulkEditField, bulkEditValue, bulkEditorOpen, bulkReviewCategoryId,
     bulkReviewType, bulkSaveRulesForSelectedReviewTransactions, bulkUpdateSelectedTransactions, busyAction, cashFlowRows, categories,
-    categorizedHistoryFile, categorizedHistoryMissingFields, categorizedHistoryRows, categorizedHistorySignConvention, categoryEditor, categoryReassignId,
+    categorizedHistoryFile, categorizedHistoryMissingFields, categorizedHistoryRows, categorizedHistorySignConvention, categorizeTransaction, categoryEditor, categoryReassignId,
     categorySuggestions, chooseImportFile, cleanupImportedAccounts, clearAccountForm, clearTaxonomyOverride, collapsedTaxonomyGroups,
     commitReviewedCategorizedHistory, commitSelectedImport, confirmDelete, confirmInboxBatch, confirmRefundSelections, confirmRefundSuggestion,
     confirmStatementBalanceBatch, confirmTransaction, confirmTransactionEdit, confirmTransferCandidate, createAccountFromAnalysis, createCategory,
@@ -650,7 +650,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
     loadRefundPicker, missingCategoryCountByAccount, missingCategoryTransactions, monthlyAllocationEditor, navigateToView, netIncomeCents,
     netWorthAccounts, netWorthPeek, newCategoryLabel, newCategoryParentId, openAccountView,
     openImportModal, openNetWorthPeek, openSplitEditor, openTransactionEditor, openTransactionPeek, openTransactionView, operations,
-    pagedTransactions, peekDrawer, periodCashFlowRows, periodCategoryTotals, previewHistorySignCleanup, previewRows,
+    pagedTransactions, peekDrawer, pendingRuleTransaction, periodCashFlowRows, periodCategoryTotals, previewHistorySignCleanup, previewRows,
     previewRule, previewSelectedImport, refundPicker, refundSearchTimer, refundSuggestionByTransactionId,
     refundSuggestions, rejectRefundSelections, rejectRefundSuggestion, rejectTransferCandidate, rememberImportSignConvention, removeMonthlyAllocation,
     reportExpenseCents, reportIncomeCents, reportNetCents, reportPeriod, repositoryTransactionIds, requestBulkAccountDelete,
@@ -669,7 +669,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
     setNewCategoryParentId, setPeekDrawer, setRefundPicker, setReportPeriod, setReviewQueueFilter, setSelectedAccountId,
     setSelectedAccountIds, setSelectedHoldingIds, setSelectedTransactionAccountFilters, setSelectedTransactionCategoryFilters, setSelectedTransactionIds, setSelectedTransactionMonthFilters, setSelectedTransactionTypeFilters,
     setSelectedTransactionYearFilters, setSettingsTab, setShowAssetTransactions, setSplitEditor, setTaxonomyAccountId, setTaxonomyEditorOpen,
-    setTaxonomyGroupDraft, setToast, setTransactionAmountMax, setTransactionAmountMin, setTransactionDateFrom, setTransactionDateTo,
+    setPendingRuleTransaction, setTaxonomyGroupDraft, setToast, setTransactionAmountMax, setTransactionAmountMin, setTransactionDateFrom, setTransactionDateTo,
     setTransactionDirection, setTransactionHasRefund, setTransactionPage, setTransactionSearch, setTransactionView, settingsTab,
     settleRefundsWithoutExpense, showAssetTransactions, showToast, sidebarTaxonomyTree, sidebarWidth, sortIndicator,
     splitEditor, startSidebarResize, taxonomyAccountId, taxonomyEditorOpen, taxonomyGroupDraft, taxonomyOverrides,
@@ -763,6 +763,18 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
       <button type="button" className="filterToggle clearFiltersButton" onClick={clearTransactionFilters}><RotateCcw size={14} />Clear filters</button>
       <button type="button" className={transactionView === "trash" ? "filterToggle trashFilterToggle active" : "filterToggle trashFilterToggle"} aria-pressed={transactionView === "trash"} onClick={() => setTransactionView((current) => current === "trash" ? "live" : "trash")}>{transactionView === "trash" ? <X size={13} /> : <Trash2 size={13} />}Trash</button>
     </div>;
+  }
+
+  function renderPostCategorizationPrompt() {
+    if (!pendingRuleTransaction) return null;
+    return <PostCategorizationRulePrompt
+      transaction={pendingRuleTransaction}
+      categories={categories}
+      transactionTypes={transactionTypes}
+      onSave={(draft) => saveRuleFromTransaction(pendingRuleTransaction, draft)}
+      onApplyExisting={(ruleId) => applyRule(ruleId, "all")}
+      onDismiss={() => setPendingRuleTransaction(null)}
+    />;
   }
 
   return (
@@ -1609,8 +1621,9 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                   setDeleteTarget(null);
                   setDeleteConfirmText("");
                 }}
-              />
+            />
             ) : null}
+            {renderPostCategorizationPrompt()}
             <div className="reviewEditor">
               {visibleReviewTransactions.map((transaction) => {
                 const refundSuggestion = refundSuggestionByTransactionId.get(transaction.id);
@@ -1644,7 +1657,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                       </select>
                       <select
                         value={transaction.transaction_type}
-                        onChange={(event) => { const nextType = event.target.value; void updateTransaction(transaction.id, { transaction_type: nextType, ...(transactionTypeUsesCategory(nextType) ? {} : { category_id: null }) }); }}
+                        onChange={(event) => { const nextType = event.target.value; void categorizeTransaction(transaction, { transaction_type: nextType, ...(transactionTypeUsesCategory(nextType) ? {} : { category_id: null }) }); }}
                       >
                         {transactionTypes.map((type) => (
                           <option key={type.value} value={type.value}>
@@ -1654,7 +1667,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                       </select>
                       <select
                         value={transaction.category_id ?? ""}
-                        onChange={(event) => void updateTransaction(transaction.id, { category_id: event.target.value ? Number(event.target.value) : null })}
+                        onChange={(event) => { const categoryId = event.target.value ? Number(event.target.value) : null; if (categoryId === null) { void updateTransaction(transaction.id, { category_id: null }); } else { void categorizeTransaction(transaction, { category_id: categoryId }); } }}
                       >
                         <option value="">No category</option>
                         {categories.map((category) => (
@@ -1669,15 +1682,6 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                       onChange={(event) => void updateTransaction(transaction.id, { user_note: event.target.value })}
                       placeholder="Add your own context, like what you actually bought."
                       rows={2}
-                    />
-                    <SaveRuleControl
-                      transactionId={transaction.id}
-                      description={transaction.raw_description}
-                      initialMatchText={suggestedRuleText(transaction.raw_description)}
-                      typeLabel={readableAccountType(transaction.transaction_type)}
-                      categoryLabel={transaction.category_id ? categories.find((category) => category.id === transaction.category_id)?.label ?? "selected category" : "no category"}
-                      disabled={transactionTypeUsesCategory(transaction.transaction_type) && !transaction.category_id}
-                      onSave={(matchText) => saveRuleFromTransaction(transaction, matchText)}
                     />
                     {transaction.transaction_type === "refund" && refundSuggestion ? <RefundCategorizationNudge suggestion={refundSuggestion} busy={busyAction} formatMoney={formatMoney} onConfirm={(suggestion, candidate) => void confirmRefundSuggestion(suggestion, candidate)} onReject={(suggestion, candidate) => void rejectRefundSuggestion(suggestion, candidate)} /> : null}
                     <div className="reviewActions">
@@ -1864,8 +1868,9 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                 setDeleteTarget(null);
                 setDeleteConfirmText("");
               }}
-            />
-          ) : null}
+              />
+            ) : null}
+          {renderPostCategorizationPrompt()}
           <div className="ledgerTable">
             <div className="ledgerHeader">
               <span className="selectAllHeader">
@@ -1979,7 +1984,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                       className="editableCell"
                       value={transaction.transaction_type}
                       onClick={(event) => event.stopPropagation()}
-                      onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value }, false)}
+                      onChange={(event) => { const nextType = event.target.value; void categorizeTransaction(transaction, { transaction_type: nextType, ...(!transactionTypeUsesCategory(nextType) ? { category_id: null } : {}) }); }}
                     >
                       {transactionTypes.map((type) => (
                         <option key={type.value} value={type.value}>
@@ -2013,7 +2018,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                                   setCategoryEditor(null);
                                 } else if (event.key === "Enter" && categorySuggestions[0]) {
                                   event.preventDefault();
-                                  void updateTransaction(transaction.id, { category_id: categorySuggestions[0].id }, false);
+                                  void categorizeTransaction(transaction, { category_id: categorySuggestions[0].id });
                                   setCategoryEditor(null);
                                 }
                               }}
@@ -2035,7 +2040,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                                   className="categoryPopupOption"
                                   key={categoryOption.id}
                                   onClick={() => {
-                                    void updateTransaction(transaction.id, { category_id: categoryOption.id }, false);
+                                    void categorizeTransaction(transaction, { category_id: categoryOption.id });
                                     setCategoryEditor(null);
                                   }}
                                 >
@@ -2048,7 +2053,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                               <button
                                 type="button"
                                 onClick={() => {
-                                  void updateTransaction(transaction.id, { transaction_type: "transfer" }, false);
+                                  void categorizeTransaction(transaction, { transaction_type: "transfer", category_id: null });
                                   setCategoryEditor(null);
                                 }}
                               >
@@ -2122,18 +2127,6 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                   </div>
                 ) : null}
                 {isEditing && transaction.transaction_type === "refund" && refundSuggestion ? <RefundCategorizationNudge suggestion={refundSuggestion} busy={busyAction} formatMoney={formatMoney} onConfirm={(suggestion, candidate) => void confirmRefundSuggestion(suggestion, candidate)} onReject={(suggestion, candidate) => void rejectRefundSuggestion(suggestion, candidate)} /> : null}
-                {isEditing ? (
-                  <SaveRuleControl
-                    compact
-                    transactionId={transaction.id}
-                    description={transaction.raw_description}
-                    initialMatchText={suggestedRuleText(transaction.raw_description)}
-                    typeLabel={readableAccountType(transaction.transaction_type)}
-                    categoryLabel={transaction.category_id ? categories.find((category) => category.id === transaction.category_id)?.label ?? "selected category" : "no category"}
-                    disabled={transactionTypeUsesCategory(transaction.transaction_type) && !transaction.category_id}
-                    onSave={(matchText) => saveRuleFromTransaction(transaction, matchText)}
-                  />
-                ) : null}
                 {isEditing && transaction.transaction_type === "expense" ? (
                   <RefundLinkPicker
                     open={refundPicker?.expenseId === transaction.id}
@@ -2449,9 +2442,4 @@ function MetricTile({ label, value, tone }: { label: string; value: string; tone
       <span>{label}</span>
     </div>
   );
-}
-
-function suggestedRuleText(description: string) {
-  const cleaned = description.replace(/[^a-zA-Z0-9\s*&]/g, " ").replace(/\s+/g, " ").trim();
-  return cleaned.split(" ").slice(0, 3).join(" ").toUpperCase() || description.slice(0, 40).toUpperCase();
 }
