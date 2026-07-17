@@ -1,6 +1,6 @@
 import { FileUp, ListChecks, Plus, RefreshCw } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
-import { api } from "../../api/client";
+import { useApiClient } from "../../api/hooks";
 import { ReconciliationBadge, type ReconciliationStatus } from "./ReconciliationBadge";
 import { PaymentVerification, type PaymentVerificationStatus, type PaymentWarning } from "../transfers/PaymentVerification";
 import { ManualTransactionForm, type ManualTransactionAccount, type ManualTransactionCategory } from "../transactions/ManualTransactionForm";
@@ -50,6 +50,7 @@ type Props = {
 };
 
 export function AccountPage(props: Props) {
+  const api = useApiClient();
   const [statementDate, setStatementDate] = useState("");
   const [statementBalance, setStatementBalance] = useState("");
   const [saving, setSaving] = useState(false);

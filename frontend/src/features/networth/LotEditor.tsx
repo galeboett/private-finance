@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { api } from "../../api/client";
+import { useApiClient } from "../../api/hooks";
 import { DeleteConfirmInline } from "../../components/DeleteConfirmInline";
 import type { HoldingRow } from "./HoldingsTable";
 
@@ -27,6 +27,7 @@ type Props = {
 };
 
 export function LotEditor(props: Props) {
+  const api = useApiClient();
   const [lots, setLots] = useState<HoldingLot[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -54,6 +55,7 @@ export function LotEditor(props: Props) {
 }
 
 function LotRow({ lot, csrf, formatMoney, onChanged, onError }: { lot: HoldingLot; csrf: string; formatMoney: (cents: number) => string; onChanged: (operationId: string, message: string) => Promise<void>; onError: (message: string) => void }) {
+  const api = useApiClient();
   const [date, setDate] = useState(lot.acquisition_date);
   const [quantity, setQuantity] = useState(String(lot.quantity));
   const [basis, setBasis] = useState((lot.cost_basis_cents / 100).toFixed(2));

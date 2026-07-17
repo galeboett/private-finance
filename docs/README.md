@@ -4,7 +4,7 @@ This index separates current operating guidance from dated design reviews. For i
 
 ## Current project status
 
-- [Implementation plan, iteration 3](pf-implementation-plan-iteration-3-7-14-26.md) — active phased plan and latest verification checkpoint.
+- [Implementation plan, iteration 3](pf-implementation-plan-iteration-3-7-14-26.md) — active phased plan; Phases 6–12 are complete and Phase 13 remains open.
 - [Changelog](../CHANGELOG.md) — chronological record of implemented behavior.
 - [User workflow](workflow.md) — importing, reviewing, reporting, reconciliation, recovery, and maintenance.
 - [Repository README](../README.md) — setup, configuration, and high-level architecture.

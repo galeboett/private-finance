@@ -78,6 +78,14 @@ def test_filter_summary_reports_in_out_net_count_and_average_monthly_spend():
         }
 
 
+def test_filter_summary_averages_across_every_calendar_month_in_an_explicit_range():
+    with _session() as db:
+        _seed(db)
+        summary = aggregate_summary(db, TransactionFilter(date_from=date(2026, 5, 1), date_to=date(2026, 8, 31)))
+        assert summary["spend_month_count"] == 4
+        assert summary["average_monthly_spend_cents"] == 4000
+
+
 def test_category_and_account_metadata_supports_precise_drill_down_labels():
     with _session() as db:
         _, card, _, travel, _ = _seed(db)

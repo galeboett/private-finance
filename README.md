@@ -34,7 +34,7 @@ The implemented application includes:
 - filter-driven cash-flow, spending, and net-worth analysis
 - constrained SQLite backup/restore APIs plus JSON app-data export/import
 
-Iteration 3 Phase 12—the settings/navigation overhaul and frontend decomposition—is in progress. See the [documentation index](docs/README.md), [active implementation plan](docs/pf-implementation-plan-iteration-3-7-14-26.md), and [changelog](CHANGELOG.md).
+Iteration 3 Phase 12—the settings/navigation overhaul and frontend decomposition—is complete. See the [documentation index](docs/README.md), [active implementation plan](docs/pf-implementation-plan-iteration-3-7-14-26.md), and [changelog](CHANGELOG.md).
 
 ## Workflow
 
@@ -118,4 +118,4 @@ Settings can be provided via a `.env` file in `backend/` or environment variable
 
 ## Product Direction
 
-Near-term work is tracked in the active implementation plan. The main remaining themes are the Phase 12 settings/decomposition work, percentage-based splits, stronger encrypted backup/storage options, and an explicitly secured remote-access design if non-local use is added later.
+Near-term work is tracked in the active implementation plan. The main remaining themes are Phase 13 percentage-based splits, stronger encrypted backup/storage options, and an explicitly secured remote-access design if non-local use is added later.

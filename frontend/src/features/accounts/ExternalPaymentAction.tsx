@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../../api/client";
+import { useApiClient } from "../../api/hooks";
 
 export type ExternalAccountOption = { id: number; display_name: string };
 
@@ -10,6 +10,7 @@ export function ExternalPaymentAction({ transactionId, accounts, csrf, onSettled
   onSettled: (operationId: string) => Promise<void>;
   onError: (message: string) => void;
 }) {
+  const api = useApiClient();
   const [open, setOpen] = useState(false);
   const [accountId, setAccountId] = useState<number | "">(accounts[0]?.id ?? "");
   const [newName, setNewName] = useState("External");

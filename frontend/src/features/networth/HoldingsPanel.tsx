@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { api } from "../../api/client";
+import { useApiClient } from "../../api/hooks";
 import { HoldingsTable, type HoldingRow } from "./HoldingsTable";
 import { LotEditor } from "./LotEditor";
 
@@ -23,6 +23,7 @@ type Props = {
 };
 
 export function HoldingsPanel(props: Props) {
+  const api = useApiClient();
   const [showLotForm, setShowLotForm] = useState(false);
   const [accountId, setAccountId] = useState<number | "">(props.accounts[0]?.id ?? "");
   const [symbol, setSymbol] = useState("");

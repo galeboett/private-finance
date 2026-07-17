@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { api } from "../../api/client";
+import { useApiClient } from "../../api/hooks";
 
 export type ManualTransactionAccount = { id: number; display_name: string; account_type: string };
 export type ManualTransactionCategory = { id: number; label: string };
@@ -15,6 +15,7 @@ type Props = {
 };
 
 export function ManualTransactionForm({ accounts, categories, csrf, defaultAccountId, onSaved, onError, onCancel }: Props) {
+  const api = useApiClient();
   const [accountId, setAccountId] = useState<number | "">(defaultAccountId ?? accounts[0]?.id ?? "");
   const [transactionDate, setTransactionDate] = useState(todayInputValue());
   const [direction, setDirection] = useState<"out" | "in">("out");

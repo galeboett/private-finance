@@ -4,7 +4,7 @@
 
 Make the app feel like a calm personal finance workstation: dense enough for repeated ledger work, but not cramped, jumpy, or visually noisy. The main problem is not one bad component. It is inconsistent sizing, too many card-like surfaces, fixed-width data grids, and controls that change shape from screen to screen.
 
-> **Design reference, not status report:** Some recommendations here are implemented, including single-account sidebar flattening, analysis-tab cleanup, filtered summaries, and custom date ranges. Settings information architecture, deeper component extraction, and several visual-system items remain open. Track completion in the [iteration 3 implementation plan](pf-implementation-plan-iteration-3-7-14-26.md).
+> **Design reference, not status report:** Phase 12 implemented single-account sidebar flattening, analysis-tab cleanup, filtered summaries, custom date ranges, the five-tab Settings information architecture, and the composition-only `App.tsx` boundary. Broader visual-system refinements below remain design guidance. Track completion in the [iteration 3 implementation plan](pf-implementation-plan-iteration-3-7-14-26.md).
 
 ## Current UX Diagnosis
 
@@ -46,7 +46,8 @@ Recommended changes:
 Files to start with:
 
 - `frontend/src/styles.css`
-- `frontend/src/App.tsx`
+- `frontend/src/styles.css`
+- `frontend/src/app/FinanceWorkspaceView.tsx`
 
 ## Priority 2: Simplify The Overview
 

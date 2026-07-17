@@ -3,7 +3,7 @@
 **Assessment date:** 2026-07-15  
 **Scope:** Local imports, statement PDF extraction, application storage, backups, exports, browser access, repository hygiene, and the current Windows filesystem permissions.
 
-**Status note (2026-07-16):** Phase 11 asset editing and the first Phase 12 navigation/query-cache checkpoint do not change the storage or network boundaries assessed here. TanStack Query caches API responses only in browser memory; the application still has no runtime statement-upload or analytics integration. Reassess after any remote-access, connector, encrypted-storage, retention, or backup-format change.
+**Status note (2026-07-16):** Completed Phase 12 settings, decomposition, and query-cache work does not change the storage or network boundaries assessed here. TanStack Query caches API responses only in browser memory; local backup/restore remains constrained to the configured backup folder; and the application still has no runtime statement-upload or analytics integration. Reassess after any remote-access, connector, encrypted-storage, retention, or backup-format change.
 
 This is a point-in-time review of the implemented code and local deployment, not a penetration test. Reassess it whenever storage, import, authentication, or deployment behavior changes.
 

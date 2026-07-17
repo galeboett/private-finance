@@ -13,10 +13,28 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const result = await parseApiJson<T>(response, path);
   const method = (init?.method ?? "GET").toUpperCase();
   if (method !== "GET" && method !== "HEAD") {
-    bumpTransactionsVersion();
-    void queryClient.invalidateQueries();
+    notifyApiMutation(path);
   }
   return result;
+}
+
+export function notifyApiMutation(path: string) {
+  bumpTransactionsVersion();
+  invalidateQueriesForMutation(path);
+}
+
+const mutationQueryFamilies: Array<[RegExp, string[]]> = [
+  [/\/api\/(transactions|operations|rules|duplicates|refunds|refund-links|transfers)/, ["transactions", "transaction-summary", "aggregates", "dashboard", "operations", "rules", "duplicates", "refunds", "transfers", "reconciliation", "payments", "net-worth"]],
+  [/\/api\/(accounts|reconciliation|snapshots|investments)/, ["accounts", "transactions", "transaction-summary", "aggregates", "dashboard", "reconciliation", "payments", "net-worth", "holdings", "allocation"]],
+  [/\/api\/(imports|import-sign-profiles|maintenance)/, ["imports", "transactions", "transaction-summary", "aggregates", "dashboard", "accounts", "operations", "net-worth", "holdings"]],
+  [/\/api\/categories/, ["bootstrap", "categories", "transactions", "transaction-summary", "aggregates", "dashboard", "rules"]],
+  [/\/api\/backups/, ["backups"]],
+];
+
+function invalidateQueriesForMutation(path: string) {
+  const families = new Set(mutationQueryFamilies.flatMap(([pattern, keys]) => pattern.test(path) ? keys : []));
+  if (families.size === 0) return;
+  void queryClient.invalidateQueries({ predicate: (query) => families.has(String(query.queryKey[0])) });
 }
 
 let transactionsVersion = 0;

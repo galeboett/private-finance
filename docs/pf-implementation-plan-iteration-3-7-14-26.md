@@ -2,7 +2,7 @@
 **Date:** July 14, 2026 · **Inputs:** `personal-finance-2.zip`, `PF_feature_requests_7_14_26.md` + 5 screenshots
 **Supersedes:** continues `pf-critique-and-gameplan-7-13-26.md` (Phases 0–5 verified complete; old Phases 6–7 remain open and are renumbered here)
 
-> **Active status:** This is the current implementation plan. Phases 6–11 are implemented. Phase 12 is in progress at checkpoint 1; Phase 13 remains open. Earlier “still open,” line-count, and test-count statements below describe the dated baseline unless a later implementation update supersedes them.
+> **Active status:** This is the current implementation plan. Phases 6–12 are implemented; Phase 13 remains open. Earlier “still open,” line-count, and test-count statements below describe the dated baseline unless a later implementation update supersedes them.
 
 ---
 
@@ -244,7 +244,17 @@ In progress. The navigation/reporting slice is implemented: `AccountNav` flatten
 
 Transaction and account views now share a cached `FilterSummaryBar` backed by the canonical filter contract and a new `/api/aggregate/summary` endpoint. It reports total in, total out, net, transaction count, and average monthly outflow, and every value opens the existing filtered peek. A dual-month `DateRangePicker` writes `dateFrom`/`dateTo` into the canonical URL model and includes **Last 90 days** and **This quarter** shortcuts. TanStack Query is installed and mutation requests invalidate its cache; migration of the remaining read paths and mutations to shared query hooks continues in later Phase 12 slices.
 
-This checkpoint extracted `features/sidebar/AccountNav.tsx`, `features/overview/OverviewTabs.tsx`, `components/FilterSummaryBar.tsx`, and `components/DateRangePicker.tsx`. `App.tsx` decreased from the Phase 11 checkpoint of 5,340 to **5,264 physical lines**. Verification: **229 backend tests passed**, **24 Vitest tests passed**, and the production Vite build succeeds. Phase 12 is not complete: settings information architecture, the remaining feature extraction, full query-hook migration, and the `<2,000`-line exit criterion remain open.
+This checkpoint extracted `features/sidebar/AccountNav.tsx`, `features/overview/OverviewTabs.tsx`, `components/FilterSummaryBar.tsx`, and `components/DateRangePicker.tsx`. `App.tsx` decreased from the Phase 11 checkpoint of 5,340 to **5,264 physical lines**. Verification: **229 backend tests passed**, **24 Vitest tests passed**, and the production Vite build succeeds.
+
+### Phase 12 completion update — July 16, 2026
+
+Implemented. Settings now uses the planned five-tab information architecture: **Imports**, **Accounts & Institutions**, **Categories & Rules**, **Data**, and **Security**. Imports shows the inbox workflow plus saved CSV mappings, sign profiles, and learned PDF balance patterns. Data contains SQLite backup/restore, portable JSON recovery, Trash, and a collapsed maintenance surface. Security exposes password change with the existing all-other-session revocation behavior. The account and category workflows remain functional inside their focused tabs rather than appearing together in one long settings page.
+
+All report feature JSX moved to `features/overview/ReportSurface.tsx`; application state and actions moved to `app/useFinanceController.tsx`; and workspace layout moved to `app/FinanceWorkspaceView.tsx`. `App.tsx` is now a **7-physical-line composition entry point**, comfortably below the 2,000-line hard gate with zero feature JSX. The backend also began its matching composition cleanup by moving aggregation dependencies and endpoints into `app/api/` router modules; `main.py` is 2,689 physical lines, so further router extraction remains desirable maintenance but is not a Phase 12 frontend exit criterion.
+
+Shared API hooks now own cached reads, raw multipart requests, and mutations. Query keys retain the complete filtered request while grouping resources into targeted invalidation families; transaction, import, account, category, reconciliation, and investment mutations invalidate affected aggregates and views. The earlier `transactionsVersion` signal remains as a compatibility bridge for legacy effect refreshes, but mutations no longer bypass the shared API layer. Average monthly outflow now counts every represented calendar month, or every month in an explicit range including zero-spend months.
+
+Phase verification: **231 backend tests passed**, **27 Vitest tests passed**, TypeScript succeeds, and the production Vite build succeeds. Phase 12 is complete. Phase 13 percentage splits is the remaining planned product phase.
 
 ## Phase 13 — Percentage Splits (old Phase 7) — ~1 day
 Unchanged: %/$ toggle, largest-remainder rounding, cents stored; exposed in both ledger and Review split editors (same extracted component after Phase 12).
@@ -272,4 +282,4 @@ Phases 6→7 are strictly ordered (duplicate resolution should happen against a 
 - *Duplicate scan over-flagging:* legitimate same-day same-amount purchases exist (the two $6.65 Amazon rows may be real). Tiering plus keep-both memory plus per-pair review remain the default: never bulk auto-delete an ordinary pair below the "exact" tier, and even exact bulk resolution stays one journaled, undoable operation. The only probable-tier exception is the constrained, previewed authoritative-history merge documented in the audit above; it preserves the established identity and must not become a generic probable-delete path.
 - *Detector changes regress transfers:* payment-detection v2 tightens keywords; re-run the transfer matcher tests plus a fixture from the real `PAYMENT FROM CHK … CONF#…` shape to prove true positives still match.
 
-**Standing merge gate (unchanged, restated):** `pytest` green, `pnpm build` green, CHANGELOG + App.tsx physical line count updated per phase. Current July 16 Phase 12 checkpoint verification: **229 backend tests passed**, TypeScript is green, **24 Vitest tests passed**, and the production Vite build succeeds. Repeat this gate before each merge.
+**Standing merge gate (unchanged, restated):** `pytest` green, `pnpm build` green, CHANGELOG + App.tsx physical line count updated per phase. Current July 16 Phase 12 completion verification: **231 backend tests passed**, TypeScript is green, **27 Vitest tests passed**, and the production Vite build succeeds. Repeat this gate before each merge.

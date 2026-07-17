@@ -1,7 +1,7 @@
 import { RefreshCw, ScanSearch } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { api } from "../../api/client";
+import { useApiClient } from "../../api/hooks";
 import { useSelection } from "../../lib/useSelection";
 import { DuplicateBulkConfirm, type DuplicateBulkPreview, type DuplicateBulkStrategy } from "./DuplicateBulkConfirm";
 import { DuplicateReview, type DuplicateAction, type DuplicatePair } from "./DuplicateReview";
@@ -22,6 +22,7 @@ type Props = {
 };
 
 export function LedgerDuplicateScan({ pairs, csrf, onChanged, onError, onRerunTransfers }: Props) {
+  const api = useApiClient();
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [summary, setSummary] = useState<ScanSummary | null>(null);
   const [queueSummary, setQueueSummary] = useState<QueueSummary | null>(null);

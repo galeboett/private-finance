@@ -62,15 +62,22 @@ def aggregate_summary(db: Session, filters: TransactionFilter) -> dict:
     rows = _filtered_transactions(db, filters)
     inflow_cents = sum(row.amount_cents for row in rows if row.amount_cents > 0)
     outflow_cents = abs(sum(row.amount_cents for row in rows if row.amount_cents < 0))
-    spend_months = {row.transaction_date.strftime("%Y-%m") for row in rows if row.amount_cents < 0}
+    represented_months = {row.transaction_date.strftime("%Y-%m") for row in rows}
+    month_count = _inclusive_month_count(filters.date_from, filters.date_to) if filters.date_from and filters.date_to else len(represented_months)
     return {
         "inflow_cents": inflow_cents,
         "outflow_cents": outflow_cents,
         "net_cents": inflow_cents - outflow_cents,
         "transaction_count": len(rows),
-        "spend_month_count": len(spend_months),
-        "average_monthly_spend_cents": round(outflow_cents / len(spend_months)) if spend_months else 0,
+        "spend_month_count": month_count,
+        "average_monthly_spend_cents": round(outflow_cents / month_count) if month_count else 0,
     }
+
+
+def _inclusive_month_count(start: date, end: date) -> int:
+    if end < start:
+        return 0
+    return (end.year - start.year) * 12 + end.month - start.month + 1
 
 
 def _filtered_transactions(db: Session, filters: TransactionFilter) -> list[Transaction]:

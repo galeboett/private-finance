@@ -18,6 +18,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .audit import record_audit_event
+from .api.aggregation import router as aggregation_router
+from .api.dependencies import current_session, transaction_filter_dependency
 from .bootstrap import initialize_database
 from .config import settings
 from .db import get_db
@@ -25,9 +27,8 @@ from .middleware import LocalhostSecurityMiddleware
 from .models import Account, AppUser, Category, CategoryRule, DuplicatePairDecision, ExpenseAllocation, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, PaymentVerificationDismissal, RefundLink, RefundPairDecision, RefundReviewResolution, SecurityMetadata, SecurityPrice, SessionToken, StatementCheckpoint, StatementPdfPattern, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
 from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkDuplicateResolutionRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, DuplicateSelectionPreviewRequest, DuplicateSelectionResolutionRequest, ExternalPaymentRequest, HistoricalRefundBulkRequest, HoldingLotCreate, HoldingLotUpdate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, ManualTransactionCreate, MonthlyAllocationRequest, NetWorthSnapshotUpdate, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, PaymentVerificationDismissRequest, RefundConfirmRequest, RefundLinkCreate, RefundNoExpenseRequest, RefundSelectionRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementBalancePreviewUpdate, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
-from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
+from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
-from .services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_summary, aggregate_timeseries
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
 from .services.duplicates import duplicate_queue_summary, link_historical_refund_pairs, pending_duplicate_pairs, preview_duplicate_selection, preview_historical_refund_links, preview_safe_duplicate_resolution, resolve_all_exact_duplicates, resolve_duplicate, resolve_duplicate_selection, resolve_safe_duplicate_reimports
 from .services.duplicate_scan import scan_ledger_duplicates
@@ -43,7 +44,7 @@ from .services.refunds import OverRefundError, confirm_refund_link, confirm_refu
 from .services.reporting import cash_flow_summary, category_totals, dashboard_summary, latest_investment_allocation, latest_net_worth_by_account
 from .services.sign_profiles import profile_payload, resolution_payload, resolve_sign_preview, save_sign_profile
 from .services.snapshots import account_is_anchored, current_account_value, net_worth_contributors, net_worth_series, net_worth_stats, net_worth_unanchored_accounts, refresh_holding_net_worth_snapshot, upsert_net_worth_snapshot
-from .services.transaction_filters import parse_csv_ints, parse_csv_values, transaction_filter_conditions
+from .services.transaction_filters import transaction_filter_conditions
 from .services.transaction_queries import get_live_transaction, live_transaction_filters, live_transaction_select
 from .services.transfers import auto_dismiss_reclassified_payment, confirm_transfer_link, create_transfer_suggestions, dismiss_payment_verification, list_payment_verification, list_unconfirmed_transfers, reject_transfer_link, settle_payment_from_external
 
@@ -56,6 +57,7 @@ app.add_middleware(
     allow_headers=["content-type", settings.csrf_header_name],
 )
 app.add_middleware(LocalhostSecurityMiddleware)
+app.include_router(aggregation_router)
 
 UNASSIGNED_ACCOUNT_MARKER = "SYSTEM"
 CATEGORYLESS_TRANSACTION_TYPES = {TransactionType.TRANSFER.value, TransactionType.CREDIT_CARD_PAYMENT.value}
@@ -113,48 +115,6 @@ def transaction_labels(value: str | None) -> list[str]:
     return [label for label in (value or "").strip("|").split("|") if label]
 
 
-def transaction_filter_dependency(
-    accounts: str | None = None,
-    categories: str | None = None,
-    tags: str | None = None,
-    months: str | None = None,
-    years: str | None = None,
-    date_from: date | None = Query(default=None, alias="dateFrom"),
-    date_to: date | None = Query(default=None, alias="dateTo"),
-    date_basis: Literal["transaction", "reporting"] = Query(default="transaction", alias="dateBasis"),
-    amount_min: int | None = Query(default=None, alias="amountMin", ge=0),
-    amount_max: int | None = Query(default=None, alias="amountMax", ge=0),
-    direction: Literal["inflow", "outflow"] | None = None,
-    types: str | None = None,
-    search: str | None = None,
-    view: Literal["live", "trash"] = "live",
-    review_status: ReviewStatus | None = None,
-    has_refund: bool | None = Query(default=None, alias="hasRefund"),
-) -> TransactionFilter:
-    try:
-        transaction_types = [TransactionType(value) for value in parse_csv_values(types)]
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=f'Unknown transaction type "{error.args[0]}"') from error
-    return TransactionFilter(
-        accounts=parse_csv_ints(accounts),
-        categories=parse_csv_values(categories),
-        tags=parse_csv_values(tags),
-        months=parse_csv_values(months),
-        years=parse_csv_values(years),
-        date_from=date_from,
-        date_to=date_to,
-        date_basis=date_basis,
-        amount_min=amount_min,
-        amount_max=amount_max,
-        direction=direction,
-        transaction_types=transaction_types,
-        search=search,
-        view=view,
-        review_status=review_status,
-        has_refund=has_refund,
-    )
-
-
 @app.exception_handler(RequestValidationError)
 async def sanitized_validation_error_handler(request: Request, exc: RequestValidationError):
     errors = []
@@ -168,10 +128,6 @@ async def sanitized_validation_error_handler(request: Request, exc: RequestValid
             }
         )
     return JSONResponse({"detail": errors}, status_code=422)
-
-
-def current_session(request: Request, db: Session = Depends(get_db)) -> SessionToken:
-    return get_session_from_request(db, request)
 
 
 @app.on_event("startup")
@@ -998,6 +954,26 @@ async def stage_manual_import(request: Request, account_id: int, sign_convention
 def list_import_sign_profiles(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     profiles = db.scalars(select(ImportSignProfile).order_by(ImportSignProfile.account_id, ImportSignProfile.preset_type, ImportSignProfile.id)).all()
     return [profile_payload(profile) for profile in profiles]
+
+
+@app.get("/api/settings/import-metadata")
+def list_import_settings_metadata(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    accounts = {row.id: row.display_name for row in db.scalars(select(Account)).all()}
+    institutions = {row.id: row.name for row in db.scalars(select(Institution)).all()}
+    return {
+        "sign_profiles": [
+            {**profile_payload(profile), "account": accounts.get(profile.account_id, f"Account {profile.account_id}")}
+            for profile in db.scalars(select(ImportSignProfile).order_by(ImportSignProfile.account_id, ImportSignProfile.preset_type)).all()
+        ],
+        "csv_mappings": [
+            {"id": preset.id, "account_id": preset.account_id, "account": accounts.get(preset.account_id, f"Account {preset.account_id}"), "name": preset.name, "preset_type": preset.preset_type}
+            for preset in db.scalars(select(ImportPreset).order_by(ImportPreset.account_id, ImportPreset.name)).all()
+        ],
+        "pdf_patterns": [
+            {"id": pattern.id, "institution_id": pattern.institution_id, "institution": institutions.get(pattern.institution_id, f"Institution {pattern.institution_id}"), "balance_label": pattern.balance_label, "date_label": pattern.date_label}
+            for pattern in db.scalars(select(StatementPdfPattern).order_by(StatementPdfPattern.institution_id)).all()
+        ],
+    }
 
 
 @app.put("/api/import-sign-profiles/{account_id}")
@@ -2136,43 +2112,6 @@ def get_category_totals(
     db: Session = Depends(get_db),
 ):
     return category_totals(db, start_date=start_date, end_date=end_date)
-
-
-@app.get("/api/aggregate/by-category")
-def get_aggregate_by_category(
-    filters: TransactionFilter = Depends(transaction_filter_dependency),
-    session: SessionToken = Depends(current_session),
-    db: Session = Depends(get_db),
-):
-    return aggregate_by_category(db, filters)
-
-
-@app.get("/api/aggregate/by-account")
-def get_aggregate_by_account(
-    filters: TransactionFilter = Depends(transaction_filter_dependency),
-    session: SessionToken = Depends(current_session),
-    db: Session = Depends(get_db),
-):
-    return aggregate_by_account(db, filters)
-
-
-@app.get("/api/aggregate/timeseries")
-def get_aggregate_timeseries(
-    bucket: Literal["day", "week", "month"] = "month",
-    filters: TransactionFilter = Depends(transaction_filter_dependency),
-    session: SessionToken = Depends(current_session),
-    db: Session = Depends(get_db),
-):
-    return aggregate_timeseries(db, filters, bucket)
-
-
-@app.get("/api/aggregate/summary")
-def get_aggregate_summary(
-    filters: TransactionFilter = Depends(transaction_filter_dependency),
-    session: SessionToken = Depends(current_session),
-    db: Session = Depends(get_db),
-):
-    return aggregate_summary(db, filters)
 
 
 @app.get("/api/net-worth/timeseries")

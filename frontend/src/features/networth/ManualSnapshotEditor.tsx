@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 
-import { api } from "../../api/client";
+import { useApiClient } from "../../api/hooks";
 import { DeleteConfirmInline } from "../../components/DeleteConfirmInline";
 
 type ManualSnapshot = { id: number; account_id: number; account: string; snapshot_date: string; balance_cents: number; source: "manual" };
 type AccountOption = { id: number; display_name: string; last_four: string | null };
 
 export function ManualSnapshotEditor({ accounts, csrf, onCreate, onChanged, onError }: { accounts: AccountOption[]; csrf: string; onCreate: (accountId: number, snapshotDate: string, balance: string) => Promise<boolean>; onChanged: (operationId: string, message: string) => Promise<void>; onError: (message: string) => void }) {
+  const api = useApiClient();
   const [rows, setRows] = useState<ManualSnapshot[]>([]);
   const [accountId, setAccountId] = useState<number | "">(accounts[0]?.id ?? "");
   const [date, setDate] = useState(new Date().toLocaleDateString("en-CA"));
@@ -25,6 +26,7 @@ export function ManualSnapshotEditor({ accounts, csrf, onCreate, onChanged, onEr
 }
 
 function SnapshotRow({ row, csrf, onChanged, onError }: { row: ManualSnapshot; csrf: string; onChanged: (operationId: string, message: string) => Promise<void>; onError: (message: string) => void }) {
+  const api = useApiClient();
   const [date, setDate] = useState(row.snapshot_date);
   const [balance, setBalance] = useState((row.balance_cents / 100).toFixed(2));
   const [confirmDelete, setConfirmDelete] = useState(false);

@@ -1,6 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
-
-import { api } from "../api/client";
+import { useApiQuery } from "../api/hooks";
 import { encodeTxnFilter, type TxnFilter } from "../lib/filters";
 
 type Summary = {
@@ -14,7 +12,7 @@ type Summary = {
 
 export function FilterSummaryBar({ filter, formatMoney, onPeek }: { filter: TxnFilter; formatMoney: (cents: number) => string; onPeek: (filter: TxnFilter, title: string) => void }) {
   const query = encodeTxnFilter(filter).toString();
-  const summary = useQuery({ queryKey: ["transaction-summary", query], queryFn: () => api<Summary>(`/api/aggregate/summary?${query}`) });
+  const summary = useApiQuery<Summary>(["transaction-summary", query], `/api/aggregate/summary?${query}`);
   if (summary.isError) return <div className="filterSummaryBar error" role="status">Filtered totals could not be loaded.</div>;
   const row = summary.data;
   const items = [

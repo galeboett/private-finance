@@ -1,12 +1,12 @@
 # Feature modules
 
-Place screen-specific components under a domain folder here as they are extracted from `App.tsx`.
+Place screen-specific components under a domain folder here. `App.tsx` is now a composition-only entry point; application coordination lives in `app/useFinanceController.tsx`, and workspace layout lives in `app/FinanceWorkspaceView.tsx`.
 
 Current domains include accounts, imports, net worth, overview, refunds, review, rules, sidebar navigation, transactions, and transfers.
 
 Phase 12 extraction rules:
 
-- `App.tsx` should contain providers, route coordination, and shell layout—not feature JSX.
+- `App.tsx` contains only controller/view composition—no feature JSX.
 - Server reads use resource-specific TanStack Query hooks and stable query keys.
 - Mutations use shared hooks with targeted invalidation and return operation IDs for Undo.
 - Feature components may compose shared components, but shared components must not import feature modules.
