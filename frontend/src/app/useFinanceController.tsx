@@ -2798,12 +2798,26 @@ export function useFinanceController() {
   }
 
   function scrollToUncategorized() {
-    const firstMissing = filteredTransactions.find((transaction) => transaction.transaction_type === "expense" && !transaction.category_id);
-    if (!firstMissing) {
-      return;
-    }
-    setFocusedTransactionId(firstMissing.id);
-    document.getElementById(`transaction-row-${firstMissing.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!focusedAccountId) return;
+    const firstMissing = missingCategoryTransactions.find((transaction) => transaction.account_id === focusedAccountId);
+    setTransactionView("live");
+    setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value));
+    setSelectedTransactionYearFilters(transactionYears);
+    setSelectedTransactionCategoryFilters([uncategorizedFilterValue]);
+    setSelectedTransactionTypeFilters(["expense", "refund"]);
+    setTransactionDateFrom("");
+    setTransactionDateTo("");
+    setTransactionAmountMin(undefined);
+    setTransactionAmountMax(undefined);
+    setTransactionDirection(undefined);
+    setTransactionHasRefund(false);
+    setTransactionSearch("");
+    setShowAssetTransactions(true);
+    setFocusedTransactionId(firstMissing?.id ?? null);
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const target = firstMissing ? document.getElementById(`transaction-row-${firstMissing.id}`) : document.getElementById("account-transactions");
+      target?.scrollIntoView({ behavior: "smooth", block: firstMissing ? "center" : "start" });
+    }));
   }
 
   function handleTransactionRowClick(transactionId: number) {
@@ -2867,7 +2881,7 @@ export function useFinanceController() {
     setEditingCategoryLabel, setEditingCategoryParentId, setEditingRule, setGenericCsvMapping, setHistoryCleanupConfirm, setImportModalOpen,
     setImportPreview, setImportSignConvention, setImportWorkspaceTab, setMonthlyAllocationEditor, setNetWorthPeek, setNewCategoryLabel,
     setNewCategoryParentId, setPeekDrawer, setRefundPicker, setReportPeriod, setReviewQueueFilter, setSelectedAccountId,
-    setSelectedAccountIds, setSelectedHoldingIds, setSelectedTransactionAccountFilters, setSelectedTransactionCategoryFilters, setSelectedTransactionIds, setSelectedTransactionMonthFilters,
+    setSelectedAccountIds, setSelectedHoldingIds, setSelectedTransactionAccountFilters, setSelectedTransactionCategoryFilters, setSelectedTransactionIds, setSelectedTransactionMonthFilters, setSelectedTransactionTypeFilters,
     setSelectedTransactionYearFilters, setSettingsTab, setShowAssetTransactions, setSplitEditor, setTaxonomyAccountId, setTaxonomyEditorOpen,
     setTaxonomyGroupDraft, setToast, setTransactionAmountMax, setTransactionAmountMin, setTransactionDateFrom, setTransactionDateTo,
     setTransactionDirection, setTransactionHasRefund, setTransactionPage, setTransactionSearch, setTransactionView, settingsTab,

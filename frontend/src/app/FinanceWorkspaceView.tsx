@@ -668,7 +668,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
     setEditingCategoryLabel, setEditingCategoryParentId, setEditingRule, setGenericCsvMapping, setHistoryCleanupConfirm, setImportModalOpen,
     setImportPreview, setImportSignConvention, setImportWorkspaceTab, setMonthlyAllocationEditor, setNetWorthPeek, setNewCategoryLabel,
     setNewCategoryParentId, setPeekDrawer, setRefundPicker, setReportPeriod, setReviewQueueFilter, setSelectedAccountId,
-    setSelectedAccountIds, setSelectedHoldingIds, setSelectedTransactionAccountFilters, setSelectedTransactionCategoryFilters, setSelectedTransactionIds, setSelectedTransactionMonthFilters,
+    setSelectedAccountIds, setSelectedHoldingIds, setSelectedTransactionAccountFilters, setSelectedTransactionCategoryFilters, setSelectedTransactionIds, setSelectedTransactionMonthFilters, setSelectedTransactionTypeFilters,
     setSelectedTransactionYearFilters, setSettingsTab, setShowAssetTransactions, setSplitEditor, setTaxonomyAccountId, setTaxonomyEditorOpen,
     setTaxonomyGroupDraft, setToast, setTransactionAmountMax, setTransactionAmountMin, setTransactionDateFrom, setTransactionDateTo,
     setTransactionDirection, setTransactionHasRefund, setTransactionPage, setTransactionSearch, setTransactionView, settingsTab,
@@ -685,12 +685,16 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
   const focusedAccountTransactionsForSummary = focusedAccount
     ? transactions.filter((transaction) => transaction.account_id === focusedAccount.id)
     : [];
-  const summaryCutoff = new Date();
-  summaryCutoff.setDate(summaryCutoff.getDate() - 29);
-  const summaryCutoffDate = `${summaryCutoff.getFullYear()}-${String(summaryCutoff.getMonth() + 1).padStart(2, "0")}-${String(summaryCutoff.getDate()).padStart(2, "0")}`;
+  const now = new Date();
+  const currentMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+  const previousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const previousMonthStart = `${previousMonth.getFullYear()}-${String(previousMonth.getMonth() + 1).padStart(2, "0")}-01`;
   const focusedRefundsCents = focusedAccountTransactionsForSummary
-    .filter((transaction) => transaction.transaction_type === "refund" && transaction.transaction_date >= summaryCutoffDate)
+    .filter((transaction) => transaction.transaction_type === "refund" && transaction.transaction_date >= previousMonthStart && transaction.transaction_date < currentMonthStart)
     .reduce((sum, transaction) => sum + Math.abs(transaction.amount_cents), 0);
+  const focusedRefundSuggestions = focusedAccount
+    ? refundSuggestions.filter((suggestion) => suggestion.refund_transaction.account_id === focusedAccount.id)
+    : [];
   const focusedSpendByMonth = new Map<string, number>();
   focusedAccountTransactionsForSummary
     .filter((transaction) => transaction.transaction_type === "expense")
@@ -703,11 +707,11 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
     : 0;
 
   function clearTransactionFilters() {
-    if (activeView === "account") navigateToView("all-accounts");
     setSelectedTransactionAccountFilters(accounts.map((account) => account.id));
     setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value));
     setSelectedTransactionYearFilters(transactionYears);
     setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value));
+    setSelectedTransactionTypeFilters([]);
     setTransactionDateFrom("");
     setTransactionDateTo("");
     setTransactionAmountMin(undefined);
@@ -726,22 +730,22 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
         onSelectAll={() => setSelectedTransactionAccountFilters(accounts.map((account) => account.id))}
         onDeselectAll={() => setSelectedTransactionAccountFilters([])}
       /> : null}
-      <MultiSelectFilter
+      {includeAccounts ? <MultiSelectFilter
         label="Months"
         options={monthOptions}
         selectedValues={selectedTransactionMonthFilters}
         onToggle={(value) => setSelectedTransactionMonthFilters((current) => toggleValue(current, value))}
         onSelectAll={() => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value))}
         onDeselectAll={() => setSelectedTransactionMonthFilters([])}
-      />
-      <MultiSelectFilter
+      /> : null}
+      {includeAccounts ? <MultiSelectFilter
         label="Years"
         options={transactionYears.map((year) => ({ value: year, label: year }))}
         selectedValues={selectedTransactionYearFilters}
         onToggle={(value) => setSelectedTransactionYearFilters((current) => toggleValue(current, value))}
         onSelectAll={() => setSelectedTransactionYearFilters(transactionYears)}
         onDeselectAll={() => setSelectedTransactionYearFilters([])}
-      />
+      /> : null}
       <MultiSelectFilter
         label="Categories"
         options={transactionCategoryOptions}
@@ -1057,6 +1061,8 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
             refundsCents={focusedRefundsCents}
             averageMonthlySpendCents={focusedAverageMonthlySpendCents}
             missingCategoryCount={focusedMissingCategoryCount}
+            suggestedRefundCount={focusedRefundSuggestions.length}
+            uncategorizedActive={selectedTransactionCategoryFilters.length === 1 && selectedTransactionCategoryFilters[0] === uncategorizedFilterValue}
             reconciliation={focusedReconciliation}
             paymentVerification={focusedPaymentVerification}
             csrf={csrf}
@@ -1067,7 +1073,6 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
             accountGroupLabel={accountGroupLabel}
             readableAccountType={readableAccountType}
             onImport={() => openImportModal(focusedAccount.id)}
-            onOpenReview={() => navigateToView("review")}
             onRefresh={() => void loadData()}
             onViewUncategorized={scrollToUncategorized}
             onCheckpointSaved={async (operationId) => { await loadData(); showToast({ tone: "success", message: "Statement balance saved and checked against the ledger.", operationId }); }}
@@ -1083,6 +1088,16 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
               {deleteTarget?.kind === "holding" || deleteTarget?.kind === "holding_bulk" ? <DeleteConfirmInline target={deleteTarget} confirmText={deleteConfirmText} onConfirmTextChange={setDeleteConfirmText} onConfirm={confirmDelete} onCancel={() => { setDeleteTarget(null); setDeleteConfirmText(""); }} /> : null}
               <HoldingsPanel rows={focusedHoldingRows} accounts={[focusedAccount]} csrf={csrf} selectedIds={selectedHoldingIds} formatMoney={formatMoney} formatDate={formatShortDate} onToggleSelection={toggleHoldingSelection} onRequestBulkDelete={requestBulkHoldingDelete} onClearSelection={() => { const ids = new Set(focusedHoldingRows.map((row) => row.id)); setSelectedHoldingIds((current) => current.filter((id) => !ids.has(id))); resetHoldingSelectionAnchor(); }} onUpdateDescription={updateHoldingDescription} onRequestDelete={(row) => requestDelete({ kind: "holding", id: row.id, label: `${row.symbol || row.description || "Holding"} in ${row.account}` })} onLotSaved={async (operationId) => { await loadData(); showToast({ tone: "success", message: "Tax lot updated; basis and gain/loss refreshed.", operationId }); }} onError={(message) => showToast({ tone: "error", message })} />
             </> : undefined}
+            suggestedRefunds={<RefundSuggestions
+              suggestions={focusedRefundSuggestions}
+              busy={busyAction}
+              onDetect={() => void detectRefunds()}
+              onConfirm={(suggestion, candidate) => void confirmRefundSuggestion(suggestion, candidate)}
+              onReject={(suggestion, candidate) => void rejectRefundSuggestion(suggestion, candidate)}
+              onBulkConfirm={(selections) => void confirmRefundSelections(selections)}
+              onBulkReject={(selections) => void rejectRefundSelections(selections)}
+              onNoExpense={(refundIds) => void settleRefundsWithoutExpense(refundIds)}
+            />}
           />
         ) : null}
 
@@ -1757,7 +1772,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
         {(activeView === "all-accounts" || (activeView === "account" && accountTransactionsVisible)) && (
         <section className="ledgerPanel ledgerWorkspace" id={activeView === "account" ? "account-transactions" : "all-transactions"}>
           {transactionView === "trash" ? <PanelTitle icon={Trash2} title="Transaction Trash" subtitle="Restore deleted transactions or permanently remove them." /> : null}
-          {transactionView === "live" ? <div className="transactionControlTop">
+          {transactionView === "live" && activeView === "all-accounts" ? <div className="transactionControlTop">
             <div className="transactionModeTabs" role="tablist" aria-label="Transaction views">
             <button type="button" role="tab" aria-selected={!selectedTransactionCategoryFilters.includes(uncategorizedFilterValue)} className={!selectedTransactionCategoryFilters.includes(uncategorizedFilterValue) ? "active" : ""} onClick={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value))}>All transactions</button>
             <button type="button" role="tab" aria-selected="false" onClick={() => navigateToView("review")}>Needs review <span>{reviewCount}</span></button>
@@ -1766,6 +1781,9 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
             <label className="transactionSearchBox"><Search size={15} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search transactions…" /></label>
           </div> : null}
           {transactionView === "live" ? renderTransactionFilters(activeView === "all-accounts") : null}
+          {transactionView === "live" && activeView === "account" ? <div className="accountTransactionSearchRow">
+            <label className="transactionSearchBox"><Search size={15} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search this account’s transactions…" /></label>
+          </div> : null}
           <div className="trashViewToggle" role="group" aria-label="Transaction view">
             <button className={transactionView === "live" ? "active" : ""} onClick={() => setTransactionView("live")}><ReceiptText size={14} /> Transactions</button>
             <button className={transactionView === "trash" ? "active" : ""} onClick={() => setTransactionView("trash")}><Trash2 size={14} /> Trash</button>

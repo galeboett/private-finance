@@ -1,5 +1,5 @@
-import { FileUp, LayoutDashboard, ListChecks, Plus, ReceiptText, RefreshCw, Settings, X } from "lucide-react";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { CreditCard, FileUp, Plus, RefreshCw, Settings, Tags, Undo2, X } from "lucide-react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useApiClient } from "../../api/hooks";
 import { ReconciliationBadge, type ReconciliationStatus } from "./ReconciliationBadge";
 import { PaymentVerification, type PaymentVerificationStatus, type PaymentWarning } from "../transfers/PaymentVerification";
@@ -25,6 +25,8 @@ type Props = {
   refundsCents: number;
   averageMonthlySpendCents: number;
   missingCategoryCount: number;
+  suggestedRefundCount: number;
+  uncategorizedActive: boolean;
   reconciliation: ReconciliationStatus | null;
   paymentVerification: PaymentVerificationStatus | null;
   csrf: string;
@@ -35,7 +37,6 @@ type Props = {
   accountGroupLabel: (value: string) => string;
   readableAccountType: (value: string) => string;
   onImport: () => void;
-  onOpenReview: () => void;
   onRefresh: () => void;
   onViewUncategorized: () => void;
   onCheckpointSaved: (operationId: string) => Promise<void>;
@@ -46,6 +47,7 @@ type Props = {
   onPaymentDismissed: (operationId?: string) => Promise<void>;
   onAccountChanged: (operationId: string, message: string) => Promise<void>;
   holdings?: ReactNode;
+  suggestedRefunds?: ReactNode;
   transactionsCollapsed?: boolean;
   onToggleTransactions?: () => void;
   children?: ReactNode;
@@ -58,8 +60,12 @@ export function AccountPage(props: Props) {
   const [saving, setSaving] = useState(false);
   const [showManualTransaction, setShowManualTransaction] = useState(false);
   const [savingInclusion, setSavingInclusion] = useState(false);
-  const [showReview, setShowReview] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  const [activeOverlay, setActiveOverlay] = useState<"bill-pay" | "refunds" | "settings" | null>(null);
+
+  useEffect(() => {
+    setActiveOverlay(null);
+    setShowManualTransaction(false);
+  }, [props.account.id]);
 
   async function submitCheckpoint(event: FormEvent) {
     event.preventDefault();
@@ -77,7 +83,7 @@ export function AccountPage(props: Props) {
       });
       await props.onCheckpointSaved(result.operation_id);
       setStatementBalance("");
-      setShowSettings(false);
+      setActiveOverlay(null);
     } catch (error) {
       props.onCheckpointError(error instanceof Error ? error.message : "Statement balance could not be saved.");
     } finally {
@@ -107,7 +113,7 @@ export function AccountPage(props: Props) {
   }
 
   const latest = props.reconciliation?.latest;
-  const reviewCount = (latest && !latest.reconciled ? 1 : 0) + (props.paymentVerification?.warnings.length ?? 0);
+  const paymentWarningCount = props.paymentVerification?.warnings.length ?? 0;
   const balanceLabel = props.account.sidebar_balance_kind === "unanchored"
     ? "Add statement balance"
     : props.account.sidebar_balance_kind === "excluded"
@@ -143,27 +149,18 @@ export function AccountPage(props: Props) {
         </div>
       </header>
 
-      <nav className="accountPageTabs" aria-label="Account sections">
-        <button type="button" className="active"><LayoutDashboard size={15} />Overview</button>
-        <button type="button" onClick={() => document.getElementById("account-transactions")?.scrollIntoView({ behavior: "smooth", block: "start" })}><ReceiptText size={15} />Transactions</button>
-        <button type="button" className={showReview ? "active" : ""} onClick={() => setShowReview((current) => !current)}><ListChecks size={15} />Needs review{reviewCount > 0 ? <span>{reviewCount}</span> : null}</button>
-        <button type="button" onClick={() => setShowSettings(true)}><Settings size={15} />Settings</button>
-      </nav>
-
       <section className="accountSummaryMetrics" aria-label="Account summary">
         <div><span>Current balance</span><strong>{props.account.sidebar_balance_cents === null ? "—" : props.formatMoney(props.balanceCents)}</strong><small>{props.account.is_anchored ? "Verified against a balance" : "Not yet anchored"}</small></div>
-        <div><span>Refunds · last 30 days</span><strong>{props.formatMoney(props.refundsCents)}</strong><small>Posted refunds for this account</small></div>
+        <div><span>Last month's refunds</span><strong>{props.formatMoney(props.refundsCents)}</strong><small>Posted refunds for this account</small></div>
         <div><span>Average monthly spend</span><strong>{props.formatMoney(props.averageMonthlySpendCents)}</strong><small>Across months with activity</small></div>
       </section>
 
-      {props.missingCategoryCount > 0 ? <div className="accountCategoryNotice"><div><strong>{props.missingCategoryCount} transaction{props.missingCategoryCount === 1 ? "" : "s"} need a category</strong><span>Category work stays with transactions rather than the review queue.</span></div><button type="button" className="secondaryButton compactButton" onClick={props.onViewUncategorized}>View transactions</button></div> : null}
-
-      {showReview ? <section className="accountNeedsReviewPanel">
-        <header><div><span className="eyebrow">Needs review</span><h2>Account notifications</h2></div><button type="button" className="ghostButton compactButton" onClick={props.onOpenReview}>Open full review</button></header>
-        {latest && !latest.reconciled && props.reconciliation ? <div className="accountReviewItem"><ReconciliationBadge status={props.reconciliation} formatMoney={props.formatMoney} /><button type="button" className="secondaryButton compactButton" onClick={() => props.onInvestigateReconciliation(props.reconciliation!)}>Investigate difference</button></div> : null}
-        <PaymentVerification status={props.paymentVerification} formatMoney={props.formatMoney} onInvestigate={props.onInvestigatePayment} onDismiss={(warning) => void dismissPayment(warning)} externalAccounts={props.externalAccounts} csrf={props.csrf} onExternalSettled={async (operationId) => props.onAccountChanged(operationId, "Payment linked to an untracked account.")} onError={props.onCheckpointError} />
-        {reviewCount === 0 ? <p className="emptyText">No account-level notifications need attention.</p> : null}
-      </section> : null}
+      <nav className="accountPageTabs accountActionTabs" aria-label="Account actions">
+        <button type="button" className={props.uncategorizedActive ? "active" : ""} onClick={props.onViewUncategorized}><Tags size={15} />Uncategorized{props.missingCategoryCount > 0 ? <span>{props.missingCategoryCount}</span> : null}</button>
+        <button type="button" className={activeOverlay === "bill-pay" ? "active" : ""} onClick={() => setActiveOverlay("bill-pay")}><CreditCard size={15} />Bill pay{paymentWarningCount > 0 ? <span>{paymentWarningCount}</span> : null}</button>
+        <button type="button" className={activeOverlay === "refunds" ? "active" : ""} onClick={() => setActiveOverlay("refunds")}><Undo2 size={15} />Suggested refunds{props.suggestedRefundCount > 0 ? <span>{props.suggestedRefundCount}</span> : null}</button>
+        <button type="button" className={activeOverlay === "settings" ? "active" : ""} onClick={() => setActiveOverlay("settings")}><Settings size={15} />Settings</button>
+      </nav>
 
       {showManualTransaction ? <ManualTransactionForm accounts={props.transactionAccounts} categories={props.transactionCategories} csrf={props.csrf} defaultAccountId={props.account.id} onSaved={props.onManualTransactionSaved} onError={props.onCheckpointError} onCancel={() => setShowManualTransaction(false)} /> : null}
     </div>
@@ -172,9 +169,23 @@ export function AccountPage(props: Props) {
     {props.onToggleTransactions ? <div className="assetTransactionToggle"><div><strong>Account transactions</strong><span>Investment accounts open with assets first. Expand activity when you need it.</span></div><button className="secondaryButton compactButton" onClick={props.onToggleTransactions}>{props.transactionsCollapsed ? "Show transactions" : "Hide transactions"}</button></div> : null}
     {!props.transactionsCollapsed ? props.children : null}
 
-    {showSettings ? <div className="modalBackdrop accountSettingsBackdrop" onClick={() => setShowSettings(false)}>
+    {activeOverlay === "bill-pay" ? <div className="modalBackdrop accountSettingsBackdrop" onClick={() => setActiveOverlay(null)}>
+      <section className="modalCard accountActionModal" role="dialog" aria-modal="true" aria-label={`${props.account.display_name} bill pay`} onClick={(event) => event.stopPropagation()}>
+        <header className="modalHeader"><div><span className="eyebrow">Bill pay</span><h2>{props.account.display_name}</h2><p>Review confirmed card payments and resolve anything that still needs attention.</p></div><button type="button" className="ghostButton compactIconButton" onClick={() => setActiveOverlay(null)} aria-label="Close bill pay"><X size={16} /></button></header>
+        {props.paymentVerification ? <PaymentVerification status={props.paymentVerification} formatMoney={props.formatMoney} onInvestigate={props.onInvestigatePayment} onDismiss={(warning) => void dismissPayment(warning)} externalAccounts={props.externalAccounts} csrf={props.csrf} onExternalSettled={async (operationId) => props.onAccountChanged(operationId, "Payment linked to an untracked account.")} onError={props.onCheckpointError} /> : <p className="emptyText accountOverlayEmpty">No bill-payment activity is tracked for this account.</p>}
+      </section>
+    </div> : null}
+
+    {activeOverlay === "refunds" ? <div className="modalBackdrop accountSettingsBackdrop" onClick={() => setActiveOverlay(null)}>
+      <section className="modalCard accountActionModal accountRefundModal" role="dialog" aria-modal="true" aria-label={`${props.account.display_name} suggested refunds`} onClick={(event) => event.stopPropagation()}>
+        <header className="modalHeader"><div><span className="eyebrow">Suggested refunds</span><h2>{props.account.display_name}</h2><p>Review refund matches found for this account.</p></div><button type="button" className="ghostButton compactIconButton" onClick={() => setActiveOverlay(null)} aria-label="Close suggested refunds"><X size={16} /></button></header>
+        <div className="accountRefundModalBody">{props.suggestedRefunds ?? <p className="emptyText accountOverlayEmpty">No suggested refund matches for this account.</p>}</div>
+      </section>
+    </div> : null}
+
+    {activeOverlay === "settings" ? <div className="modalBackdrop accountSettingsBackdrop" onClick={() => setActiveOverlay(null)}>
       <section className="modalCard accountSettingsModal" role="dialog" aria-modal="true" aria-label="Account settings" onClick={(event) => event.stopPropagation()}>
-        <header className="modalHeader"><div><span className="eyebrow">Account settings</span><h2>{props.account.display_name}</h2><p>Manage net-worth treatment and add a statement balance.</p></div><button type="button" className="ghostButton compactIconButton" onClick={() => setShowSettings(false)} aria-label="Close account settings"><X size={16} /></button></header>
+        <header className="modalHeader"><div><span className="eyebrow">Account settings</span><h2>{props.account.display_name}</h2><p>Manage net-worth treatment and add a statement balance.</p></div><button type="button" className="ghostButton compactIconButton" onClick={() => setActiveOverlay(null)} aria-label="Close account settings"><X size={16} /></button></header>
         {props.account.account_type !== "external" ? <>
           <div className="netWorthInclusionControl"><label>Net worth<select disabled={savingInclusion} value={props.account.net_worth_inclusion} onChange={(event) => void updateInclusion(event.target.value as "auto" | "always" | "never")}><option value="auto">Automatic — include once anchored</option><option value="always">Always include</option><option value="never">Never include</option></select></label><span>{props.account.net_worth_inclusion === "auto" ? "A statement balance or imported balance anchors this account." : props.account.net_worth_inclusion === "always" ? "Transaction history is used even without an anchor." : "This account is excluded from net worth."}</span></div>
           <form className="statementCheckpointForm accountSettingsCheckpoint" onSubmit={submitCheckpoint}>
