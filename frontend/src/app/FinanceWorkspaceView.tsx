@@ -13,7 +13,6 @@ import {
   Pencil,
   PiggyBank,
   Plus,
-  ReceiptText,
   RefreshCw,
   RotateCcw,
   Search,
@@ -717,11 +716,16 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
     setTransactionAmountMin(undefined);
     setTransactionAmountMax(undefined);
     setTransactionDirection(undefined);
+    setTransactionHasRefund(false);
     setTransactionSearch("");
+    setTransactionView("live");
   }
 
   function renderTransactionFilters(includeAccounts: boolean) {
     return <div className="transactionFilterRow compactTransactionFilters">
+      {transactionFilterChips.length > 0 ? <div className="transactionFilterChips inlineFilterChips" aria-label="Active transaction filters">
+        {transactionFilterChips.map((chip) => <button type="button" key={chip.key} onClick={chip.onRemove} title={`Remove ${chip.label} filter`}><span>{chip.label}</span><X size={12} /></button>)}
+      </div> : null}
       {includeAccounts ? <MultiSelectFilter
         label="Accounts"
         options={accounts.map((account) => ({ value: String(account.id), label: account.display_name }))}
@@ -757,6 +761,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
       <DateRangePicker dateFrom={transactionDateFrom} dateTo={transactionDateTo} onApply={(range) => { setTransactionDateFrom(range.dateFrom); setTransactionDateTo(range.dateTo); }} />
       <button type="button" className={transactionHasRefund ? "filterToggle active" : "filterToggle"} onClick={() => setTransactionHasRefund((current) => !current)}>↩ Has refund</button>
       <button type="button" className="filterToggle clearFiltersButton" onClick={clearTransactionFilters}><RotateCcw size={14} />Clear filters</button>
+      <button type="button" className={transactionView === "trash" ? "filterToggle trashFilterToggle active" : "filterToggle trashFilterToggle"} aria-pressed={transactionView === "trash"} onClick={() => setTransactionView((current) => current === "trash" ? "live" : "trash")}>{transactionView === "trash" ? <X size={13} /> : <Trash2 size={13} />}Trash</button>
     </div>;
   }
 
@@ -1070,7 +1075,6 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
             transactionCategories={categories}
             externalAccounts={externalAccounts}
             formatMoney={formatMoney}
-            accountGroupLabel={accountGroupLabel}
             readableAccountType={readableAccountType}
             onImport={() => openImportModal(focusedAccount.id)}
             onRefresh={() => void loadData()}
@@ -1771,33 +1775,18 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
 
         {(activeView === "all-accounts" || (activeView === "account" && accountTransactionsVisible)) && (
         <section className="ledgerPanel ledgerWorkspace" id={activeView === "account" ? "account-transactions" : "all-transactions"}>
-          {transactionView === "trash" ? <PanelTitle icon={Trash2} title="Transaction Trash" subtitle="Restore deleted transactions or permanently remove them." /> : null}
-          {transactionView === "live" && activeView === "all-accounts" ? <div className="transactionControlTop">
-            <div className="transactionModeTabs" role="tablist" aria-label="Transaction views">
+          {activeView === "all-accounts" ? <div className="transactionControlTop">
+            {transactionView === "live" ? <div className="transactionModeTabs" role="tablist" aria-label="Transaction views">
             <button type="button" role="tab" aria-selected={!selectedTransactionCategoryFilters.includes(uncategorizedFilterValue)} className={!selectedTransactionCategoryFilters.includes(uncategorizedFilterValue) ? "active" : ""} onClick={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value))}>All transactions</button>
             <button type="button" role="tab" aria-selected="false" onClick={() => navigateToView("review")}>Needs review <span>{reviewCount}</span></button>
             <button type="button" role="tab" aria-selected={selectedTransactionCategoryFilters.length === 1 && selectedTransactionCategoryFilters[0] === uncategorizedFilterValue} className={selectedTransactionCategoryFilters.length === 1 && selectedTransactionCategoryFilters[0] === uncategorizedFilterValue ? "active" : ""} onClick={() => setSelectedTransactionCategoryFilters([uncategorizedFilterValue])}>Uncategorized <span>{missingCategoryTransactions.length}</span></button>
-            </div>
+            </div> : <span className="trashResultsLabel">Trash</span>}
             <label className="transactionSearchBox"><Search size={15} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search transactions…" /></label>
           </div> : null}
-          {transactionView === "live" ? renderTransactionFilters(activeView === "all-accounts") : null}
-          {transactionView === "live" && activeView === "account" ? <div className="accountTransactionSearchRow">
+          {renderTransactionFilters(activeView === "all-accounts")}
+          {activeView === "account" ? <div className="accountTransactionSearchRow">
             <label className="transactionSearchBox"><Search size={15} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search this account’s transactions…" /></label>
           </div> : null}
-          <div className="trashViewToggle" role="group" aria-label="Transaction view">
-            <button className={transactionView === "live" ? "active" : ""} onClick={() => setTransactionView("live")}><ReceiptText size={14} /> Transactions</button>
-            <button className={transactionView === "trash" ? "active" : ""} onClick={() => setTransactionView("trash")}><Trash2 size={14} /> Trash</button>
-          </div>
-          {transactionFilterChips.length > 0 ? (
-            <div className="transactionFilterChips" aria-label="Active transaction filters">
-              {transactionFilterChips.map((chip) => (
-                <button type="button" key={chip.key} onClick={chip.onRemove} title={`Remove ${chip.label} filter`}>
-                  <span>{chip.label}</span>
-                  <X size={12} />
-                </button>
-              ))}
-            </div>
-          ) : null}
           <div className="ledgerListToolbar">
             <div className="ledgerSummaryGroup">
               <div className="ledgerSummaryText">

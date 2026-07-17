@@ -1,7 +1,7 @@
 import { CreditCard, FileUp, Plus, RefreshCw, Settings, Tags, Undo2, X } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useApiClient } from "../../api/hooks";
-import { ReconciliationBadge, type ReconciliationStatus } from "./ReconciliationBadge";
+import type { ReconciliationStatus } from "./ReconciliationBadge";
 import { PaymentVerification, type PaymentVerificationStatus, type PaymentWarning } from "../transfers/PaymentVerification";
 import { ManualTransactionForm, type ManualTransactionAccount, type ManualTransactionCategory } from "../transactions/ManualTransactionForm";
 import type { ExternalAccountOption } from "./ExternalPaymentAction";
@@ -34,7 +34,6 @@ type Props = {
   transactionCategories: ManualTransactionCategory[];
   externalAccounts: ExternalAccountOption[];
   formatMoney: (cents: number) => string;
-  accountGroupLabel: (value: string) => string;
   readableAccountType: (value: string) => string;
   onImport: () => void;
   onRefresh: () => void;
@@ -114,33 +113,15 @@ export function AccountPage(props: Props) {
 
   const latest = props.reconciliation?.latest;
   const paymentWarningCount = props.paymentVerification?.warnings.length ?? 0;
-  const balanceLabel = props.account.sidebar_balance_kind === "unanchored"
-    ? "Add statement balance"
-    : props.account.sidebar_balance_kind === "excluded"
-      ? "Excluded from net worth"
-      : props.account.sidebar_balance_kind === "recent_activity"
-        ? "Last 30 days"
-        : "Current balance";
-
   return <>
     <div className="stickyAccountChrome accountOverviewChrome">
       <header className="accountLedgerHeader compactAccountHeader">
         <div className="accountIdentity">
           <span className="eyebrow">{props.account.institution_name ?? "Local account"} · {props.readableAccountType(props.account.account_type)}</span>
-          <h1>{props.account.display_name}{props.account.last_four ? ` (${props.account.last_four})` : ""}</h1>
-          <div className="accountMetaRow">
-            <span>{props.accountGroupLabel(props.account.account_type)}</span>
-            <span>{props.account.status}</span>
-            {props.account.account_type === "external" ? <span className="statusBadge external">Untracked</span> : null}
+          <div className="accountTitleRow">
+            <h1>{props.account.display_name}{props.account.last_four ? ` (${props.account.last_four})` : ""}</h1>
+            {props.account.account_type === "external" ? <span className="statusBadge external">Untracked</span> : <span className={props.account.is_anchored ? "statusBadge anchored" : "statusBadge unanchored"}>{props.account.is_anchored ? "Anchored" : "Unanchored"}</span>}
           </div>
-        </div>
-        <div className="accountHeroBalance">
-          <span>{balanceLabel}</span>
-          <div>
-            <strong className={props.account.sidebar_balance_cents === null ? "amount" : props.balanceCents < 0 ? "amount negative" : "amount positive"}>{props.account.sidebar_balance_cents === null ? "—" : props.formatMoney(props.balanceCents)}</strong>
-            {props.account.account_type !== "external" ? <span className={props.account.is_anchored ? "statusBadge anchored" : "statusBadge unanchored"}>{props.account.is_anchored ? "Anchored" : "Unanchored"}</span> : null}
-          </div>
-          {props.account.account_type !== "external" ? <ReconciliationBadge status={props.reconciliation} formatMoney={props.formatMoney} /> : null}
         </div>
         <div className="accountActionBar">
           {props.account.account_type !== "external" ? <button className="secondaryButton compactButton" onClick={() => setShowManualTransaction((current) => !current)}><Plus size={14} />Add transaction</button> : null}
@@ -172,6 +153,13 @@ export function AccountPage(props: Props) {
     {activeOverlay === "bill-pay" ? <div className="modalBackdrop accountSettingsBackdrop" onClick={() => setActiveOverlay(null)}>
       <section className="modalCard accountActionModal" role="dialog" aria-modal="true" aria-label={`${props.account.display_name} bill pay`} onClick={(event) => event.stopPropagation()}>
         <header className="modalHeader"><div><span className="eyebrow">Bill pay</span><h2>{props.account.display_name}</h2><p>Review confirmed card payments and resolve anything that still needs attention.</p></div><button type="button" className="ghostButton compactIconButton" onClick={() => setActiveOverlay(null)} aria-label="Close bill pay"><X size={16} /></button></header>
+        {props.account.account_type !== "external" ? <form className="statementCheckpointForm accountSettingsCheckpoint billPayStatementForm" onSubmit={submitCheckpoint}>
+          <div><strong>Statement balance</strong><span>Add an ending balance to anchor and verify this account.</span></div>
+          <input type="date" aria-label="Statement date" value={statementDate} onChange={(event) => setStatementDate(event.target.value)} required />
+          <input type="text" inputMode="decimal" aria-label="Statement balance" placeholder="Balance" value={statementBalance} onChange={(event) => setStatementBalance(event.target.value)} required />
+          <button className="primaryButton compactButton" disabled={saving}>{saving ? "Saving..." : "Save balance"}</button>
+          {latest && !latest.reconciled ? <button type="button" className="ghostButton compactButton" onClick={() => props.onInvestigateReconciliation(props.reconciliation!)}>Investigate difference</button> : null}
+        </form> : null}
         {props.paymentVerification ? <PaymentVerification status={props.paymentVerification} formatMoney={props.formatMoney} onInvestigate={props.onInvestigatePayment} onDismiss={(warning) => void dismissPayment(warning)} externalAccounts={props.externalAccounts} csrf={props.csrf} onExternalSettled={async (operationId) => props.onAccountChanged(operationId, "Payment linked to an untracked account.")} onError={props.onCheckpointError} /> : <p className="emptyText accountOverlayEmpty">No bill-payment activity is tracked for this account.</p>}
       </section>
     </div> : null}
@@ -185,16 +173,9 @@ export function AccountPage(props: Props) {
 
     {activeOverlay === "settings" ? <div className="modalBackdrop accountSettingsBackdrop" onClick={() => setActiveOverlay(null)}>
       <section className="modalCard accountSettingsModal" role="dialog" aria-modal="true" aria-label="Account settings" onClick={(event) => event.stopPropagation()}>
-        <header className="modalHeader"><div><span className="eyebrow">Account settings</span><h2>{props.account.display_name}</h2><p>Manage net-worth treatment and add a statement balance.</p></div><button type="button" className="ghostButton compactIconButton" onClick={() => setActiveOverlay(null)} aria-label="Close account settings"><X size={16} /></button></header>
+        <header className="modalHeader"><div><span className="eyebrow">Account settings</span><h2>{props.account.display_name}</h2><p>Manage how this account participates in net worth.</p></div><button type="button" className="ghostButton compactIconButton" onClick={() => setActiveOverlay(null)} aria-label="Close account settings"><X size={16} /></button></header>
         {props.account.account_type !== "external" ? <>
           <div className="netWorthInclusionControl"><label>Net worth<select disabled={savingInclusion} value={props.account.net_worth_inclusion} onChange={(event) => void updateInclusion(event.target.value as "auto" | "always" | "never")}><option value="auto">Automatic — include once anchored</option><option value="always">Always include</option><option value="never">Never include</option></select></label><span>{props.account.net_worth_inclusion === "auto" ? "A statement balance or imported balance anchors this account." : props.account.net_worth_inclusion === "always" ? "Transaction history is used even without an anchor." : "This account is excluded from net worth."}</span></div>
-          <form className="statementCheckpointForm accountSettingsCheckpoint" onSubmit={submitCheckpoint}>
-            <div><strong>Statement balance</strong><span>Add an ending balance to anchor and verify this account.</span></div>
-            <input type="date" aria-label="Statement date" value={statementDate} onChange={(event) => setStatementDate(event.target.value)} required />
-            <input type="text" inputMode="decimal" aria-label="Statement balance" placeholder="Balance" value={statementBalance} onChange={(event) => setStatementBalance(event.target.value)} required />
-            <button className="primaryButton compactButton" disabled={saving}>{saving ? "Saving..." : "Save balance"}</button>
-            {latest && !latest.reconciled ? <button type="button" className="ghostButton compactButton" onClick={() => props.onInvestigateReconciliation(props.reconciliation!)}>Investigate difference</button> : null}
-          </form>
         </> : <p className="emptyText">Untracked accounts do not participate in net worth.</p>}
       </section>
     </div> : null}
