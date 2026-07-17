@@ -42,7 +42,7 @@ import { ManualSnapshotEditor } from "../features/networth/ManualSnapshotEditor"
 import { UnanchoredBanner } from "../features/networth/UnanchoredBanner";
 import { RefundLinkPicker } from "../features/refunds/RefundLinkPicker";
 import { RefundCategorizationNudge, RefundSuggestions, type RefundCandidate, type RefundLink, type RefundSelection, type RefundSuggestionGroup } from "../features/refunds/RefundSuggestions";
-import { SaveRuleControl } from "../features/rules/SaveRuleControl";
+import type { RuleDraft, SavedRulePreview } from "../features/rules/PostCategorizationRulePrompt";
 import { SavedRulesPanel } from "../features/rules/SavedRulesPanel";
 import { LedgerDuplicateScan, type DuplicatePair } from "../features/review/LedgerDuplicateScan";
 import { filterReviewQueue, isUncategorizedRefund, type ReviewQueueFilter } from "../features/review/reviewQueue";
@@ -687,6 +687,7 @@ export function useFinanceController() {
   const [editingRule, setEditingRule] = useState<RuleSummary | null>(null);
   const [ruleFeedback, setRuleFeedback] = useState<{ ruleId: number; message: string } | null>(null);
   const [lastSavedRule, setLastSavedRule] = useState<SavedRuleAction | null>(null);
+  const [pendingRuleTransaction, setPendingRuleTransaction] = useState<TransactionRow | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const { selectedIds: selectedTransactionIds, setSelectedIds: setSelectedTransactionIds, toggle: toggleTransactionSelection, resetAnchor: resetTransactionSelectionAnchor } = useSelection();
@@ -1373,6 +1374,21 @@ export function useFinanceController() {
     }
   }
 
+  async function categorizeTransaction(
+    transaction: TransactionRow,
+    patch: Partial<Pick<TransactionRow, "category_id" | "transaction_type">>,
+  ) {
+    const nextTransaction = { ...transaction, ...patch };
+    const operationId = await updateTransaction(transaction.id, patch, false);
+    if (!operationId) return false;
+    const categorizationIsComplete = !transactionTypeUsesCategory(nextTransaction.transaction_type) || nextTransaction.category_id !== null;
+    if (categorizationIsComplete) {
+      setPendingRuleTransaction(nextTransaction);
+      if (editingTransactionId === transaction.id) exitTransactionEdit();
+    }
+    return true;
+  }
+
   async function deleteOrMergeCategory() {
     if (!editingCategoryId) return;
     const category = categories.find((item) => item.id === editingCategoryId);
@@ -1995,30 +2011,42 @@ export function useFinanceController() {
     if (operationId) showToast({ tone: "success", message: "Transaction confirmed.", operationId });
   }
 
-  async function saveRuleFromTransaction(transaction: TransactionRow, requestedMatchText?: string) {
+  async function saveRuleFromTransaction(transaction: TransactionRow, draft?: RuleDraft): Promise<SavedRulePreview | null> {
     setToast(null);
-    if (transactionTypeUsesCategory(transaction.transaction_type) && !transaction.category_id) {
+    const transactionType = draft?.transactionType ?? transaction.transaction_type;
+    const categoryId = draft?.categoryId ?? transaction.category_id;
+    if (transactionTypeUsesCategory(transactionType) && !categoryId) {
       showToast({ tone: "error", message: "Choose a category before saving a rule." });
-      return;
+      return null;
     }
-    const matchText = requestedMatchText?.trim() || suggestedRuleText(transaction.raw_description);
+    const matchText = draft?.matchText.trim() || suggestedRuleText(transaction.raw_description);
     try {
       const rule = await api<{ id: number; operation_id: string }>("/api/rules", {
         method: "POST",
         headers: { "x-csrf-token": csrf },
         body: JSON.stringify({
-          category_id: transactionTypeUsesCategory(transaction.transaction_type) ? transaction.category_id : null,
+          category_id: transactionTypeUsesCategory(transactionType) ? categoryId : null,
           field_name: "raw_description",
           match_text: matchText,
-          suggested_transaction_type: transaction.transaction_type,
+          suggested_transaction_type: transactionType,
           priority: 100,
         }),
       });
+      let existingMatches = 0;
+      try {
+        const preview = await api<{ matched: number }>(`/api/rules/${rule.id}/preview?scope=all`);
+        const includesCurrentTransaction = transaction.raw_description.toUpperCase().includes(matchText.toUpperCase());
+        existingMatches = Math.max(0, preview.matched - (includesCurrentTransaction ? 1 : 0));
+      } catch {
+        // The rule is already saved; a failed preview should not misreport the save as a failure.
+      }
       setLastSavedRule({ id: rule.id, matchText, transactionId: transaction.id });
       await loadData();
-      showToast({ tone: "success", message: `Rule saved for "${matchText}".`, operationId: rule.operation_id, action: { label: "Apply & confirm this row", ruleId: rule.id, transactionId: transaction.id } });
+      showToast({ tone: "success", message: `Rule saved for "${matchText}".`, operationId: rule.operation_id });
+      return { ruleId: rule.id, existingMatches };
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be saved." });
+      return null;
     }
   }
 
@@ -2092,8 +2120,10 @@ export function useFinanceController() {
       await loadData();
       const scopeLabel = scope === "unreviewed" ? "unreviewed transactions" : "previous transactions";
       showToast({ tone: "success", message: `Rule confirmed ${result.updated} of ${result.matched} matching ${scopeLabel}.`, operationId: result.operation_id });
+      return true;
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Rule could not be applied." });
+      return false;
     }
   }
 
@@ -2550,15 +2580,22 @@ export function useFinanceController() {
     totalCents: section.rows.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0),
     groups: buildTaxonomyGroups(section.rows, accountBalances, taxonomyOverrides),
   }));
+  const sidebarAccountSection = {
+    label: "Accounts",
+    rows: activeAccounts,
+    emptyText: "No accounts yet.",
+    totalCents: activeAccounts.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0),
+    groups: buildTaxonomyGroups(activeAccounts, accountBalances, taxonomyOverrides),
+  };
   const sidebarTaxonomyTree = archivedAccounts.length > 0
-    ? [...taxonomyTree, {
+    ? [sidebarAccountSection, {
         label: "Archived Accounts",
         rows: archivedAccounts,
         emptyText: "",
         totalCents: archivedAccounts.reduce((sum, account) => sum + (accountBalances.get(account.id) ?? 0), 0),
         groups: buildTaxonomyGroups(archivedAccounts, accountBalances, taxonomyOverrides),
       }]
-    : taxonomyTree;
+    : [sidebarAccountSection];
   const latestCashFlowRows = periodCashFlowRows.slice(-4).reverse();
   const reviewCount = reviewQueueTransactions.length;
   const accountNeedingTaxonomy = accounts.find((account) => !taxonomyOverrides[String(account.id)] && !account.institution_name);
@@ -2791,12 +2828,26 @@ export function useFinanceController() {
   }
 
   function scrollToUncategorized() {
-    const firstMissing = filteredTransactions.find((transaction) => transaction.transaction_type === "expense" && !transaction.category_id);
-    if (!firstMissing) {
-      return;
-    }
-    setFocusedTransactionId(firstMissing.id);
-    document.getElementById(`transaction-row-${firstMissing.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!focusedAccountId) return;
+    const firstMissing = missingCategoryTransactions.find((transaction) => transaction.account_id === focusedAccountId);
+    setTransactionView("live");
+    setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value));
+    setSelectedTransactionYearFilters(transactionYears);
+    setSelectedTransactionCategoryFilters([uncategorizedFilterValue]);
+    setSelectedTransactionTypeFilters(["expense", "refund"]);
+    setTransactionDateFrom("");
+    setTransactionDateTo("");
+    setTransactionAmountMin(undefined);
+    setTransactionAmountMax(undefined);
+    setTransactionDirection(undefined);
+    setTransactionHasRefund(false);
+    setTransactionSearch("");
+    setShowAssetTransactions(true);
+    setFocusedTransactionId(firstMissing?.id ?? null);
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const target = firstMissing ? document.getElementById(`transaction-row-${firstMissing.id}`) : document.getElementById("account-transactions");
+      target?.scrollIntoView({ behavior: "smooth", block: firstMissing ? "center" : "start" });
+    }));
   }
 
   function handleTransactionRowClick(transactionId: number) {
@@ -2826,7 +2877,7 @@ export function useFinanceController() {
     analyzedAccount, appImportFile, applyHistorySignCleanup, applyRule, applyRuleToTransaction, applySavedRule,
     beginEditAccount, bulkConfirmSelectedReviewTransactions, bulkEditField, bulkEditValue, bulkEditorOpen, bulkReviewCategoryId,
     bulkReviewType, bulkSaveRulesForSelectedReviewTransactions, bulkUpdateSelectedTransactions, busyAction, cashFlowRows, categories,
-    categorizedHistoryFile, categorizedHistoryMissingFields, categorizedHistoryRows, categorizedHistorySignConvention, categoryEditor, categoryReassignId,
+    categorizedHistoryFile, categorizedHistoryMissingFields, categorizedHistoryRows, categorizedHistorySignConvention, categorizeTransaction, categoryEditor, categoryReassignId,
     categorySuggestions, chooseImportFile, cleanupImportedAccounts, clearAccountForm, clearTaxonomyOverride, collapsedTaxonomyGroups,
     commitReviewedCategorizedHistory, commitSelectedImport, confirmDelete, confirmInboxBatch, confirmRefundSelections, confirmRefundSuggestion,
     confirmStatementBalanceBatch, confirmTransaction, confirmTransactionEdit, confirmTransferCandidate, createAccountFromAnalysis, createCategory,
@@ -2843,7 +2894,7 @@ export function useFinanceController() {
     loadRefundPicker, missingCategoryCountByAccount, missingCategoryTransactions, monthlyAllocationEditor, navigateToView, netIncomeCents,
     netWorthAccounts, netWorthPeek, newCategoryLabel, newCategoryParentId, openAccountView,
     openImportModal, openNetWorthPeek, openSplitEditor, openTransactionEditor, openTransactionPeek, openTransactionView, operations,
-    pagedTransactions, peekDrawer, periodCashFlowRows, periodCategoryTotals, previewHistorySignCleanup, previewRows,
+    pagedTransactions, peekDrawer, pendingRuleTransaction, periodCashFlowRows, periodCategoryTotals, previewHistorySignCleanup, previewRows,
     previewRule, previewSelectedImport, refundPicker, refundSearchTimer, refundSuggestionByTransactionId,
     refundSuggestions, rejectRefundSelections, rejectRefundSuggestion, rejectTransferCandidate, rememberImportSignConvention, removeMonthlyAllocation,
     reportExpenseCents, reportIncomeCents, reportNetCents, reportPeriod, repositoryTransactionIds, requestBulkAccountDelete,
@@ -2860,9 +2911,9 @@ export function useFinanceController() {
     setEditingCategoryLabel, setEditingCategoryParentId, setEditingRule, setGenericCsvMapping, setHistoryCleanupConfirm, setImportModalOpen,
     setImportPreview, setImportSignConvention, setImportWorkspaceTab, setMonthlyAllocationEditor, setNetWorthPeek, setNewCategoryLabel,
     setNewCategoryParentId, setPeekDrawer, setRefundPicker, setReportPeriod, setReviewQueueFilter, setSelectedAccountId,
-    setSelectedAccountIds, setSelectedHoldingIds, setSelectedTransactionAccountFilters, setSelectedTransactionCategoryFilters, setSelectedTransactionIds, setSelectedTransactionMonthFilters,
+    setSelectedAccountIds, setSelectedHoldingIds, setSelectedTransactionAccountFilters, setSelectedTransactionCategoryFilters, setSelectedTransactionIds, setSelectedTransactionMonthFilters, setSelectedTransactionTypeFilters,
     setSelectedTransactionYearFilters, setSettingsTab, setShowAssetTransactions, setSplitEditor, setTaxonomyAccountId, setTaxonomyEditorOpen,
-    setTaxonomyGroupDraft, setToast, setTransactionAmountMax, setTransactionAmountMin, setTransactionDateFrom, setTransactionDateTo,
+    setPendingRuleTransaction, setTaxonomyGroupDraft, setToast, setTransactionAmountMax, setTransactionAmountMin, setTransactionDateFrom, setTransactionDateTo,
     setTransactionDirection, setTransactionHasRefund, setTransactionPage, setTransactionSearch, setTransactionView, settingsTab,
     settleRefundsWithoutExpense, showAssetTransactions, showToast, sidebarTaxonomyTree, sidebarWidth, sortIndicator,
     splitEditor, startSidebarResize, taxonomyAccountId, taxonomyEditorOpen, taxonomyGroupDraft, taxonomyOverrides,

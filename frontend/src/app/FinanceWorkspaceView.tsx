@@ -13,7 +13,6 @@ import {
   Pencil,
   PiggyBank,
   Plus,
-  ReceiptText,
   RefreshCw,
   RotateCcw,
   Search,
@@ -23,7 +22,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api as rawApi, apiUrl, bumpTransactionsVersion, getTransactionsVersion, parseApiJson, readableApiError, subscribeTransactionsVersion } from "../api/client";
 import { useApiClient } from "../api/hooks";
@@ -31,7 +30,6 @@ import { readAppRoute, routeUrl, type RouteView } from "./router";
 import { BulkActionBar, CashFlowGraphic, DrillDownLink, MultiSelectFilter, PanelTitle, UndoToast } from "../components/AppPrimitives";
 import { DateRangePicker } from "../components/DateRangePicker";
 import { DeleteConfirmInline, type DeleteTarget } from "../components/DeleteConfirmInline";
-import { FilterSummaryBar } from "../components/FilterSummaryBar";
 import { PrimaryNav } from "../components/PrimaryNav";
 import { AccountPage } from "../features/accounts/AccountPage";
 import type { ReconciliationStatus } from "../features/accounts/ReconciliationBadge";
@@ -42,7 +40,7 @@ import { ManualSnapshotEditor } from "../features/networth/ManualSnapshotEditor"
 import { UnanchoredBanner } from "../features/networth/UnanchoredBanner";
 import { RefundLinkPicker } from "../features/refunds/RefundLinkPicker";
 import { RefundCategorizationNudge, RefundSuggestions, type RefundCandidate, type RefundLink, type RefundSelection, type RefundSuggestionGroup } from "../features/refunds/RefundSuggestions";
-import { SaveRuleControl } from "../features/rules/SaveRuleControl";
+import { PostCategorizationRulePrompt } from "../features/rules/PostCategorizationRulePrompt";
 import { SavedRulesPanel } from "../features/rules/SavedRulesPanel";
 import { LedgerDuplicateScan, type DuplicatePair } from "../features/review/LedgerDuplicateScan";
 import { filterReviewQueue, isUncategorizedRefund, type ReviewQueueFilter } from "../features/review/reviewQueue";
@@ -302,10 +300,9 @@ type DashboardWidgetConfig = Record<DashboardWidgetKey, boolean>;
 
 const primaryNavItems: Array<{ id: AppView; label: string; icon: typeof LayoutDashboard }> = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "all-accounts", label: "All Accounts", icon: Landmark },
+  { id: "all-accounts", label: "Accounts", icon: Landmark },
   { id: "review", label: "Review", icon: ListChecks },
   { id: "history", label: "Activity", icon: History },
-  { id: "settings", label: "Settings", icon: Settings },
 ];
 
 const monthOptions: FilterOption[] = [
@@ -636,7 +633,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
     analyzedAccount, appImportFile, applyHistorySignCleanup, applyRule, applyRuleToTransaction, applySavedRule,
     beginEditAccount, bulkConfirmSelectedReviewTransactions, bulkEditField, bulkEditValue, bulkEditorOpen, bulkReviewCategoryId,
     bulkReviewType, bulkSaveRulesForSelectedReviewTransactions, bulkUpdateSelectedTransactions, busyAction, cashFlowRows, categories,
-    categorizedHistoryFile, categorizedHistoryMissingFields, categorizedHistoryRows, categorizedHistorySignConvention, categoryEditor, categoryReassignId,
+    categorizedHistoryFile, categorizedHistoryMissingFields, categorizedHistoryRows, categorizedHistorySignConvention, categorizeTransaction, categoryEditor, categoryReassignId,
     categorySuggestions, chooseImportFile, cleanupImportedAccounts, clearAccountForm, clearTaxonomyOverride, collapsedTaxonomyGroups,
     commitReviewedCategorizedHistory, commitSelectedImport, confirmDelete, confirmInboxBatch, confirmRefundSelections, confirmRefundSuggestion,
     confirmStatementBalanceBatch, confirmTransaction, confirmTransactionEdit, confirmTransferCandidate, createAccountFromAnalysis, createCategory,
@@ -653,7 +650,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
     loadRefundPicker, missingCategoryCountByAccount, missingCategoryTransactions, monthlyAllocationEditor, navigateToView, netIncomeCents,
     netWorthAccounts, netWorthPeek, newCategoryLabel, newCategoryParentId, openAccountView,
     openImportModal, openNetWorthPeek, openSplitEditor, openTransactionEditor, openTransactionPeek, openTransactionView, operations,
-    pagedTransactions, peekDrawer, periodCashFlowRows, periodCategoryTotals, previewHistorySignCleanup, previewRows,
+    pagedTransactions, peekDrawer, pendingRuleTransaction, periodCashFlowRows, periodCategoryTotals, previewHistorySignCleanup, previewRows,
     previewRule, previewSelectedImport, refundPicker, refundSearchTimer, refundSuggestionByTransactionId,
     refundSuggestions, rejectRefundSelections, rejectRefundSuggestion, rejectTransferCandidate, rememberImportSignConvention, removeMonthlyAllocation,
     reportExpenseCents, reportIncomeCents, reportNetCents, reportPeriod, repositoryTransactionIds, requestBulkAccountDelete,
@@ -670,26 +667,122 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
     setEditingCategoryLabel, setEditingCategoryParentId, setEditingRule, setGenericCsvMapping, setHistoryCleanupConfirm, setImportModalOpen,
     setImportPreview, setImportSignConvention, setImportWorkspaceTab, setMonthlyAllocationEditor, setNetWorthPeek, setNewCategoryLabel,
     setNewCategoryParentId, setPeekDrawer, setRefundPicker, setReportPeriod, setReviewQueueFilter, setSelectedAccountId,
-    setSelectedAccountIds, setSelectedHoldingIds, setSelectedTransactionAccountFilters, setSelectedTransactionCategoryFilters, setSelectedTransactionIds, setSelectedTransactionMonthFilters,
+    setSelectedAccountIds, setSelectedHoldingIds, setSelectedTransactionAccountFilters, setSelectedTransactionCategoryFilters, setSelectedTransactionIds, setSelectedTransactionMonthFilters, setSelectedTransactionTypeFilters,
     setSelectedTransactionYearFilters, setSettingsTab, setShowAssetTransactions, setSplitEditor, setTaxonomyAccountId, setTaxonomyEditorOpen,
-    setTaxonomyGroupDraft, setToast, setTransactionAmountMax, setTransactionAmountMin, setTransactionDateFrom, setTransactionDateTo,
+    setPendingRuleTransaction, setTaxonomyGroupDraft, setToast, setTransactionAmountMax, setTransactionAmountMin, setTransactionDateFrom, setTransactionDateTo,
     setTransactionDirection, setTransactionHasRefund, setTransactionPage, setTransactionSearch, setTransactionView, settingsTab,
     settleRefundsWithoutExpense, showAssetTransactions, showToast, sidebarTaxonomyTree, sidebarWidth, sortIndicator,
     splitEditor, startSidebarResize, taxonomyAccountId, taxonomyEditorOpen, taxonomyGroupDraft, taxonomyOverrides,
     taxonomyTree, toast, toggleAccountSelection, toggleDashboardWidget, toggleHoldingSelection, toggleOperationDetail,
     toggleTaxonomyGroup, toggleTransactionSelection, toggleTransactionSort, totalExpenseCents, totalIncomeCents,
     transactionCategoryOptions, transactionDateFrom, transactionDateTo, transactionFilterChips, transactionHasRefund,
-    transactionPageCount, transactionSearch, transactionSummaryFilter, transactionView, transactionYears, transactions,
+    transactionPageCount, transactionSearch, transactionView, transactionYears, transactions,
     transferCandidates, uncategorizedRefunds, undoLoggedOperation, unlinkRefund, updateCategorizedHistoryRow, updateCategory,
     updateHoldingDescription, updateTransaction, visibleReviewIds, visibleReviewTransactions,
   } = controller;
 
+  const focusedAccountTransactionsForSummary = focusedAccount
+    ? transactions.filter((transaction) => transaction.account_id === focusedAccount.id)
+    : [];
+  const now = new Date();
+  const currentMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+  const previousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const previousMonthStart = `${previousMonth.getFullYear()}-${String(previousMonth.getMonth() + 1).padStart(2, "0")}-01`;
+  const focusedRefundsCents = focusedAccountTransactionsForSummary
+    .filter((transaction) => transaction.transaction_type === "refund" && transaction.transaction_date >= previousMonthStart && transaction.transaction_date < currentMonthStart)
+    .reduce((sum, transaction) => sum + Math.abs(transaction.amount_cents), 0);
+  const focusedRefundSuggestions = focusedAccount
+    ? refundSuggestions.filter((suggestion) => suggestion.refund_transaction.account_id === focusedAccount.id)
+    : [];
+  const focusedSpendByMonth = new Map<string, number>();
+  focusedAccountTransactionsForSummary
+    .filter((transaction) => transaction.transaction_type === "expense")
+    .forEach((transaction) => {
+      const month = transaction.transaction_date.slice(0, 7);
+      focusedSpendByMonth.set(month, (focusedSpendByMonth.get(month) ?? 0) + Math.abs(transaction.amount_cents));
+    });
+  const focusedAverageMonthlySpendCents = focusedSpendByMonth.size > 0
+    ? Math.round(Array.from(focusedSpendByMonth.values()).reduce((sum, amount) => sum + amount, 0) / focusedSpendByMonth.size)
+    : 0;
+
+  function clearTransactionFilters() {
+    setSelectedTransactionAccountFilters(accounts.map((account) => account.id));
+    setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value));
+    setSelectedTransactionYearFilters(transactionYears);
+    setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value));
+    setSelectedTransactionTypeFilters([]);
+    setTransactionDateFrom("");
+    setTransactionDateTo("");
+    setTransactionAmountMin(undefined);
+    setTransactionAmountMax(undefined);
+    setTransactionDirection(undefined);
+    setTransactionHasRefund(false);
+    setTransactionSearch("");
+    setTransactionView("live");
+  }
+
+  function renderTransactionFilters(includeAccounts: boolean) {
+    return <div className="transactionFilterRow compactTransactionFilters">
+      {transactionFilterChips.length > 0 ? <div className="transactionFilterChips inlineFilterChips" aria-label="Active transaction filters">
+        {transactionFilterChips.map((chip) => <button type="button" key={chip.key} onClick={chip.onRemove} title={`Remove ${chip.label} filter`}><span>{chip.label}</span><X size={12} /></button>)}
+      </div> : null}
+      {includeAccounts ? <MultiSelectFilter
+        label="Accounts"
+        options={accounts.map((account) => ({ value: String(account.id), label: account.display_name }))}
+        selectedValues={selectedTransactionAccountFilters.map(String)}
+        onToggle={(value) => setSelectedTransactionAccountFilters((current) => toggleValue(current, Number(value)))}
+        onSelectAll={() => setSelectedTransactionAccountFilters(accounts.map((account) => account.id))}
+        onDeselectAll={() => setSelectedTransactionAccountFilters([])}
+      /> : null}
+      {includeAccounts ? <MultiSelectFilter
+        label="Months"
+        options={monthOptions}
+        selectedValues={selectedTransactionMonthFilters}
+        onToggle={(value) => setSelectedTransactionMonthFilters((current) => toggleValue(current, value))}
+        onSelectAll={() => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value))}
+        onDeselectAll={() => setSelectedTransactionMonthFilters([])}
+      /> : null}
+      {includeAccounts ? <MultiSelectFilter
+        label="Years"
+        options={transactionYears.map((year) => ({ value: year, label: year }))}
+        selectedValues={selectedTransactionYearFilters}
+        onToggle={(value) => setSelectedTransactionYearFilters((current) => toggleValue(current, value))}
+        onSelectAll={() => setSelectedTransactionYearFilters(transactionYears)}
+        onDeselectAll={() => setSelectedTransactionYearFilters([])}
+      /> : null}
+      <MultiSelectFilter
+        label="Categories"
+        options={transactionCategoryOptions}
+        selectedValues={selectedTransactionCategoryFilters}
+        onToggle={(value) => setSelectedTransactionCategoryFilters((current) => toggleValue(current, value))}
+        onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
+        onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
+      />
+      <DateRangePicker dateFrom={transactionDateFrom} dateTo={transactionDateTo} onApply={(range) => { setTransactionDateFrom(range.dateFrom); setTransactionDateTo(range.dateTo); }} />
+      <button type="button" className={transactionHasRefund ? "filterToggle active" : "filterToggle"} onClick={() => setTransactionHasRefund((current) => !current)}>↩ Has refund</button>
+      <button type="button" className="filterToggle clearFiltersButton" onClick={clearTransactionFilters}><RotateCcw size={14} />Clear filters</button>
+      <button type="button" className={transactionView === "trash" ? "filterToggle trashFilterToggle active" : "filterToggle trashFilterToggle"} aria-pressed={transactionView === "trash"} onClick={() => setTransactionView((current) => current === "trash" ? "live" : "trash")}>{transactionView === "trash" ? <X size={13} /> : <Trash2 size={13} />}Trash</button>
+    </div>;
+  }
+
+  function renderPostCategorizationPrompt() {
+    if (!pendingRuleTransaction) return null;
+    return <PostCategorizationRulePrompt
+      transaction={pendingRuleTransaction}
+      categories={categories}
+      transactionTypes={transactionTypes}
+      onSave={(draft) => saveRuleFromTransaction(pendingRuleTransaction, draft)}
+      onApplyExisting={(ruleId) => applyRule(ruleId, "all")}
+      onDismiss={() => setPendingRuleTransaction(null)}
+    />;
+  }
+
   return (
-    <div className="appFrame" style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)` }}>
+    <div className="appFrame" style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)`, "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
       <aside className="sidebar">
         <div className="brandBlock">
+          <span className="brandMark"><Landmark size={16} /></span>
           <strong>Private Finance</strong>
-          <span>Local plan</span>
         </div>
         <PrimaryNav items={primaryNavItems} activeView={activeView} reviewCount={reviewCount} onNavigate={navigateToView} />
         <AccountNav sections={sidebarTaxonomyTree} collapsed={collapsedTaxonomyGroups} activeAccountId={activeView === "account" ? focusedAccountId : null} missingCategoryCountByAccount={missingCategoryCountByAccount} formatMoney={formatMoney} balanceLabel={sidebarBalanceLabel} onToggle={toggleTaxonomyGroup} onOpenAccount={openAccountView} />
@@ -739,6 +832,10 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
               <Plus size={11} />
             </span>
             Add Account
+          </button>
+          <button className={activeView === "settings" ? "navItem sidebarUtilityNav active" : "navItem sidebarUtilityNav"} onClick={() => navigateToView("settings")}>
+            <Settings size={16} />
+            <span>Settings</span>
           </button>
           <button className="taxonomyToggleButton" onClick={() => void handleLogout()}>
             <span className="sidebarActionIcon">
@@ -978,7 +1075,11 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
           <AccountPage
             account={focusedAccount}
             balanceCents={focusedAccountBalanceCents}
+            refundsCents={focusedRefundsCents}
+            averageMonthlySpendCents={focusedAverageMonthlySpendCents}
             missingCategoryCount={focusedMissingCategoryCount}
+            suggestedRefundCount={focusedRefundSuggestions.length}
+            uncategorizedActive={selectedTransactionCategoryFilters.length === 1 && selectedTransactionCategoryFilters[0] === uncategorizedFilterValue}
             reconciliation={focusedReconciliation}
             paymentVerification={focusedPaymentVerification}
             csrf={csrf}
@@ -986,10 +1087,8 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
             transactionCategories={categories}
             externalAccounts={externalAccounts}
             formatMoney={formatMoney}
-            accountGroupLabel={accountGroupLabel}
             readableAccountType={readableAccountType}
             onImport={() => openImportModal(focusedAccount.id)}
-            onOpenReview={() => navigateToView("review")}
             onRefresh={() => void loadData()}
             onViewUncategorized={scrollToUncategorized}
             onCheckpointSaved={async (operationId) => { await loadData(); showToast({ tone: "success", message: "Statement balance saved and checked against the ledger.", operationId }); }}
@@ -1005,40 +1104,17 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
               {deleteTarget?.kind === "holding" || deleteTarget?.kind === "holding_bulk" ? <DeleteConfirmInline target={deleteTarget} confirmText={deleteConfirmText} onConfirmTextChange={setDeleteConfirmText} onConfirm={confirmDelete} onCancel={() => { setDeleteTarget(null); setDeleteConfirmText(""); }} /> : null}
               <HoldingsPanel rows={focusedHoldingRows} accounts={[focusedAccount]} csrf={csrf} selectedIds={selectedHoldingIds} formatMoney={formatMoney} formatDate={formatShortDate} onToggleSelection={toggleHoldingSelection} onRequestBulkDelete={requestBulkHoldingDelete} onClearSelection={() => { const ids = new Set(focusedHoldingRows.map((row) => row.id)); setSelectedHoldingIds((current) => current.filter((id) => !ids.has(id))); resetHoldingSelectionAnchor(); }} onUpdateDescription={updateHoldingDescription} onRequestDelete={(row) => requestDelete({ kind: "holding", id: row.id, label: `${row.symbol || row.description || "Holding"} in ${row.account}` })} onLotSaved={async (operationId) => { await loadData(); showToast({ tone: "success", message: "Tax lot updated; basis and gain/loss refreshed.", operationId }); }} onError={(message) => showToast({ tone: "error", message })} />
             </> : undefined}
-          >
-            <FilterSummaryBar filter={transactionSummaryFilter} formatMoney={formatMoney} onPeek={openTransactionPeek} />
-            <div className="transactionDiscovery stickyFilters">
-              <label className="transactionSearchBox"><Search size={16} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search institution, account, description, details, or labels" /></label>
-              <div className="transactionFilterRow">
-              <MultiSelectFilter
-                label="Months"
-                options={monthOptions}
-                selectedValues={selectedTransactionMonthFilters}
-                onToggle={(value) => setSelectedTransactionMonthFilters((current) => toggleValue(current, value))}
-                onSelectAll={() => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value))}
-                onDeselectAll={() => setSelectedTransactionMonthFilters([])}
-              />
-              <MultiSelectFilter
-                label="Years"
-                options={transactionYears.map((year) => ({ value: year, label: year }))}
-                selectedValues={selectedTransactionYearFilters}
-                onToggle={(value) => setSelectedTransactionYearFilters((current) => toggleValue(current, value))}
-                onSelectAll={() => setSelectedTransactionYearFilters(transactionYears)}
-                onDeselectAll={() => setSelectedTransactionYearFilters([])}
-              />
-              <MultiSelectFilter
-                label="Categories"
-                options={transactionCategoryOptions}
-                selectedValues={selectedTransactionCategoryFilters}
-                onToggle={(value) => setSelectedTransactionCategoryFilters((current) => toggleValue(current, value))}
-                onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
-                onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
-              />
-              <DateRangePicker dateFrom={transactionDateFrom} dateTo={transactionDateTo} onApply={(range) => { setTransactionDateFrom(range.dateFrom); setTransactionDateTo(range.dateTo); }} />
-              <button type="button" className={transactionHasRefund ? "filterToggle active" : "filterToggle"} onClick={() => setTransactionHasRefund((current) => !current)}>↩ Has refund</button>
-              </div>
-            </div>
-          </AccountPage>
+            suggestedRefunds={<RefundSuggestions
+              suggestions={focusedRefundSuggestions}
+              busy={busyAction}
+              onDetect={() => void detectRefunds()}
+              onConfirm={(suggestion, candidate) => void confirmRefundSuggestion(suggestion, candidate)}
+              onReject={(suggestion, candidate) => void rejectRefundSuggestion(suggestion, candidate)}
+              onBulkConfirm={(selections) => void confirmRefundSelections(selections)}
+              onBulkReject={(selections) => void rejectRefundSelections(selections)}
+              onNoExpense={(refundIds) => void settleRefundsWithoutExpense(refundIds)}
+            />}
+          />
         ) : null}
 
         {activeView === "all-accounts" ? (
@@ -1061,46 +1137,6 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                 </button>
               </div>
             </header>
-            <FilterSummaryBar filter={transactionSummaryFilter} formatMoney={formatMoney} onPeek={openTransactionPeek} />
-            <div className="transactionDiscovery stickyFilters">
-              <label className="transactionSearchBox"><Search size={16} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search institution, account, description, details, or labels" /></label>
-              <div className="transactionFilterRow">
-              <MultiSelectFilter
-                label="Accounts"
-                options={accounts.map((account) => ({ value: String(account.id), label: account.display_name }))}
-                selectedValues={selectedTransactionAccountFilters.map(String)}
-                onToggle={(value) => setSelectedTransactionAccountFilters((current) => toggleValue(current, Number(value)))}
-                onSelectAll={() => setSelectedTransactionAccountFilters(accounts.map((account) => account.id))}
-                onDeselectAll={() => setSelectedTransactionAccountFilters([])}
-              />
-              <MultiSelectFilter
-                label="Months"
-                options={monthOptions}
-                selectedValues={selectedTransactionMonthFilters}
-                onToggle={(value) => setSelectedTransactionMonthFilters((current) => toggleValue(current, value))}
-                onSelectAll={() => setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value))}
-                onDeselectAll={() => setSelectedTransactionMonthFilters([])}
-              />
-              <MultiSelectFilter
-                label="Years"
-                options={transactionYears.map((year) => ({ value: year, label: year }))}
-                selectedValues={selectedTransactionYearFilters}
-                onToggle={(value) => setSelectedTransactionYearFilters((current) => toggleValue(current, value))}
-                onSelectAll={() => setSelectedTransactionYearFilters(transactionYears)}
-                onDeselectAll={() => setSelectedTransactionYearFilters([])}
-              />
-              <MultiSelectFilter
-                label="Categories"
-                options={transactionCategoryOptions}
-                selectedValues={selectedTransactionCategoryFilters}
-                onToggle={(value) => setSelectedTransactionCategoryFilters((current) => toggleValue(current, value))}
-                onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
-                onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
-              />
-              <DateRangePicker dateFrom={transactionDateFrom} dateTo={transactionDateTo} onApply={(range) => { setTransactionDateFrom(range.dateFrom); setTransactionDateTo(range.dateTo); }} />
-              <button type="button" className={transactionHasRefund ? "filterToggle active" : "filterToggle"} onClick={() => setTransactionHasRefund((current) => !current)}>↩ Has refund</button>
-              </div>
-            </div>
           </div>
         ) : null}
 
@@ -1585,8 +1621,9 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                   setDeleteTarget(null);
                   setDeleteConfirmText("");
                 }}
-              />
+            />
             ) : null}
+            {renderPostCategorizationPrompt()}
             <div className="reviewEditor">
               {visibleReviewTransactions.map((transaction) => {
                 const refundSuggestion = refundSuggestionByTransactionId.get(transaction.id);
@@ -1620,7 +1657,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                       </select>
                       <select
                         value={transaction.transaction_type}
-                        onChange={(event) => { const nextType = event.target.value; void updateTransaction(transaction.id, { transaction_type: nextType, ...(transactionTypeUsesCategory(nextType) ? {} : { category_id: null }) }); }}
+                        onChange={(event) => { const nextType = event.target.value; void categorizeTransaction(transaction, { transaction_type: nextType, ...(transactionTypeUsesCategory(nextType) ? {} : { category_id: null }) }); }}
                       >
                         {transactionTypes.map((type) => (
                           <option key={type.value} value={type.value}>
@@ -1630,7 +1667,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                       </select>
                       <select
                         value={transaction.category_id ?? ""}
-                        onChange={(event) => void updateTransaction(transaction.id, { category_id: event.target.value ? Number(event.target.value) : null })}
+                        onChange={(event) => { const categoryId = event.target.value ? Number(event.target.value) : null; if (categoryId === null) { void updateTransaction(transaction.id, { category_id: null }); } else { void categorizeTransaction(transaction, { category_id: categoryId }); } }}
                       >
                         <option value="">No category</option>
                         {categories.map((category) => (
@@ -1645,15 +1682,6 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                       onChange={(event) => void updateTransaction(transaction.id, { user_note: event.target.value })}
                       placeholder="Add your own context, like what you actually bought."
                       rows={2}
-                    />
-                    <SaveRuleControl
-                      transactionId={transaction.id}
-                      description={transaction.raw_description}
-                      initialMatchText={suggestedRuleText(transaction.raw_description)}
-                      typeLabel={readableAccountType(transaction.transaction_type)}
-                      categoryLabel={transaction.category_id ? categories.find((category) => category.id === transaction.category_id)?.label ?? "selected category" : "no category"}
-                      disabled={transactionTypeUsesCategory(transaction.transaction_type) && !transaction.category_id}
-                      onSave={(matchText) => saveRuleFromTransaction(transaction, matchText)}
                     />
                     {transaction.transaction_type === "refund" && refundSuggestion ? <RefundCategorizationNudge suggestion={refundSuggestion} busy={busyAction} formatMoney={formatMoney} onConfirm={(suggestion, candidate) => void confirmRefundSuggestion(suggestion, candidate)} onReject={(suggestion, candidate) => void rejectRefundSuggestion(suggestion, candidate)} /> : null}
                     <div className="reviewActions">
@@ -1750,62 +1778,25 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
         )}
 
         {(activeView === "all-accounts" || (activeView === "account" && accountTransactionsVisible)) && (
-        <section className="ledgerPanel ledgerWorkspace">
-          <PanelTitle icon={transactionView === "trash" ? Trash2 : ReceiptText} title={transactionView === "trash" ? "Transaction Trash" : activeView === "account" ? "Account Transactions" : "All Transactions"} subtitle={transactionView === "trash" ? "Restore deleted transactions or permanently remove them." : activeView === "account" ? "Transactions for the selected account." : "A searchable repository for every imported transaction."} />
-          <div className="trashViewToggle" role="group" aria-label="Transaction view">
-            <button className={transactionView === "live" ? "active" : ""} onClick={() => setTransactionView("live")}><ReceiptText size={14} /> Transactions</button>
-            <button className={transactionView === "trash" ? "active" : ""} onClick={() => setTransactionView("trash")}><Trash2 size={14} /> Trash</button>
-          </div>
-          {transactionFilterChips.length > 0 ? (
-            <div className="transactionFilterChips" aria-label="Active transaction filters">
-              {transactionFilterChips.map((chip) => (
-                <button type="button" key={chip.key} onClick={chip.onRemove} title={`Remove ${chip.label} filter`}>
-                  <span>{chip.label}</span>
-                  <X size={12} />
-                </button>
-              ))}
-              <button
-                type="button"
-                className="clearFilterChips"
-                onClick={() => {
-                  if (activeView === "account") navigateToView("all-accounts");
-                  setSelectedTransactionAccountFilters(accounts.map((account) => account.id));
-                  setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value));
-                  setSelectedTransactionYearFilters(transactionYears);
-                  setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value));
-                  setTransactionDateFrom("");
-                  setTransactionDateTo("");
-                  setTransactionAmountMin(undefined);
-                  setTransactionAmountMax(undefined);
-                  setTransactionDirection(undefined);
-                  setTransactionSearch("");
-                }}
-              >
-                Clear filters
-              </button>
-            </div>
-          ) : null}
+        <section className="ledgerPanel ledgerWorkspace" id={activeView === "account" ? "account-transactions" : "all-transactions"}>
+          {activeView === "all-accounts" ? <div className="transactionControlTop">
+            {transactionView === "live" ? <div className="transactionModeTabs" role="tablist" aria-label="Transaction views">
+            <button type="button" role="tab" aria-selected={!selectedTransactionCategoryFilters.includes(uncategorizedFilterValue)} className={!selectedTransactionCategoryFilters.includes(uncategorizedFilterValue) ? "active" : ""} onClick={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value))}>All transactions</button>
+            <button type="button" role="tab" aria-selected="false" onClick={() => navigateToView("review")}>Needs review <span>{reviewCount}</span></button>
+            <button type="button" role="tab" aria-selected={selectedTransactionCategoryFilters.length === 1 && selectedTransactionCategoryFilters[0] === uncategorizedFilterValue} className={selectedTransactionCategoryFilters.length === 1 && selectedTransactionCategoryFilters[0] === uncategorizedFilterValue ? "active" : ""} onClick={() => setSelectedTransactionCategoryFilters([uncategorizedFilterValue])}>Uncategorized <span>{missingCategoryTransactions.length}</span></button>
+            </div> : <span className="trashResultsLabel">Trash</span>}
+            <label className="transactionSearchBox"><Search size={15} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search transactions…" /></label>
+          </div> : null}
+          {renderTransactionFilters(activeView === "all-accounts")}
+          {activeView === "account" ? <div className="accountTransactionSearchRow">
+            <label className="transactionSearchBox"><Search size={15} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search this account’s transactions…" /></label>
+          </div> : null}
           <div className="ledgerListToolbar">
             <div className="ledgerSummaryGroup">
               <div className="ledgerSummaryText">
                 <strong>{filteredTransactions.length} transaction{filteredTransactions.length === 1 ? "" : "s"}</strong>
                 <span>Showing {pagedTransactions.length}{filteredTransactions.length > pagedTransactions.length ? ` of ${filteredTransactions.length}` : ""}</span>
               </div>
-              <button
-                type="button"
-                className="secondaryButton compactButton"
-                onClick={() => {
-                  if (allRepositoryTransactionsSelected) {
-                    const repositoryIds = new Set(repositoryTransactionIds);
-                    setSelectedTransactionIds((current) => current.filter((id) => !repositoryIds.has(id)));
-                  } else {
-                    void selectAllMatchingTransactions();
-                  }
-                }}
-                disabled={repositoryTransactionIds.length === 0 || busyAction === "select-all-transactions"}
-              >
-                {allRepositoryTransactionsSelected ? "Clear all" : busyAction === "select-all-transactions" ? "Selecting…" : `Select all ${filteredTransactions.length}`}
-              </button>
             </div>
             {pagedTransactions.length < filteredTransactions.length ? (
               <>
@@ -1877,11 +1868,28 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                 setDeleteTarget(null);
                 setDeleteConfirmText("");
               }}
-            />
-          ) : null}
+              />
+            ) : null}
+          {renderPostCategorizationPrompt()}
           <div className="ledgerTable">
             <div className="ledgerHeader">
-              <span>Selected</span>
+              <span className="selectAllHeader">
+                <input
+                  type="checkbox"
+                  aria-label={allRepositoryTransactionsSelected ? "Clear transaction selection" : `Select all ${filteredTransactions.length} transactions`}
+                  checked={allRepositoryTransactionsSelected}
+                  disabled={repositoryTransactionIds.length === 0 || busyAction === "select-all-transactions"}
+                  onChange={() => {
+                    if (allRepositoryTransactionsSelected) {
+                      const repositoryIds = new Set(repositoryTransactionIds);
+                      setSelectedTransactionIds((current) => current.filter((id) => !repositoryIds.has(id)));
+                    } else {
+                      void selectAllMatchingTransactions();
+                    }
+                  }}
+                />
+                <small>{busyAction === "select-all-transactions" ? "Selecting…" : "All"}</small>
+              </span>
               <span>
                 <button type="button" className="sortableHeader" onClick={() => toggleTransactionSort("date")}>
                   Date{sortIndicator("date")}
@@ -1976,7 +1984,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                       className="editableCell"
                       value={transaction.transaction_type}
                       onClick={(event) => event.stopPropagation()}
-                      onChange={(event) => void updateTransaction(transaction.id, { transaction_type: event.target.value }, false)}
+                      onChange={(event) => { const nextType = event.target.value; void categorizeTransaction(transaction, { transaction_type: nextType, ...(!transactionTypeUsesCategory(nextType) ? { category_id: null } : {}) }); }}
                     >
                       {transactionTypes.map((type) => (
                         <option key={type.value} value={type.value}>
@@ -2010,7 +2018,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                                   setCategoryEditor(null);
                                 } else if (event.key === "Enter" && categorySuggestions[0]) {
                                   event.preventDefault();
-                                  void updateTransaction(transaction.id, { category_id: categorySuggestions[0].id }, false);
+                                  void categorizeTransaction(transaction, { category_id: categorySuggestions[0].id });
                                   setCategoryEditor(null);
                                 }
                               }}
@@ -2032,7 +2040,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                                   className="categoryPopupOption"
                                   key={categoryOption.id}
                                   onClick={() => {
-                                    void updateTransaction(transaction.id, { category_id: categoryOption.id }, false);
+                                    void categorizeTransaction(transaction, { category_id: categoryOption.id });
                                     setCategoryEditor(null);
                                   }}
                                 >
@@ -2045,7 +2053,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                               <button
                                 type="button"
                                 onClick={() => {
-                                  void updateTransaction(transaction.id, { transaction_type: "transfer" }, false);
+                                  void categorizeTransaction(transaction, { transaction_type: "transfer", category_id: null });
                                   setCategoryEditor(null);
                                 }}
                               >
@@ -2119,18 +2127,6 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                   </div>
                 ) : null}
                 {isEditing && transaction.transaction_type === "refund" && refundSuggestion ? <RefundCategorizationNudge suggestion={refundSuggestion} busy={busyAction} formatMoney={formatMoney} onConfirm={(suggestion, candidate) => void confirmRefundSuggestion(suggestion, candidate)} onReject={(suggestion, candidate) => void rejectRefundSuggestion(suggestion, candidate)} /> : null}
-                {isEditing ? (
-                  <SaveRuleControl
-                    compact
-                    transactionId={transaction.id}
-                    description={transaction.raw_description}
-                    initialMatchText={suggestedRuleText(transaction.raw_description)}
-                    typeLabel={readableAccountType(transaction.transaction_type)}
-                    categoryLabel={transaction.category_id ? categories.find((category) => category.id === transaction.category_id)?.label ?? "selected category" : "no category"}
-                    disabled={transactionTypeUsesCategory(transaction.transaction_type) && !transaction.category_id}
-                    onSave={(matchText) => saveRuleFromTransaction(transaction, matchText)}
-                  />
-                ) : null}
                 {isEditing && transaction.transaction_type === "expense" ? (
                   <RefundLinkPicker
                     open={refundPicker?.expenseId === transaction.id}
@@ -2446,9 +2442,4 @@ function MetricTile({ label, value, tone }: { label: string; value: string; tone
       <span>{label}</span>
     </div>
   );
-}
-
-function suggestedRuleText(description: string) {
-  const cleaned = description.replace(/[^a-zA-Z0-9\s*&]/g, " ").replace(/\s+/g, " ").trim();
-  return cleaned.split(" ").slice(0, 3).join(" ").toUpperCase() || description.slice(0, 40).toUpperCase();
 }
