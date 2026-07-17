@@ -81,7 +81,7 @@ button:disabled {
 .appFrame {
   height: 100vh;
   display: grid;
-  grid-template-columns: 244px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 244px) minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -1221,11 +1221,15 @@ button:disabled {
 .netWorthChartWrap {
   display: grid;
   gap: 5px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .netWorthChart {
+  display: block;
   width: 100%;
-  min-height: 240px;
+  min-width: 0;
+  max-width: 100%;
   cursor: crosshair;
   touch-action: none;
 }
@@ -4938,7 +4942,7 @@ select.editableCell {
   }
 
   .netWorthChart {
-    min-height: 200px;
+    min-height: 0;
   }
 
   .netWorthSelectionStats,
@@ -6674,5 +6678,109 @@ body {
   .accountTaxonomyFlyout.secondary {
     left: calc(var(--sidebar-width, 244px) + 24px);
     top: calc(var(--flyout-top) + 54px);
+  }
+}
+
+/* Responsive containment for the application shell and data-heavy views. */
+.workspace,
+.viewSection,
+.reportSurface,
+.netWorthHistoryPanel,
+.ledgerPanel,
+.ledgerWorkspace {
+  min-width: 0;
+}
+
+.ledgerTable {
+  width: 100%;
+  max-width: 100%;
+  overscroll-behavior-x: contain;
+  scrollbar-gutter: stable;
+}
+
+@media (max-width: 1100px) {
+  .appFrame {
+    grid-template-columns: 84px minmax(0, 1fr);
+  }
+
+  .workspace {
+    padding-inline: 16px;
+  }
+
+  .compactAccountHeader,
+  .accountPageTabs,
+  .accountLedgerHeader {
+    margin-inline: 12px;
+  }
+
+  .accountLedgerHeader {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .transactionFilterRow {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 760px) {
+  .appFrame {
+    width: 100%;
+  }
+
+  .workspace {
+    width: 100%;
+    padding: 10px;
+  }
+
+  .topBar {
+    padding-inline: 10px;
+  }
+
+  .reportTabs {
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  .reportTab {
+    flex: 0 0 auto;
+  }
+
+  .netWorthHistoryPanel {
+    padding: 12px;
+  }
+
+  .netWorthHistoryHeader,
+  .accountLedgerHeader {
+    grid-template-columns: 1fr;
+  }
+
+  .periodSelector {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .accountActionBar {
+    justify-content: flex-start;
+  }
+
+  .ledgerPanel.ledgerWorkspace {
+    padding: 10px;
+  }
+
+  .ledgerHeader,
+  .ledgerRow {
+    min-width: 1120px;
+  }
+
+  .modalBackdrop {
+    padding: 10px;
+  }
+
+  .accountActionModal,
+  .accountRefundModal {
+    max-height: calc(100dvh - 20px);
   }
 }
