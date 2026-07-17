@@ -2,8 +2,10 @@ export type TransactionDirection = "inflow" | "outflow";
 export type TransactionView = "live" | "trash";
 export type TransactionSort = "date" | "amount";
 export type SortDirection = "asc" | "desc";
+export type HoldingSort = "institution" | "account" | "symbol" | "quantity" | "price" | "value" | "basis" | "gain" | "age";
 export type NetWorthPeriod = "1M" | "6M" | "1Y" | "Max";
 export type ReportPeriod = "this_month" | "this_year" | "last_12_months" | "all";
+export type ReportTab = "Overview" | "Net Worth" | "Spending" | "Cash Flow";
 
 export interface TxnFilter {
   accounts?: string[];
@@ -24,6 +26,9 @@ export interface TxnFilter {
   sortDirection?: SortDirection;
   netWorthPeriod?: NetWorthPeriod;
   hasRefund?: boolean;
+  holdingSort?: HoldingSort;
+  holdingSortDirection?: SortDirection;
+  reportTab?: ReportTab;
 }
 
 export type RouteView = "overview" | "all-accounts" | "account" | "review" | "history" | "settings";
@@ -86,6 +91,12 @@ export function decodeTxnFilter(params: URLSearchParams): TxnFilter {
   const netWorthPeriod = params.get("period");
   if (netWorthPeriod === "1M" || netWorthPeriod === "6M" || netWorthPeriod === "1Y" || netWorthPeriod === "Max") filter.netWorthPeriod = netWorthPeriod;
   if (params.get("hasRefund") === "true") filter.hasRefund = true;
+  const holdingSort = params.get("holdingSort");
+  if (["institution", "account", "symbol", "quantity", "price", "value", "basis", "gain", "age"].includes(holdingSort ?? "")) filter.holdingSort = holdingSort as HoldingSort;
+  if (params.get("holdingSortDirection") === "desc") filter.holdingSortDirection = "desc";
+  const reportTab = params.get("tab");
+  if (reportTab === "Net Worth" || reportTab === "Spending" || reportTab === "Cash Flow") filter.reportTab = reportTab;
+  else if (reportTab?.toLowerCase() === "income") filter.reportTab = "Cash Flow";
   return filter;
 }
 
@@ -106,6 +117,9 @@ export function encodeTxnFilter(filter: TxnFilter): URLSearchParams {
   if (filter.sortDirection && filter.sortDirection !== "desc") params.set("sortDirection", filter.sortDirection);
   if (filter.netWorthPeriod && filter.netWorthPeriod !== "6M") params.set("period", filter.netWorthPeriod);
   if (filter.hasRefund) params.set("hasRefund", "true");
+  if (filter.holdingSort && filter.holdingSort !== "symbol") params.set("holdingSort", filter.holdingSort);
+  if (filter.holdingSortDirection === "desc") params.set("holdingSortDirection", "desc");
+  if (filter.reportTab && filter.reportTab !== "Overview") params.set("tab", filter.reportTab);
   return params;
 }
 

@@ -1,6 +1,8 @@
 # private-finance
 
-Local-first personal finance system with a secure FastAPI backend, encrypted SQLite-ready storage, and a React frontend for import, review, reporting, and net-worth tracking.
+Local-first personal finance system with a FastAPI backend, SQLite storage, and a React frontend for import, review, reporting, reconciliation, and net-worth tracking.
+
+The database and backups are currently plaintext at rest. The application password protects access through the local API, but disk encryption such as BitLocker is still recommended for financial data and PII. See the [privacy assessment](docs/privacy-risks.md).
 
 ## What This Is
 
@@ -15,25 +17,28 @@ This project is designed to replace a manual Excel workflow with:
 ## Repository Layout
 
 - `backend/` FastAPI application, data model, services, tests
-- `frontend/` React/Vite UI shells
-- `docs/` threat model and implementation notes
+- `frontend/` React/Vite application and extracted feature modules
+- `docs/` current guides, security assessments, implementation plans, and historical evaluations
 - `samples/` sample preset definitions for shared import formats
 
 ## Current Status
 
-This initial implementation includes:
+The implemented application includes:
 
-- local setup and login flow
-- localhost security middleware
-- core schema and category seeding
-- account and preset management
-- import preview and commit pipeline for CSV files
-- review inbox and dashboard summaries
-- backup and CSV export foundation
+- local setup/login, session expiry, CSRF protection, and localhost-only serving
+- CSV, OFX/QFX, and balance-only PDF ingestion through a private Import Inbox
+- staged import review, sign normalization, reliable-reference dedupe, and ledger-wide duplicate review
+- transaction categorization, saved rules, bulk editing, Trash, Activity, and conflict-aware Undo/Redo
+- transfer, card-payment, refund, and reconciliation workflows
+- anchored net worth, investment holdings, tax lots, manual balances, and statement checkpoints
+- filter-driven cash-flow, spending, and net-worth analysis
+- constrained SQLite backup/restore APIs plus JSON app-data export/import
+
+Iteration 3 Phase 12—the settings/navigation overhaul and frontend decomposition—is in progress. See the [documentation index](docs/README.md), [active implementation plan](docs/pf-implementation-plan-iteration-3-7-14-26.md), and [changelog](CHANGELOG.md).
 
 ## Workflow
 
-See [docs/workflow.md](docs/workflow.md) for the intended user workflow and the split between automated import work and human review.
+See [docs/workflow.md](docs/workflow.md) for the current user workflow and the split between automated import work and human review.
 
 For working with a co-worker, see [docs/collaboration.md](docs/collaboration.md).
 
@@ -113,10 +118,4 @@ Settings can be provided via a `.env` file in `backend/` or environment variable
 
 ## Product Direction
 
-The app is intended to grow toward:
-
-- unified bank and credit card transactions
-- fixed spending categories
-- investment snapshot tracking
-- net-worth summaries
-- secure self-hosted mobile access later
+Near-term work is tracked in the active implementation plan. The main remaining themes are the Phase 12 settings/decomposition work, percentage-based splits, stronger encrypted backup/storage options, and an explicitly secured remote-access design if non-local use is added later.

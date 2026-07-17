@@ -1,3 +1,5 @@
+import { queryClient } from "./queryClient";
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(apiUrl(path), {
     credentials: "include",
@@ -10,7 +12,10 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) throw new Error(await readableApiError(response, path));
   const result = await parseApiJson<T>(response, path);
   const method = (init?.method ?? "GET").toUpperCase();
-  if (method !== "GET" && method !== "HEAD") bumpTransactionsVersion();
+  if (method !== "GET" && method !== "HEAD") {
+    bumpTransactionsVersion();
+    void queryClient.invalidateQueries();
+  }
   return result;
 }
 

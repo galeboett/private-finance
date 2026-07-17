@@ -58,6 +58,21 @@ def aggregate_timeseries(db: Session, filters: TransactionFilter, bucket: Litera
     return [{"date": bucket_date.isoformat(), **values} for bucket_date, values in sorted(totals.items())]
 
 
+def aggregate_summary(db: Session, filters: TransactionFilter) -> dict:
+    rows = _filtered_transactions(db, filters)
+    inflow_cents = sum(row.amount_cents for row in rows if row.amount_cents > 0)
+    outflow_cents = abs(sum(row.amount_cents for row in rows if row.amount_cents < 0))
+    spend_months = {row.transaction_date.strftime("%Y-%m") for row in rows if row.amount_cents < 0}
+    return {
+        "inflow_cents": inflow_cents,
+        "outflow_cents": outflow_cents,
+        "net_cents": inflow_cents - outflow_cents,
+        "transaction_count": len(rows),
+        "spend_month_count": len(spend_months),
+        "average_monthly_spend_cents": round(outflow_cents / len(spend_months)) if spend_months else 0,
+    }
+
+
 def _filtered_transactions(db: Session, filters: TransactionFilter) -> list[Transaction]:
     return list(db.scalars(
         select(Transaction)

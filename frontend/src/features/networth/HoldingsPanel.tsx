@@ -1,29 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { api } from "../../api/client";
+import { HoldingsTable, type HoldingRow } from "./HoldingsTable";
+import { LotEditor } from "./LotEditor";
 
-export type HoldingRow = {
-  id: number;
-  account_id: number;
-  account: string;
-  snapshot_date: string;
-  symbol: string | null;
-  description: string | null;
-  csv_description: string | null;
-  user_description: string | null;
-  quantity: number | null;
-  price_cents: number | null;
-  display_price_cents: number | null;
-  price_date: string;
-  market_value_cents: number;
-  display_market_value_cents: number;
-  asset_class: string | null;
-  lot_count: number;
-  lot_quantity: number | null;
-  cost_basis_cents: number | null;
-  unrealized_gain_loss_cents: number | null;
-  oldest_acquisition_date: string | null;
-  lot_age_days: number | null;
-};
+export type { HoldingRow } from "./HoldingsTable";
 
 type AccountOption = { id: number; display_name: string };
 type Props = {
@@ -31,8 +11,6 @@ type Props = {
   accounts: AccountOption[];
   csrf: string;
   selectedIds: number[];
-  selectedVisibleIds: number[];
-  visibleIds: number[];
   formatMoney: (cents: number) => string;
   formatDate: (value: string) => string;
   onToggleSelection: (holdingId: number, visibleIds: number[], shiftKey: boolean) => void;
@@ -53,7 +31,9 @@ export function HoldingsPanel(props: Props) {
   const [basis, setBasis] = useState("");
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
-  const sharedPriceDate = props.rows.find((row) => row.price_date)?.price_date ?? "-";
+  const [editingHolding, setEditingHolding] = useState<HoldingRow | null>(null);
+  const visibleIds = props.rows.map((row) => row.id);
+  const selectedVisibleIds = visibleIds.filter((id) => props.selectedIds.includes(id));
 
   async function submitLot(event: FormEvent) {
     event.preventDefault();
@@ -91,31 +71,9 @@ export function HoldingsPanel(props: Props) {
         <label>Note<input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Optional" /></label>
         <button className="primaryButton compactButton" disabled={saving}>{saving ? "Saving..." : "Save lot"}</button>
       </form> : null}
-      {props.rows.length > 0 ? <div className="selectionToolbar"><span>{props.selectedVisibleIds.length} selected</span><button className="dangerTextButton" onClick={() => props.onRequestBulkDelete(props.selectedVisibleIds)} disabled={props.selectedVisibleIds.length === 0}>Delete selected</button><button className="secondaryButton" onClick={props.onClearSelection}>Clear</button></div> : null}
-      <div className="holdingsTable">
-        <div className="holdingsHeader"><span>Select</span><span>Account</span><span>Symbol</span><span>Description</span><span>Quantity</span><span className="stackedHeader">Price<small>{props.formatDate(sharedPriceDate)}</small></span><span>Value</span><span>Basis</span><span>Gain/loss</span><span>Lot age</span><span>Action</span></div>
-        {props.rows.slice(0, 12).map((row) => <div className={props.selectedIds.includes(row.id) ? "holdingsRow selected" : "holdingsRow"} key={row.id}>
-          <input type="checkbox" checked={props.selectedIds.includes(row.id)} onChange={(event) => props.onToggleSelection(row.id, props.visibleIds, (event.nativeEvent as MouseEvent).shiftKey)} title="Select holding. Hold Shift to select a range." />
-          <span>{row.account}</span><strong>{row.symbol || "Holding"}</strong>
-          <div className="holdingDescriptionEdit"><input defaultValue={row.user_description ?? row.csv_description ?? ""} onBlur={(event) => void updateIfChanged(row, event.currentTarget.value, props.onUpdateDescription)} placeholder="Add your description" />{row.csv_description ? <small>CSV: {row.csv_description}</small> : null}</div>
-          <span>{row.quantity ?? "-"}</span><span>{row.display_price_cents == null ? "-" : props.formatMoney(row.display_price_cents)}</span><span>{props.formatMoney(row.display_market_value_cents)}</span>
-          <span>{row.cost_basis_cents == null ? "-" : props.formatMoney(row.cost_basis_cents)}</span><strong className={row.unrealized_gain_loss_cents != null && row.unrealized_gain_loss_cents < 0 ? "amount negative" : "amount positive"}>{row.unrealized_gain_loss_cents == null ? "-" : props.formatMoney(row.unrealized_gain_loss_cents)}</strong>
-          <span title={row.oldest_acquisition_date ? `Oldest lot acquired ${props.formatDate(row.oldest_acquisition_date)}` : undefined}>{formatLotAge(row.lot_age_days, row.lot_count)}</span>
-          <button className="dangerTextButton" onClick={() => props.onRequestDelete(row)}>Delete</button>
-        </div>)}
-        {props.rows.length === 0 ? <p className="emptyText">No holdings rows to inspect yet.</p> : null}
-      </div>
+      {props.rows.length > 0 ? <div className="selectionToolbar"><span>{selectedVisibleIds.length} selected</span><button className="dangerTextButton" onClick={() => props.onRequestBulkDelete(selectedVisibleIds)} disabled={selectedVisibleIds.length === 0}>Delete selected</button><button className="secondaryButton" onClick={props.onClearSelection}>Clear</button></div> : null}
+      <HoldingsTable rows={props.rows} selectedIds={props.selectedIds} formatMoney={props.formatMoney} formatDate={props.formatDate} onToggleSelection={props.onToggleSelection} onUpdateDescription={props.onUpdateDescription} onRequestDelete={props.onRequestDelete} onManageLots={setEditingHolding} />
+      {editingHolding ? <LotEditor holding={editingHolding} csrf={props.csrf} formatMoney={props.formatMoney} onClose={() => setEditingHolding(null)} onChanged={async (operationId) => props.onLotSaved(operationId)} onError={props.onError} /> : null}
     </div>
   );
-}
-
-async function updateIfChanged(row: HoldingRow, nextDescription: string, onUpdate: (symbol: string | null, userDescription: string) => Promise<void>) {
-  const previous = row.user_description ?? row.csv_description ?? "";
-  if (nextDescription.trim() !== previous.trim()) await onUpdate(row.symbol, nextDescription);
-}
-
-export function formatLotAge(days: number | null, lotCount: number) {
-  if (days == null || lotCount === 0) return "-";
-  if (days < 365) return `${days}d / ${lotCount} lot${lotCount === 1 ? "" : "s"}`;
-  return `${(days / 365.25).toFixed(1)}y / ${lotCount} lot${lotCount === 1 ? "" : "s"}`;
 }

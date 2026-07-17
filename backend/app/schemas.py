@@ -237,8 +237,20 @@ class HoldingLotCreate(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class HoldingLotUpdate(BaseModel):
+    acquisition_date: date
+    quantity_basis_points: int = Field(gt=0)
+    cost_basis_cents: int = Field(ge=0)
+    note: str | None = Field(default=None, max_length=500)
+
+
 class NetWorthSnapshotUpsert(BaseModel):
     account_id: int
+    snapshot_date: date
+    balance_cents: int
+
+
+class NetWorthSnapshotUpdate(BaseModel):
     snapshot_date: date
     balance_cents: int
 

@@ -1,6 +1,8 @@
 # Private-Finance — State-of-the-Project Critique & Game Plan
 **Date:** July 13, 2026 · **Inputs:** `personal-finance-1.zip` (repo snapshot), `feature_requests_PF_7_13_26.docx`
 
+> **Historical snapshot:** This critique records the repository state on July 13. Its “current” line counts, missing-test findings, and unimplemented-phase statements are intentionally preserved as evidence of that review. Status reporting moved to the [iteration 3 implementation plan](pf-implementation-plan-iteration-3-7-14-26.md); do not use this document alone to determine current behavior.
+
 ---
 
 # Part 1 — Where the Project Actually Stands

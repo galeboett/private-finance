@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.db import Base
 from app.models import Account, Category, ExpenseAllocation, Transaction, TransactionSplit
 from app.schemas import TransactionFilter, TransactionType
-from app.services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_timeseries
+from app.services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_summary, aggregate_timeseries
 from app.services.transaction_filters import transaction_filter_conditions
 
 
@@ -63,6 +63,19 @@ def test_timeseries_bucket_dates_are_stable_at_day_week_and_month_edges():
         assert [row["date"] for row in aggregate_timeseries(db, TransactionFilter(), "day")] == ["2026-06-29", "2026-07-01", "2026-07-05", "2026-07-07"]
         assert [row["date"] for row in aggregate_timeseries(db, TransactionFilter(), "week")] == ["2026-06-29", "2026-07-06"]
         assert [row["date"] for row in aggregate_timeseries(db, TransactionFilter(), "month")] == ["2026-06-01", "2026-07-01"]
+
+
+def test_filter_summary_reports_in_out_net_count_and_average_monthly_spend():
+    with _session() as db:
+        _seed(db)
+        assert aggregate_summary(db, TransactionFilter()) == {
+            "inflow_cents": 252000,
+            "outflow_cents": 16000,
+            "net_cents": 236000,
+            "transaction_count": 4,
+            "spend_month_count": 2,
+            "average_monthly_spend_cents": 8000,
+        }
 
 
 def test_category_and_account_metadata_supports_precise_drill_down_labels():

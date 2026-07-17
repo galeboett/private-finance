@@ -2,13 +2,15 @@
 **Date:** July 14, 2026 · **Inputs:** `personal-finance-2.zip`, `PF_feature_requests_7_14_26.md` + 5 screenshots
 **Supersedes:** continues `pf-critique-and-gameplan-7-13-26.md` (Phases 0–5 verified complete; old Phases 6–7 remain open and are renumbered here)
 
+> **Active status:** This is the current implementation plan. Phases 6–11 are implemented. Phase 12 is in progress at checkpoint 1; Phase 13 remains open. Earlier “still open,” line-count, and test-count statements below describe the dated baseline unless a later implementation update supersedes them.
+
 ---
 
 # Part 1 — Verification of the Delivered Work
 
 Confirmed present and matching the prior plan: `sign_profiles.py` + prompt/anomaly flow, `duplicates.py` + side-by-side review with three verbs, `reconciliation.py` with auto/manual statement checkpoints and payment verification, `refunds.py` with partial refunds, exclusivity vs transfers, and performance hardening, `holding_lots` with Fidelity basis ingestion, the shared manual transaction form, `docs/amount-signs.md`, Vitest coverage, the inbox relocated outside the repo, and a proper `.gitignore`. Test files grew from 19 → 24. Good discipline: the changelog now tracks `App.tsx` line count per phase.
 
-**Still open from the last plan:**
+**Baseline carried into iteration 3 (July 14):**
 - **Old Phase 6 (UX overhaul)** — settings IA, left-nav flattening, summary header, custom date ranges, tab reorder. Not started; `App.tsx` is **5,378 lines** (down only 260 from 5,638). The <2,000-line exit criterion stands, and — as predicted — the monolith is now *causing* user-visible bugs (see the cross-view staleness item below).
 - **Old Phase 7 (percentage splits).**
 - The two SQLite backups and `server.err.log`/`server.out.log` still ride along in the zip. They're gitignored (so the repo is safe), but they contain real data and keep leaving the machine inside archives. Consider excluding `backend/data/` and `*.log` when you build a share zip.
@@ -215,10 +217,18 @@ Open refund suggestions are surfaced beside the refund in both Review and the le
    - New **Institution/Bank** column (joins account → institution).
    - **Total row** (Σ market value, Σ basis, Σ unrealized G/L) pinned at the bottom.
    - **Sortable columns**, ascending/descending, on every column (symbol, bank, quantity, price, value, basis, G/L, lot age) — a small `useSort` hook + header chevrons; sort state in the URL like every other view state.
-3. **Asset editing parity (the "editing" request):** holding lots and manual balance snapshots get the same inline-edit affordances as ledger rows — edit-in-place for date/quantity/basis/note, delete with the shared `DeleteConfirmInline`, every change journaled with the standard undo toast. Backend: `PATCH /api/holdings/lots/{id}`, `DELETE …`, `PATCH /api/networth/snapshots/{id}` (manual-source only), all journaling through `mutation_log`.
+3. **Asset editing parity (the "editing" request):** holding lots and manual balance snapshots get the same inline-edit affordances as ledger rows — edit-in-place for date/quantity/basis/note, delete with the shared `DeleteConfirmInline`, every change journaled with the standard undo toast. Implemented backend routes: `PATCH`/`DELETE /api/investments/lots/{id}` and `PATCH`/`DELETE /api/snapshots/networth/{id}` (direct-manual source only), all journaling through `mutation_log`.
 
 **Frontend:** `features/networth/HoldingsTable.tsx` (extracted, sortable, totaling), `features/networth/LotEditor.tsx`.
 **Tests:** sort stability, total-row math, lot edit/undo, manual-snapshot edit guard (import-source snapshots immutable).
+
+### Phase 11 implementation update — July 16, 2026
+
+Implemented. Brokerage and retirement account pages now lead with holdings and keep their transaction ledgers collapsed until requested. Net Worth and account pages share one `HoldingsTable`, including institution, sortable columns with bookmarkable URL state, complete lot-age display, selection, row actions, and a pinned total for market value, cost basis, and unrealized gain/loss.
+
+Holding lots and direct manual balance snapshots now support inline editing and deletion through the shared confirmation pattern. Each mutation is journaled and undoable. Imported holding lots remain editable with a clear warning that a future import can replace them; imported balance snapshots and statement-backed checkpoints are deliberately immutable through the manual-balance editor. The new manual-balance list excludes statement checkpoints so reconciliation remains the sole owner of those balances.
+
+The feature boundaries moved into `HoldingsTable.tsx`, `LotEditor.tsx`, `ManualSnapshotEditor.tsx`, and a reusable `useSort` hook. `App.tsx` decreased from the pre-Phase-11 baseline of **5,358** to **5,340 physical lines**. Phase verification: **228 backend tests passed**, **20 Vitest tests passed**, and the TypeScript/production Vite build succeeded.
 
 ## Phase 12 — UX Overhaul + Decomposition Completion (old Phase 6) — ~6–7 days
 
@@ -227,6 +237,14 @@ Everything from the previous plan's Phase 6 stands: settings information archite
 Two additions earned by this iteration:
 - **Adopt TanStack Query during the extraction** — RC-5 proved the ad-hoc state model now produces user-visible staleness bugs; the Phase 6d hotfix is a stopgap. Query-key-per-filter with invalidation on mutation retires that bug class.
 - **Exit criteria (hard):** `App.tsx` < 2,000 lines; zero feature JSX left in it beyond shell/layout; every mutation flows through shared hooks.
+
+### Phase 12 implementation checkpoint 1 — July 16, 2026
+
+In progress. The navigation/reporting slice is implemented: `AccountNav` flattens institutions containing one active account into a single direct account row, while multi-account institutions retain their collapsible group. `OverviewTabs` now presents **Overview · Net Worth · Spending · Cash Flow**; the standalone Income tab was removed because Cash Flow already contains the income/expense/net comparison, and old `?tab=Income` bookmarks resolve to Cash Flow.
+
+Transaction and account views now share a cached `FilterSummaryBar` backed by the canonical filter contract and a new `/api/aggregate/summary` endpoint. It reports total in, total out, net, transaction count, and average monthly outflow, and every value opens the existing filtered peek. A dual-month `DateRangePicker` writes `dateFrom`/`dateTo` into the canonical URL model and includes **Last 90 days** and **This quarter** shortcuts. TanStack Query is installed and mutation requests invalidate its cache; migration of the remaining read paths and mutations to shared query hooks continues in later Phase 12 slices.
+
+This checkpoint extracted `features/sidebar/AccountNav.tsx`, `features/overview/OverviewTabs.tsx`, `components/FilterSummaryBar.tsx`, and `components/DateRangePicker.tsx`. `App.tsx` decreased from the Phase 11 checkpoint of 5,340 to **5,264 physical lines**. Verification: **229 backend tests passed**, **24 Vitest tests passed**, and the production Vite build succeeds. Phase 12 is not complete: settings information architecture, the remaining feature extraction, full query-hook migration, and the `<2,000`-line exit criterion remain open.
 
 ## Phase 13 — Percentage Splits (old Phase 7) — ~1 day
 Unchanged: %/$ toggle, largest-remainder rounding, cents stored; exposed in both ledger and Review split editors (same extracted component after Phase 12).
@@ -254,4 +272,4 @@ Phases 6→7 are strictly ordered (duplicate resolution should happen against a 
 - *Duplicate scan over-flagging:* legitimate same-day same-amount purchases exist (the two $6.65 Amazon rows may be real). Tiering plus keep-both memory plus per-pair review remain the default: never bulk auto-delete an ordinary pair below the "exact" tier, and even exact bulk resolution stays one journaled, undoable operation. The only probable-tier exception is the constrained, previewed authoritative-history merge documented in the audit above; it preserves the established identity and must not become a generic probable-delete path.
 - *Detector changes regress transfers:* payment-detection v2 tightens keywords; re-run the transfer matcher tests plus a fixture from the real `PAYMENT FROM CHK … CONF#…` shape to prove true positives still match.
 
-**Standing merge gate (unchanged, restated):** `pytest` green, `pnpm build` green, CHANGELOG + App.tsx physical line count updated per phase. Current July 16 Phase 10 verification: **215 backend tests passed**, TypeScript is green, **17 Vitest tests passed**, and the production Vite build succeeds. Repeat this gate before each merge.
+**Standing merge gate (unchanged, restated):** `pytest` green, `pnpm build` green, CHANGELOG + App.tsx physical line count updated per phase. Current July 16 Phase 12 checkpoint verification: **229 backend tests passed**, TypeScript is green, **24 Vitest tests passed**, and the production Vite build succeeds. Repeat this gate before each merge.

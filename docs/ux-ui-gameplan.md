@@ -4,6 +4,8 @@
 
 Make the app feel like a calm personal finance workstation: dense enough for repeated ledger work, but not cramped, jumpy, or visually noisy. The main problem is not one bad component. It is inconsistent sizing, too many card-like surfaces, fixed-width data grids, and controls that change shape from screen to screen.
 
+> **Design reference, not status report:** Some recommendations here are implemented, including single-account sidebar flattening, analysis-tab cleanup, filtered summaries, and custom date ranges. Settings information architecture, deeper component extraction, and several visual-system items remain open. Track completion in the [iteration 3 implementation plan](pf-implementation-plan-iteration-3-7-14-26.md).
+
 ## Current UX Diagnosis
 
 The app is doing the right jobs: import files, review transactions, maintain accounts, and read reports. The UI currently makes those jobs feel heavier than they are.

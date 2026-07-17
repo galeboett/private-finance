@@ -3,6 +3,8 @@
 **Assessment date:** 2026-07-15  
 **Scope:** Local imports, statement PDF extraction, application storage, backups, exports, browser access, repository hygiene, and the current Windows filesystem permissions.
 
+**Status note (2026-07-16):** Phase 11 asset editing and the first Phase 12 navigation/query-cache checkpoint do not change the storage or network boundaries assessed here. TanStack Query caches API responses only in browser memory; the application still has no runtime statement-upload or analytics integration. Reassess after any remote-access, connector, encrypted-storage, retention, or backup-format change.
+
 This is a point-in-time review of the implemented code and local deployment, not a penetration test. Reassess it whenever storage, import, authentication, or deployment behavior changes.
 
 ## Executive summary
@@ -214,4 +216,4 @@ The application's local import guarantees do not automatically extend to Codex o
 - [Threat model](threat-model.md)
 - [Local statement ingestion](statement-ingestion.md)
 - [Backup and restore](backup-restore.md)
-- [Running and local configuration](running.md)
+- [Running and local configuration](../README.md#running-locally)

@@ -11,7 +11,7 @@ All parsing happens locally. No statement content is sent to a bank, connector, 
 ## Recommended workflow
 
 1. Download the file from the financial institution.
-2. Put it in the Import Inbox shown under **Settings → Import & Accounts**. Account subfolders or the account's last four digits in the filename improve matching.
+2. Put it in the Import Inbox shown under the current **Settings → Import & Accounts → Smart import** screen. Account subfolders or the account's last four digits in the filename improve matching. Phase 12 will rename this destination to **Settings → Imports** without changing the local folder or import behavior.
 3. Click **Scan inbox**.
 4. Review the matched account and preview.
 5. Confirm the import. OFX/QFX writes transactions and available anchors as one undoable Activity operation. PDF confirmation writes only the selected date and balance.

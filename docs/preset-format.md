@@ -13,6 +13,8 @@ Current preset families implemented:
 - `amex_activity`
 - `venmo_activity`
 - `generic_mapped`
+- `ofx_statement` (OFX/QFX transactions, balances, and supported positions)
+- `pdf_statement` (statement date and balance candidates only)
 
 Each preset should eventually carry:
 
@@ -23,4 +25,4 @@ Each preset should eventually carry:
 - amount/sign parsing
 - optional running balance handling
 
-The current implementation auto-detects these sample families from shared headers and normalizes them into staging rows before commit.
+The current implementation auto-detects CSV families from shared headers and normalizes them into staging rows before commit. OFX/QFX and PDF are detected by file type and parsed through the same staged review pipeline. An unfamiliar CSV can use `generic_mapped` after the user maps its date, description, and amount headers.

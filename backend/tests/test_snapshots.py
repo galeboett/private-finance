@@ -1,14 +1,16 @@
 from datetime import date
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
 from app.models import Account, HoldingSnapshot, NetWorthSnapshot, StatementCheckpoint, Transaction
 from app.services.snapshots import backfill_net_worth_snapshots, net_worth_contributors, net_worth_series, net_worth_stats, upsert_net_worth_snapshot
-from app.main import save_manual_net_worth_snapshot
+from app.main import delete_manual_net_worth_snapshot, save_manual_net_worth_snapshot, update_manual_net_worth_snapshot
 from app.models import SessionToken
-from app.schemas import NetWorthSnapshotUpsert
+from app.schemas import NetWorthSnapshotUpdate, NetWorthSnapshotUpsert
 from app.services.operation_history import undo_operation
 from starlette.requests import Request
 
@@ -114,6 +116,34 @@ def test_manual_snapshot_is_journaled_and_undoable():
         undo_operation(db, operation_id=result["operation_id"], actor="user:7")
         db.commit()
         assert db.query(NetWorthSnapshot).count() == 0
+
+
+def test_manual_snapshot_edit_delete_and_import_guard():
+    with Session(_engine()) as db:
+        account = Account(display_name="House", account_type="asset")
+        db.add(account)
+        db.flush()
+        manual = NetWorthSnapshot(account_id=account.id, snapshot_date=date(2026, 7, 1), balance_cents=45000000, source="manual")
+        imported = NetWorthSnapshot(account_id=account.id, snapshot_date=date(2026, 7, 2), balance_cents=45100000, source="import")
+        db.add_all([manual, imported])
+        db.commit()
+        request = Request({"type": "http", "headers": [(b"x-csrf-token", b"csrf")]})
+        session = SessionToken(user_id=7, csrf_token="csrf")
+
+        updated = update_manual_net_worth_snapshot(manual.id, NetWorthSnapshotUpdate(snapshot_date=date(2026, 7, 3), balance_cents=46000000), request, session, db)
+        assert (manual.snapshot_date, manual.balance_cents) == (date(2026, 7, 3), 46000000)
+        undo_operation(db, operation_id=updated["operation_id"], actor="user:7")
+        db.commit()
+        assert (manual.snapshot_date, manual.balance_cents) == (date(2026, 7, 1), 45000000)
+
+        with pytest.raises(HTTPException, match="Imported snapshots cannot be edited"):
+            update_manual_net_worth_snapshot(imported.id, NetWorthSnapshotUpdate(snapshot_date=date(2026, 7, 4), balance_cents=1), request, session, db)
+
+        deleted = delete_manual_net_worth_snapshot(manual.id, request, session, db)
+        assert db.get(NetWorthSnapshot, manual.id) is None
+        undo_operation(db, operation_id=deleted["operation_id"], actor="user:7")
+        db.commit()
+        assert db.get(NetWorthSnapshot, manual.id) is not None
 
 
 def test_net_worth_contributors_rank_accounts_by_asset_change():

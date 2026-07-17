@@ -245,6 +245,28 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+.sidebarAccount.flat {
+  padding-left: 9px;
+}
+
+.sidebarAccount.flat .sidebarAccountName {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.sidebarAccount.flat .sidebarAccountName small {
+  color: rgba(226, 232, 255, 0.62);
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.sidebarEmptyText {
+  color: rgba(245, 247, 255, 0.55);
+  padding: 0 12px;
+}
+
 .sidebarAccountBalanceWrap {
   display: grid;
   justify-items: end;
@@ -1663,10 +1685,11 @@ button:disabled {
 }
 
 .holdingsHeader,
-.holdingsRow {
-  min-width: 1420px;
+.holdingsRow,
+.holdingsTotalRow {
+  min-width: 1640px;
   display: grid;
-  grid-template-columns: 56px minmax(130px, 1fr) 80px minmax(210px, 1.4fr) 84px 100px 108px 108px 112px 112px 76px;
+  grid-template-columns: 56px minmax(110px, 0.8fr) minmax(130px, 1fr) 80px minmax(210px, 1.4fr) 84px 100px 108px 108px 112px 112px 132px;
   gap: 10px;
   align-items: center;
   padding: 8px 0;
@@ -1698,6 +1721,108 @@ button:disabled {
 
 .holdingsRow strong {
   overflow-wrap: anywhere;
+}
+
+.holdingsTotalRow {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  border-top: 2px solid var(--line);
+  border-bottom: 0;
+  background: var(--surface);
+  box-shadow: 0 -5px 12px rgba(28, 39, 58, 0.08);
+}
+
+.holdingRowActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lotEditorPanel,
+.manualSnapshotEditor {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.lotEditorRow {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+
+.lotEditorFields {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.lotEditorFields label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.manualSnapshotEditor > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.manualSnapshotEditor > div:first-child span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.manualSnapshotEditRow {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) 150px 150px auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.manualSnapshotCreateRow {
+  display: grid;
+  grid-template-columns: minmax(170px, 1fr) 150px 150px auto;
+  gap: 8px;
+}
+
+.manualSnapshotEditRow .inlineDeleteConfirm {
+  grid-column: 1 / -1;
+}
+
+.accountAssetSection,
+.assetTransactionToggle {
+  margin: 12px 20px;
+}
+
+.assetTransactionToggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.assetTransactionToggle > div {
+  display: grid;
+  gap: 3px;
+}
+
+.assetTransactionToggle span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .holdingDescriptionEdit {
@@ -3310,6 +3435,105 @@ select.editableCell {
   color: var(--blue);
 }
 
+.dateRangePicker {
+  position: relative;
+}
+
+.dateRangePopover {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 6px);
+  left: 0;
+  width: min(650px, calc(100vw - 48px));
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.dateRangeQuick,
+.dateRangeInputs,
+.dateRangeMonths {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dateRangeQuick {
+  margin-bottom: 10px;
+}
+
+.dateRangeQuick button {
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.dateRangeMonths {
+  align-items: flex-start;
+}
+
+.monthCalendar {
+  flex: 1 1 0;
+  display: grid;
+  gap: 6px;
+  min-width: 240px;
+}
+
+.monthCalendar > strong {
+  text-align: center;
+}
+
+.monthWeekdays,
+.monthDays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.monthWeekdays span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.monthDays > * {
+  min-height: 28px;
+}
+
+.monthDays button {
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.monthDays button:hover,
+.monthDays button.inRange {
+  background: var(--blue-soft);
+}
+
+.monthDays button.rangeEdge {
+  background: var(--blue);
+  color: white;
+}
+
+.dateRangeInputs {
+  margin: 10px 0;
+}
+
+.dateRangeInputs label {
+  flex: 1 1 0;
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+
 .transactionFilterChips {
   display: flex;
   align-items: center;
@@ -3971,6 +4195,55 @@ select.editableCell {
   }
 }
 
+.filterSummaryBar {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(110px, 1fr));
+  gap: 1px;
+  margin: 8px 20px 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--line);
+}
+
+.filterSummaryBar button {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 0;
+  background: var(--surface);
+  text-align: left;
+}
+
+.filterSummaryBar button:hover:not(:disabled) {
+  background: var(--blue-soft);
+}
+
+.filterSummaryBar span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.filterSummaryBar strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filterSummaryBar.error {
+  display: block;
+  padding: 8px 10px;
+  color: var(--danger);
+  background: var(--surface);
+}
+
 .transactionLabels .refundBadge {
   background: #e6f6ed;
   color: #17643a;
@@ -4402,7 +4675,33 @@ select.editableCell {
     overflow-x: auto;
   }
 
+  .filterSummaryBar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-inline: 0;
+  }
+
+  .dateRangePopover {
+    position: fixed;
+    inset: 12px;
+    width: auto;
+    overflow: auto;
+  }
+
+  .dateRangeMonths {
+    flex-wrap: wrap;
+  }
+
+  .monthCalendar {
+    min-width: min(240px, 100%);
+  }
+
   .transactionCompareGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .lotEditorFields,
+  .manualSnapshotEditRow,
+  .manualSnapshotCreateRow {
     grid-template-columns: 1fr;
   }
 

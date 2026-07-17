@@ -28,13 +28,16 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { api, apiUrl, bumpTransactionsVersion, getTransactionsVersion, parseApiJson, readableApiError, subscribeTransactionsVersion } from "./api/client";
 import { readAppRoute, routeUrl, type RouteView } from "./app/router";
 import { BulkActionBar, CashFlowGraphic, DrillDownLink, MultiSelectFilter, PanelTitle, UndoToast } from "./components/AppPrimitives";
+import { DateRangePicker } from "./components/DateRangePicker";
 import { DeleteConfirmInline, type DeleteTarget } from "./components/DeleteConfirmInline";
+import { FilterSummaryBar } from "./components/FilterSummaryBar";
 import { PrimaryNav } from "./components/PrimaryNav";
 import { AccountPage } from "./features/accounts/AccountPage";
 import type { ReconciliationStatus } from "./features/accounts/ReconciliationBadge";
 import { ImportReview, type InboxBatch, type ImportInboxScan, type ImportInboxState, type SignDecision } from "./features/imports/ImportReview";
 import { SignConventionPrompt, type ImportSignConvention } from "./features/imports/SignConventionPrompt";
 import { HoldingsPanel, type HoldingRow } from "./features/networth/HoldingsPanel";
+import { ManualSnapshotEditor } from "./features/networth/ManualSnapshotEditor";
 import { UnanchoredBanner } from "./features/networth/UnanchoredBanner";
 import { RefundLinkPicker } from "./features/refunds/RefundLinkPicker";
 import { RefundCategorizationNudge, RefundSuggestions, type RefundCandidate, type RefundLink, type RefundSelection, type RefundSuggestionGroup } from "./features/refunds/RefundSuggestions";
@@ -46,7 +49,9 @@ import type { DuplicateTransaction } from "./features/review/TransactionCompareC
 import { TransferReview, type TransferCandidate } from "./features/review/TransferReview";
 import type { PaymentVerificationStatus, PaymentWarning } from "./features/transfers/PaymentVerification";
 import { ManualTransactionForm } from "./features/transactions/ManualTransactionForm";
-import { encodeTxnFilter, freshAccountNavigationFilter, isMonthInReportPeriod, isTransactionInReportPeriod, type NetWorthPeriod, type ReportPeriod, type TxnFilter } from "./lib/filters";
+import { OverviewTabs } from "./features/overview/OverviewTabs";
+import { AccountNav } from "./features/sidebar/AccountNav";
+import { encodeTxnFilter, freshAccountNavigationFilter, isMonthInReportPeriod, isTransactionInReportPeriod, type NetWorthPeriod, type ReportPeriod, type ReportTab, type TxnFilter } from "./lib/filters";
 import { transactionTypeRequiresCategory, transactionTypeUsesCategory } from "./lib/transactionTypes";
 import { useSelection } from "./lib/useSelection";
 type BootstrapCategory = { id: number; key: string; label: string; parent_id: number | null };
@@ -296,8 +301,6 @@ const primaryNavItems: Array<{ id: AppView; label: string; icon: typeof LayoutDa
   { id: "history", label: "Activity", icon: History },
   { id: "settings", label: "Settings", icon: Settings },
 ];
-
-const reportTabs = ["Overview", "Cash Flow", "Spending", "Income", "Net Worth"];
 
 const monthOptions: FilterOption[] = [
   { value: "01", label: "January" },
@@ -657,9 +660,10 @@ export function App() {
   const [importInbox, setImportInbox] = useState<ImportInboxState>({ folder: "", pending: [] });
   const [lastInboxScan, setLastInboxScan] = useState<ImportInboxScan | null>(null);
   const [importWorkspaceTab, setImportWorkspaceTab] = useState<"smart" | "manual">("smart");
-  const [activeTab, setActiveTab] = useState("Overview");
+  const [activeTab, setActiveTab] = useState<ReportTab>(initialRoute.current.filters.reportTab ?? "Overview");
   const [activeView, setActiveView] = useState<AppView>(initialRoute.current.view);
   const [focusedAccountId, setFocusedAccountId] = useState<number | null>(initialRoute.current.accountId);
+  const [showAssetTransactions, setShowAssetTransactions] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [categoryEditor, setCategoryEditor] = useState<{ transactionId: number; query: string } | null>(null);
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
@@ -773,6 +777,8 @@ export function App() {
       const route = readAppRoute(window.location);
       setActiveView(route.view);
       setFocusedAccountId(route.accountId);
+      setActiveTab(route.filters.reportTab ?? "Overview");
+      setShowAssetTransactions(false);
       setSelectedTransactionAccountFilters(route.filters.accounts === undefined ? accounts.map((account) => account.id) : route.filters.accounts.map(Number).filter(Number.isFinite));
       setSelectedTransactionMonthFilters(route.filters.months === undefined ? monthOptions.map((month) => month.value) : route.filters.months);
       setSelectedTransactionYearFilters(route.filters.years === undefined ? Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))) : route.filters.years);
@@ -818,12 +824,16 @@ export function App() {
       sortDirection: transactionSortDirection,
       netWorthPeriod: readAppRoute(window.location).filters.netWorthPeriod,
       hasRefund: transactionHasRefund || undefined,
+      holdingSort: readAppRoute(window.location).filters.holdingSort,
+      holdingSortDirection: readAppRoute(window.location).filters.holdingSortDirection,
+      reportTab: activeView === "overview" ? activeTab : readAppRoute(window.location).filters.reportTab,
     };
     const nextUrl = routeUrl(activeView, focusedAccountId, filters);
     const currentUrl = `${window.location.pathname}${window.location.search}`;
     if (nextUrl !== currentUrl) window.history.replaceState({}, "", nextUrl);
   }, [
     accounts,
+    activeTab,
     activeView,
     categories,
     focusedAccountId,
@@ -2220,6 +2230,7 @@ export function App() {
           headers: { "x-csrf-token": csrf },
           body: JSON.stringify({ ids: deleteTarget.ids, confirm_text: deleteConfirmText }),
         });
+        operationId = result.operation_id;
       } else {
         const path =
           deleteTarget.kind === "transaction"
@@ -2402,6 +2413,9 @@ export function App() {
   const focusedAccountBalanceCents = focusedAccountId ? accountBalances.get(focusedAccountId) ?? 0 : 0;
   const focusedReconciliation = reconciliationStatuses.find((status) => status.account_id === focusedAccountId) ?? null;
   const focusedPaymentVerification = paymentVerification.find((status) => status.account_id === focusedAccountId) ?? null;
+  const focusedHoldingRows = focusedAccountId ? holdingRows.filter((row) => row.account_id === focusedAccountId) : [];
+  const focusedAccountIsAsset = Boolean(focusedAccount && isBrokerageAccountType(focusedAccount.account_type));
+  const accountTransactionsVisible = !focusedAccountIsAsset || showAssetTransactions;
   const transactionYears = Array.from(new Set(transactions.map((transaction) => transaction.transaction_date.slice(0, 4)).filter(Boolean))).sort((left, right) => right.localeCompare(left));
   const transactionCategoryOptions: FilterOption[] = [...categories.map((category) => ({ value: String(category.id), label: category.label })), { value: uncategorizedFilterValue, label: "Uncategorized" }];
   const effectiveTransactionCategoryFilters = new Set(selectedTransactionCategoryFilters);
@@ -2482,6 +2496,22 @@ export function App() {
       return dateCompare === 0 ? (left.id - right.id) * direction : dateCompare * direction;
     });
   })();
+  const transactionSummaryFilter: TxnFilter = {
+    accounts: activeView === "account" && focusedAccountId ? [String(focusedAccountId)] : sameFilterValues(selectedTransactionAccountFilters, accounts.map((account) => account.id)) ? undefined : selectedTransactionAccountFilters.map(String),
+    categories: sameFilterValues(selectedTransactionCategoryFilters, transactionCategoryOptions.map((option) => option.value)) ? undefined : selectedTransactionCategoryFilters,
+    months: sameFilterValues(selectedTransactionMonthFilters, monthOptions.map((month) => month.value)) ? undefined : selectedTransactionMonthFilters,
+    years: sameFilterValues(selectedTransactionYearFilters, transactionYears) ? undefined : selectedTransactionYearFilters,
+    types: selectedTransactionTypeFilters.length > 0 ? selectedTransactionTypeFilters : undefined,
+    dateFrom: transactionDateFrom || undefined,
+    dateTo: transactionDateTo || undefined,
+    dateBasis: transactionDateBasis,
+    amountMin: transactionAmountMin,
+    amountMax: transactionAmountMax,
+    direction: transactionDirection,
+    hasRefund: transactionHasRefund || undefined,
+    search: transactionSearch.trim() || undefined,
+    view: transactionView,
+  };
   const transactionPageCount = Math.max(1, Math.ceil(filteredTransactions.length / TRANSACTION_PAGE_SIZE));
   const pagedTransactions = filteredTransactions.slice(0, transactionPage * TRANSACTION_PAGE_SIZE);
   const visibleReviewIds = visibleReviewTransactions.map((transaction) => transaction.id);
@@ -2492,8 +2522,6 @@ export function App() {
   const allRepositoryTransactionsSelected = repositoryTransactionIds.length > 0 && selectedRepositoryTransactionIds.length === repositoryTransactionIds.length;
   const accountIds = accounts.map((account) => account.id);
   const selectedVisibleAccountIds = accountIds.filter((id) => selectedAccountIds.includes(id));
-  const visibleHoldingIds = holdingRows.slice(0, 12).map((row) => row.id);
-  const selectedVisibleHoldingIds = visibleHoldingIds.filter((id) => selectedHoldingIds.includes(id));
   const periodCashFlowRows = cashFlowRows.filter((row) => isMonthInReportPeriod(row.month, reportPeriod));
   const reportIncomeCents = periodCashFlowRows.reduce((sum, row) => sum + row.income_cents, 0);
   const reportExpenseCents = periodCashFlowRows.reduce((sum, row) => sum + row.expense_cents, 0);
@@ -2534,7 +2562,7 @@ export function App() {
     const balanceCents = moneyInputToCents(balance);
     if (!accountId || !snapshotDate || balanceCents === null) {
       showToast({ tone: "error", message: "Choose an account, date, and valid balance." });
-      return;
+      return false;
     }
     try {
       const result = await api<{ operation_id: string }>("/api/snapshots/networth/manual", {
@@ -2544,8 +2572,10 @@ export function App() {
       });
       await loadData();
       showToast({ tone: "success", message: "Manual balance added to net worth history.", operationId: result.operation_id });
+      return true;
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "Manual balance could not be saved." });
+      return false;
     }
   }
 
@@ -2683,6 +2713,7 @@ export function App() {
     setCategoryEditor(null);
     setFocusedTransactionId(null);
     setEditingTransactionId(null);
+    setShowAssetTransactions(false);
   }
 
   function navigateToView(view: AppView, accountId: number | null = null) {
@@ -2786,61 +2817,7 @@ export function App() {
           <span>Local plan</span>
         </div>
         <PrimaryNav items={primaryNavItems} activeView={activeView} reviewCount={reviewCount} onNavigate={navigateToView} />
-        {sidebarTaxonomyTree.map((section) => {
-          const sectionCollapseKey = `section::${section.label}`;
-          const sectionCollapsed = section.label === "Archived Accounts"
-            ? collapsedTaxonomyGroups[sectionCollapseKey] !== false
-            : Boolean(collapsedTaxonomyGroups[sectionCollapseKey]);
-          return (
-          <div className="sidebarSection" key={section.label}>
-            <button
-              className="sidebarSectionHeader"
-              type="button"
-              aria-expanded={!sectionCollapsed}
-              onClick={() => toggleTaxonomyGroup("section", section.label)}
-              title={`${sectionCollapsed ? "Expand" : "Collapse"} ${section.label}`}
-            >
-              {sectionCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
-              <span>{section.label}</span>
-              <span className={section.totalCents < 0 ? "sidebarSectionBalance negative" : "sidebarSectionBalance"}>{formatMoney(section.totalCents)}</span>
-            </button>
-            {sectionCollapsed ? null : <div className="sidebarAccounts">
-              {section.groups.map((group) => {
-                const collapseKey = `${section.label}::${group.label}`;
-                const isCollapsed = Boolean(collapsedTaxonomyGroups[collapseKey]);
-                return (
-                  <div className="sidebarTaxonomyGroup" key={`${section.label}-${group.label}`}>
-                    <button className="sidebarGroupHeader" type="button" aria-expanded={!isCollapsed} onClick={() => toggleTaxonomyGroup(section.label, group.label)} title={`${isCollapsed ? "Expand" : "Collapse"} ${group.label}`}>
-                      <span className="sidebarGroupToggle">{isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}</span>
-                      <span>{group.label}</span>
-                      <span className={group.totalCents < 0 ? "sidebarGroupBalance negative" : "sidebarGroupBalance"}>{formatMoney(group.totalCents)}</span>
-                    </button>
-                    {isCollapsed
-                      ? null
-                      : group.rows.map((account) => {
-                          const missingCount = missingCategoryCountByAccount.get(account.id) ?? 0;
-                          const isActive = activeView === "account" && focusedAccountId === account.id;
-                          return (
-                            <button key={account.id} className={isActive ? "sidebarAccount active" : "sidebarAccount"} onClick={() => openAccountView(account.id)} title={`${account.display_name} · ${sidebarBalanceLabel(account)}`}>
-                              <span className={missingCount > 0 ? "attentionDot" : "attentionDot hidden"} />
-                              <span className="sidebarAccountName">
-                                {account.display_name}
-                                {account.last_four ? ` (${account.last_four})` : ""}
-                              </span>
-                              <span className="sidebarAccountBalanceWrap">
-                                <span className={(accountBalances.get(account.id) ?? 0) < 0 ? "sidebarAccountBalance negative" : "sidebarAccountBalance"}>{account.sidebar_balance_cents === null ? "—" : formatMoney(accountBalances.get(account.id) ?? 0)}</span>
-                                {account.sidebar_balance_kind === "recent_activity" ? <small>30d</small> : null}
-                              </span>
-                            </button>
-                          );
-                        })}
-                  </div>
-                );
-              })}
-              {section.rows.length === 0 ? <p className="emptyText" style={{ color: "rgba(245,247,255,0.55)", padding: "0 12px" }}>{section.emptyText}</p> : null}
-            </div>}
-          </div>
-        );})}
+        <AccountNav sections={sidebarTaxonomyTree} collapsed={collapsedTaxonomyGroups} activeAccountId={activeView === "account" ? focusedAccountId : null} missingCategoryCountByAccount={missingCategoryCountByAccount} formatMoney={formatMoney} balanceLabel={sidebarBalanceLabel} onToggle={toggleTaxonomyGroup} onOpenAccount={openAccountView} />
         <div className="sidebarFooter">
           <button className="taxonomyToggleButton" onClick={() => setTaxonomyEditorOpen((current) => !current)}>
             <span className="sidebarActionIcon">
@@ -2905,36 +2882,7 @@ export function App() {
 
         {activeView === "overview" && (
           <>
-            <header className="topBar">
-              <div className="reportTabs" role="tablist" aria-label="Report views">
-                {reportTabs.map((tab) => (
-                  <button className={tab === activeTab ? "reportTab active" : "reportTab"} key={tab} onClick={() => setActiveTab(tab)}>
-                    {tab}
-                  </button>
-                ))}
-              </div>
-              <div className="toolbar">
-                <div className="periodChips" role="group" aria-label="Report period">
-                  {reportPeriodOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={reportPeriod === option.value ? "periodChip active" : "periodChip"}
-                      onClick={() => setReportPeriod(option.value)}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-                <button className="ghostButton" title="Refresh data" onClick={() => void loadData()}>
-                  <RefreshCw size={16} />
-                </button>
-                <button className="secondaryButton" onClick={() => openImportModal()}>
-                  <FileUp size={16} />
-                  File Import
-                </button>
-              </div>
-            </header>
+            <OverviewTabs activeTab={activeTab} reportPeriod={reportPeriod} periodOptions={reportPeriodOptions} onSelectTab={setActiveTab} onSelectPeriod={setReportPeriod} onRefresh={() => void loadData()} onImport={openImportModal} />
 
             <section className="metricsGrid overviewMetrics" aria-label="Financial summary">
               <DrillDownLink filter={{ ...reportPeriodFilter(reportPeriod), types: ["income"] }} title="Income" onPeek={openTransactionPeek}><MetricTile label="Income" value={formatMoney(cashFlowRows.length > 0 ? reportIncomeCents : totalIncomeCents)} tone="green" /></DrillDownLink>
@@ -3054,14 +3002,12 @@ export function App() {
                   csrf={csrf}
                   categories={categories}
                   selectedHoldingIds={selectedHoldingIds}
-                  selectedVisibleHoldingIds={selectedVisibleHoldingIds}
-                  visibleHoldingIds={visibleHoldingIds}
                   deleteTarget={deleteTarget}
                   deleteConfirmText={deleteConfirmText}
                   onToggleHoldingSelection={toggleHoldingSelection}
                   onRequestBulkHoldingDelete={requestBulkHoldingDelete}
                   onClearHoldingSelection={() => {
-                    setSelectedHoldingIds((current) => current.filter((id) => !visibleHoldingIds.includes(id)));
+                    setSelectedHoldingIds([]);
                     resetHoldingSelectionAnchor();
                   }}
                   onUpdateHoldingDescription={updateHoldingDescription}
@@ -3167,7 +3113,14 @@ export function App() {
             onInvestigatePayment={investigatePayment}
             onPaymentDismissed={async (operationId) => { await loadData(); showToast({ tone: "success", message: "Payment warning dismissed.", operationId }); }}
             onAccountChanged={async (operationId, message) => { await loadData(); showToast({ tone: "success", message, operationId }); }}
+            transactionsCollapsed={focusedAccountIsAsset && !showAssetTransactions}
+            onToggleTransactions={focusedAccountIsAsset ? () => setShowAssetTransactions((current) => !current) : undefined}
+            holdings={focusedAccountIsAsset ? <>
+              {deleteTarget?.kind === "holding" || deleteTarget?.kind === "holding_bulk" ? <DeleteConfirmInline target={deleteTarget} confirmText={deleteConfirmText} onConfirmTextChange={setDeleteConfirmText} onConfirm={confirmDelete} onCancel={() => { setDeleteTarget(null); setDeleteConfirmText(""); }} /> : null}
+              <HoldingsPanel rows={focusedHoldingRows} accounts={[focusedAccount]} csrf={csrf} selectedIds={selectedHoldingIds} formatMoney={formatMoney} formatDate={formatShortDate} onToggleSelection={toggleHoldingSelection} onRequestBulkDelete={requestBulkHoldingDelete} onClearSelection={() => { const ids = new Set(focusedHoldingRows.map((row) => row.id)); setSelectedHoldingIds((current) => current.filter((id) => !ids.has(id))); resetHoldingSelectionAnchor(); }} onUpdateDescription={updateHoldingDescription} onRequestDelete={(row) => requestDelete({ kind: "holding", id: row.id, label: `${row.symbol || row.description || "Holding"} in ${row.account}` })} onLotSaved={async (operationId) => { await loadData(); showToast({ tone: "success", message: "Tax lot updated; basis and gain/loss refreshed.", operationId }); }} onError={(message) => showToast({ tone: "error", message })} />
+            </> : undefined}
           >
+            <FilterSummaryBar filter={transactionSummaryFilter} formatMoney={formatMoney} onPeek={openTransactionPeek} />
             <div className="transactionDiscovery stickyFilters">
               <label className="transactionSearchBox"><Search size={16} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search institution, account, description, details, or labels" /></label>
               <div className="transactionFilterRow">
@@ -3195,6 +3148,7 @@ export function App() {
                 onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
                 onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
               />
+              <DateRangePicker dateFrom={transactionDateFrom} dateTo={transactionDateTo} onApply={(range) => { setTransactionDateFrom(range.dateFrom); setTransactionDateTo(range.dateTo); }} />
               <button type="button" className={transactionHasRefund ? "filterToggle active" : "filterToggle"} onClick={() => setTransactionHasRefund((current) => !current)}>↩ Has refund</button>
               </div>
             </div>
@@ -3221,6 +3175,7 @@ export function App() {
                 </button>
               </div>
             </header>
+            <FilterSummaryBar filter={transactionSummaryFilter} formatMoney={formatMoney} onPeek={openTransactionPeek} />
             <div className="transactionDiscovery stickyFilters">
               <label className="transactionSearchBox"><Search size={16} /><input value={transactionSearch} onChange={(event) => setTransactionSearch(event.target.value)} placeholder="Search institution, account, description, details, or labels" /></label>
               <div className="transactionFilterRow">
@@ -3256,6 +3211,7 @@ export function App() {
                 onSelectAll={() => setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((category) => category.value))}
                 onDeselectAll={() => setSelectedTransactionCategoryFilters([])}
               />
+              <DateRangePicker dateFrom={transactionDateFrom} dateTo={transactionDateTo} onApply={(range) => { setTransactionDateFrom(range.dateFrom); setTransactionDateTo(range.dateTo); }} />
               <button type="button" className={transactionHasRefund ? "filterToggle active" : "filterToggle"} onClick={() => setTransactionHasRefund((current) => !current)}>↩ Has refund</button>
               </div>
             </div>
@@ -3903,7 +3859,7 @@ export function App() {
         </section>
         )}
 
-        {(activeView === "account" || activeView === "all-accounts") && (
+        {(activeView === "all-accounts" || (activeView === "account" && accountTransactionsVisible)) && (
         <section className="ledgerPanel ledgerWorkspace">
           <PanelTitle icon={transactionView === "trash" ? Trash2 : ReceiptText} title={transactionView === "trash" ? "Transaction Trash" : activeView === "account" ? "Account Transactions" : "All Transactions"} subtitle={transactionView === "trash" ? "Restore deleted transactions or permanently remove them." : activeView === "account" ? "Transactions for the selected account." : "A searchable repository for every imported transaction."} />
           <div className="trashViewToggle" role="group" aria-label="Transaction view">
@@ -4568,9 +4524,8 @@ export function App() {
   );
 }
 
-function reportTitle(activeTab: string) {
+function reportTitle(activeTab: ReportTab) {
   if (activeTab === "Spending") return "Where your money is going";
-  if (activeTab === "Income") return "Income vs expenses";
   if (activeTab === "Net Worth") return "Investment-backed net worth";
   if (activeTab === "Cash Flow") return "Cash flow by month";
   return "Financial overview";
@@ -4590,8 +4545,6 @@ function ReportSurface({
   csrf,
   categories,
   selectedHoldingIds,
-  selectedVisibleHoldingIds,
-  visibleHoldingIds,
   deleteTarget,
   deleteConfirmText,
   onToggleHoldingSelection,
@@ -4611,7 +4564,7 @@ function ReportSurface({
   onDeleteConfirmTextChange,
   onCancelDelete,
 }: {
-  activeTab: string;
+  activeTab: ReportTab;
   income: number;
   expenses: number;
   net: number;
@@ -4624,15 +4577,13 @@ function ReportSurface({
   csrf: string;
   categories: BootstrapCategory[];
   selectedHoldingIds: number[];
-  selectedVisibleHoldingIds: number[];
-  visibleHoldingIds: number[];
   deleteTarget: DeleteTarget | null;
   deleteConfirmText: string;
   onToggleHoldingSelection: (holdingId: number, visibleIds: number[], shiftKey: boolean) => void;
   onRequestBulkHoldingDelete: (ids: number[]) => void;
   onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
-  onSaveManualNetWorthSnapshot: (accountId: number, snapshotDate: string, balance: string) => Promise<void>;
+  onSaveManualNetWorthSnapshot: (accountId: number, snapshotDate: string, balance: string) => Promise<boolean>;
   onFinanceMutation: (operationId: string, message: string) => Promise<void>;
   onFinanceError: (message: string) => void;
   reportFilter: TxnFilter;
@@ -4648,11 +4599,8 @@ function ReportSurface({
   if (activeTab === "Spending") {
     return <SpendingReport rows={categoryTotals} reportFilter={reportFilter} onPeek={onOpenTransactionPeek} />;
   }
-  if (activeTab === "Income") {
-    return <IncomeReport income={income} expenses={expenses} net={net} reportFilter={reportFilter} onPeek={onOpenTransactionPeek} />;
-  }
   if (activeTab === "Net Worth") {
-    return <NetWorthReport accounts={netWorthAccounts} allAccounts={allAccounts} allocationRows={allocationRows} holdingRows={holdingRows} csrf={csrf} categories={categories} selectedHoldingIds={selectedHoldingIds} selectedVisibleHoldingIds={selectedVisibleHoldingIds} visibleHoldingIds={visibleHoldingIds} deleteTarget={deleteTarget} deleteConfirmText={deleteConfirmText} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onSaveManualNetWorthSnapshot={onSaveManualNetWorthSnapshot} onFinanceMutation={onFinanceMutation} onFinanceError={onFinanceError} onViewTransactions={(fromDate, toDate) => onOpenTransactionView({ dateFrom: fromDate, dateTo: toDate })} onPeekNetWorth={onOpenNetWorthPeek} onOpenAccount={onOpenAccount} onRequestDelete={onRequestDelete} onConfirmDelete={onConfirmDelete} onDeleteConfirmTextChange={onDeleteConfirmTextChange} onCancelDelete={onCancelDelete} />;
+    return <NetWorthReport accounts={netWorthAccounts} allAccounts={allAccounts} allocationRows={allocationRows} holdingRows={holdingRows} csrf={csrf} categories={categories} selectedHoldingIds={selectedHoldingIds} deleteTarget={deleteTarget} deleteConfirmText={deleteConfirmText} onToggleHoldingSelection={onToggleHoldingSelection} onRequestBulkHoldingDelete={onRequestBulkHoldingDelete} onClearHoldingSelection={onClearHoldingSelection} onUpdateHoldingDescription={onUpdateHoldingDescription} onSaveManualNetWorthSnapshot={onSaveManualNetWorthSnapshot} onFinanceMutation={onFinanceMutation} onFinanceError={onFinanceError} onViewTransactions={(fromDate, toDate) => onOpenTransactionView({ dateFrom: fromDate, dateTo: toDate })} onPeekNetWorth={onOpenNetWorthPeek} onOpenAccount={onOpenAccount} onRequestDelete={onRequestDelete} onConfirmDelete={onConfirmDelete} onDeleteConfirmTextChange={onDeleteConfirmTextChange} onCancelDelete={onCancelDelete} />;
   }
   if (activeTab === "Cash Flow") {
     return <MonthlyCashFlowReport rows={cashFlowRows} income={income} expenses={expenses} net={net} reportFilter={reportFilter} onPeek={onOpenTransactionPeek} />;
@@ -4890,20 +4838,6 @@ function MonthlyCashFlowReport({ rows, income, expenses, net, reportFilter, onPe
           ))}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function IncomeReport({ income, expenses, net, reportFilter, onPeek }: { income: number; expenses: number; net: number; reportFilter: TxnFilter; onPeek: (filter: TxnFilter, title: string) => void }) {
-  const max = Math.max(income, expenses, Math.abs(net), 1);
-  return (
-    <div className="reportStack">
-      <div className="compareGrid">
-        <DrillDownLink filter={{ ...reportFilter, types: ["income"] }} title="Income" onPeek={onPeek}><CompareCard label="Income" value={income} max={max} tone="green" /></DrillDownLink>
-        <DrillDownLink filter={{ ...reportFilter, types: ["expense", "refund"] }} title="Expenses" onPeek={onPeek}><CompareCard label="Expenses" value={expenses} max={max} tone="red" /></DrillDownLink>
-        <DrillDownLink filter={{ ...reportFilter, types: ["income", "expense", "refund"] }} title="Net cash flow" onPeek={onPeek}><CompareCard label="Net" value={net} max={max} tone={net < 0 ? "red" : "green"} /></DrillDownLink>
-      </div>
-      <p className="emptyText">Income uses transactions marked as income. Expenses use transactions marked as expense, with refunds reducing total expenses.</p>
     </div>
   );
 }
@@ -5205,8 +5139,6 @@ function NetWorthReport({
   csrf,
   categories,
   selectedHoldingIds,
-  selectedVisibleHoldingIds,
-  visibleHoldingIds,
   deleteTarget,
   deleteConfirmText,
   onToggleHoldingSelection,
@@ -5231,15 +5163,13 @@ function NetWorthReport({
   csrf: string;
   categories: BootstrapCategory[];
   selectedHoldingIds: number[];
-  selectedVisibleHoldingIds: number[];
-  visibleHoldingIds: number[];
   deleteTarget: DeleteTarget | null;
   deleteConfirmText: string;
   onToggleHoldingSelection: (holdingId: number, visibleIds: number[], shiftKey: boolean) => void;
   onRequestBulkHoldingDelete: (ids: number[]) => void;
   onClearHoldingSelection: () => void;
   onUpdateHoldingDescription: (symbol: string | null, userDescription: string) => Promise<void>;
-  onSaveManualNetWorthSnapshot: (accountId: number, snapshotDate: string, balance: string) => Promise<void>;
+  onSaveManualNetWorthSnapshot: (accountId: number, snapshotDate: string, balance: string) => Promise<boolean>;
   onFinanceMutation: (operationId: string, message: string) => Promise<void>;
   onFinanceError: (message: string) => void;
   onViewTransactions: (fromDate: string, toDate: string) => void;
@@ -5255,9 +5185,6 @@ function NetWorthReport({
   const assetAccounts = allAccounts.filter((account) => account.account_type === "brokerage" || account.account_type === "retirement");
   const balanceAccounts = allAccounts.filter((account) => account.account_type !== "external");
   const unanchoredAccounts = allAccounts.filter((account) => account.account_type !== "external" && account.net_worth_inclusion === "auto" && !account.is_anchored).map((account) => ({ id: account.id, name: account.display_name }));
-  const [manualAccountId, setManualAccountId] = useState<number | "">(balanceAccounts[0]?.id ?? "");
-  const [manualSnapshotDate, setManualSnapshotDate] = useState(localIsoDate(new Date()));
-  const [manualBalance, setManualBalance] = useState("");
   const [showManualTransaction, setShowManualTransaction] = useState(false);
   const [accountTrendRows, setAccountTrendRows] = useState<NetWorthPoint[]>([]);
   useEffect(() => {
@@ -5268,28 +5195,7 @@ function NetWorthReport({
     <div className="reportStack">
       <UnanchoredBanner accounts={unanchoredAccounts} onChoose={onOpenAccount} />
       <NetWorthHistoryChart onViewTransactions={onViewTransactions} onPeekNetWorth={onPeekNetWorth} />
-      <section className="manualSnapshotPanel">
-        <div>
-          <strong>Add a manual balance</strong>
-          <span>Use this for a home, vehicle, cash account, or any account without an imported balance.</span>
-        </div>
-        <label>
-          Account
-          <select value={manualAccountId} onChange={(event) => setManualAccountId(Number(event.target.value) || "")}>
-            <option value="">Choose account</option>
-            {balanceAccounts.map((account) => <option value={account.id} key={account.id}>{accountOptionLabel(account)}</option>)}
-          </select>
-        </label>
-        <label>
-          Date
-          <input type="date" value={manualSnapshotDate} onChange={(event) => setManualSnapshotDate(event.target.value)} />
-        </label>
-        <label>
-          Balance
-          <input inputMode="decimal" value={manualBalance} onChange={(event) => setManualBalance(event.target.value)} placeholder="0.00" />
-        </label>
-        <button type="button" className="secondaryButton compactButton" onClick={() => { if (manualAccountId) void onSaveManualNetWorthSnapshot(manualAccountId, manualSnapshotDate, manualBalance); }}>Save balance</button>
-      </section>
+      <ManualSnapshotEditor accounts={balanceAccounts} csrf={csrf} onCreate={onSaveManualNetWorthSnapshot} onChanged={onFinanceMutation} onError={onFinanceError} />
       <section className="manualTransactionEntryPanel">
         <div><strong>Add investment activity</strong><span>Record a manual money movement in a brokerage or retirement account.</span></div>
         <button type="button" className="secondaryButton compactButton" disabled={assetAccounts.length === 0} onClick={() => setShowManualTransaction((current) => !current)}>{showManualTransaction ? "Cancel" : "Add transaction"}</button>
@@ -5317,7 +5223,7 @@ function NetWorthReport({
         {accounts.length === 0 ? <p className="emptyText">No investment snapshots yet. Commit a brokerage positions CSV to populate net worth.</p> : null}
       </div>
       {deleteTarget?.kind === "holding" || deleteTarget?.kind === "holding_bulk" ? <DeleteConfirmInline target={deleteTarget} confirmText={deleteConfirmText} onConfirmTextChange={onDeleteConfirmTextChange} onConfirm={onConfirmDelete} onCancel={onCancelDelete} /> : null}
-      <HoldingsPanel rows={holdingRows} accounts={assetAccounts} csrf={csrf} selectedIds={selectedHoldingIds} selectedVisibleIds={selectedVisibleHoldingIds} visibleIds={visibleHoldingIds} formatMoney={formatMoney} formatDate={formatShortDate} onToggleSelection={onToggleHoldingSelection} onRequestBulkDelete={onRequestBulkHoldingDelete} onClearSelection={onClearHoldingSelection} onUpdateDescription={onUpdateHoldingDescription} onRequestDelete={(row) => onRequestDelete({ kind: "holding", id: row.id, label: `${row.symbol || row.description || "Holding"} in ${row.account}` })} onLotSaved={(operationId) => onFinanceMutation(operationId, "Tax lot saved; basis and gain/loss updated.")} onError={onFinanceError} />
+      <HoldingsPanel rows={holdingRows} accounts={assetAccounts} csrf={csrf} selectedIds={selectedHoldingIds} formatMoney={formatMoney} formatDate={formatShortDate} onToggleSelection={onToggleHoldingSelection} onRequestBulkDelete={onRequestBulkHoldingDelete} onClearSelection={onClearHoldingSelection} onUpdateDescription={onUpdateHoldingDescription} onRequestDelete={(row) => onRequestDelete({ kind: "holding", id: row.id, label: `${row.symbol || row.description || "Holding"} in ${row.account}` })} onLotSaved={(operationId) => onFinanceMutation(operationId, "Tax lot updated; basis and gain/loss refreshed.")} onError={onFinanceError} />
     </div>
   );
 }

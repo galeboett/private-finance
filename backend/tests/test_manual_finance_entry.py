@@ -8,9 +8,9 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.db import Base
-from app.main import create_holding_lot, create_manual_transaction, export_app_data, get_investment_holdings
+from app.main import create_holding_lot, create_manual_transaction, delete_holding_lot, export_app_data, get_investment_holdings, update_holding_lot
 from app.models import Account, Category, HoldingLot, HoldingSnapshot, SessionToken, Transaction
-from app.schemas import HoldingLotCreate, ManualTransactionCreate
+from app.schemas import HoldingLotCreate, HoldingLotUpdate, ManualTransactionCreate
 from app.services.operation_history import undo_operation
 
 
@@ -91,3 +91,28 @@ def test_holding_lot_adds_basis_gain_and_age_and_can_be_undone():
         assert db.get(HoldingLot, result["lot_id"]) is None
         with pytest.raises(HTTPException, match="Symbol is required"):
             create_holding_lot(HoldingLotCreate(account_id=account.id, symbol=" ", acquisition_date=date(2024, 1, 15), quantity_basis_points=10000, cost_basis_cents=10000), _request(), _session_token(), db)
+
+
+def test_holding_lot_edit_and_delete_are_journaled_and_undoable():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        account = Account(display_name="Brokerage", account_type="brokerage")
+        db.add(account)
+        db.flush()
+        lot = HoldingLot(account_id=account.id, symbol="VTI", acquisition_date=date(2024, 1, 15), quantity_basis_points=100000, cost_basis_cents=80000, note="Opening basis")
+        db.add(lot)
+        db.commit()
+
+        updated = update_holding_lot(lot.id, HoldingLotUpdate(acquisition_date=date(2024, 2, 1), quantity_basis_points=125000, cost_basis_cents=90000, note="Corrected"), _request(), _session_token(), db)
+        assert (lot.acquisition_date, lot.quantity_basis_points, lot.cost_basis_cents, lot.note) == (date(2024, 2, 1), 125000, 90000, "Corrected")
+
+        undo_operation(db, operation_id=updated["operation_id"], actor="user:7")
+        db.commit()
+        assert (lot.acquisition_date, lot.quantity_basis_points, lot.cost_basis_cents, lot.note) == (date(2024, 1, 15), 100000, 80000, "Opening basis")
+
+        deleted = delete_holding_lot(lot.id, _request(), _session_token(), db)
+        assert db.get(HoldingLot, lot.id) is None
+        undo_operation(db, operation_id=deleted["operation_id"], actor="user:7")
+        db.commit()
+        assert db.get(HoldingLot, lot.id) is not None

@@ -16,12 +16,12 @@ For the detailed, point-in-time privacy and data-retention audit, see [Privacy R
 - `HttpOnly` `SameSite=Strict` session cookie
 - login rate limiting
 - append-only audit events
-- backup and restore path
+- backup and restore paths constrained to the configured local backup directory
 - formula-safe CSV export
 
 ## Gaps To Harden Next
 
-- SQLCipher integration instead of plain SQLite fallback
+- database encryption (for example SQLCipher) instead of the current plaintext SQLite database
 - encrypted backup archive rather than file copy
 - recent re-auth for exports and settings changes
 - zip-bomb and XLSX parser hardening beyond CSV-first support

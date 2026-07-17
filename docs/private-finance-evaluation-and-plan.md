@@ -3,6 +3,8 @@
 **Evaluated:** July 2026 · **Scope:** full backend (FastAPI/SQLite), frontend (React/Vite), docs, scripts, tests
 **Method:** independent static analysis of all source files; docs used as a reference point for intent, then verified against actual behavior.
 
+> **Historical baseline:** The executive summary and findings below describe the pre-remediation build. Many listed defects were subsequently fixed, and the embedded test/line counts are not current. Use the [iteration 3 implementation plan](pf-implementation-plan-iteration-3-7-14-26.md) and [changelog](../CHANGELOG.md) for current status; retain this document for finding IDs, rationale, and unfinished security work.
+
 ---
 
 ## 1. Executive Summary

@@ -43,6 +43,9 @@ type Props = {
   onInvestigatePayment: (warning: PaymentWarning) => void;
   onPaymentDismissed: (operationId?: string) => Promise<void>;
   onAccountChanged: (operationId: string, message: string) => Promise<void>;
+  holdings?: ReactNode;
+  transactionsCollapsed?: boolean;
+  onToggleTransactions?: () => void;
   children: ReactNode;
 };
 
@@ -99,6 +102,7 @@ export function AccountPage(props: Props) {
 
   const latest = props.reconciliation?.latest;
   return (
+    <>
     <div className="stickyAccountChrome">
       {props.missingCategoryCount > 0 ? (
         <div className="reviewNoticeBar">
@@ -142,7 +146,10 @@ export function AccountPage(props: Props) {
         </form> : null}
         <PaymentVerification status={props.paymentVerification} formatMoney={props.formatMoney} onInvestigate={props.onInvestigatePayment} onDismiss={(warning) => void dismissPayment(warning)} externalAccounts={props.externalAccounts} csrf={props.csrf} onExternalSettled={async (operationId) => props.onAccountChanged(operationId, "Payment linked to an untracked account.")} onError={props.onCheckpointError} />
       </div>
-      {props.children}
     </div>
+      {props.holdings ? <section className="accountAssetSection">{props.holdings}</section> : null}
+      {props.onToggleTransactions ? <div className="assetTransactionToggle"><div><strong>Account transactions</strong><span>Investment accounts open with assets first. Expand activity when you need it.</span></div><button className="secondaryButton compactButton" onClick={props.onToggleTransactions}>{props.transactionsCollapsed ? "Show transactions" : "Hide transactions"}</button></div> : null}
+      {!props.transactionsCollapsed ? props.children : null}
+    </>
   );
 }

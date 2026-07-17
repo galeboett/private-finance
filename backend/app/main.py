@@ -24,10 +24,10 @@ from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
 from .models import Account, AppUser, Category, CategoryRule, DuplicatePairDecision, ExpenseAllocation, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, PaymentVerificationDismissal, RefundLink, RefundPairDecision, RefundReviewResolution, SecurityMetadata, SecurityPrice, SessionToken, StatementCheckpoint, StatementPdfPattern, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkDuplicateResolutionRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, DuplicateSelectionPreviewRequest, DuplicateSelectionResolutionRequest, ExternalPaymentRequest, HistoricalRefundBulkRequest, HoldingLotCreate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, ManualTransactionCreate, MonthlyAllocationRequest, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, PaymentVerificationDismissRequest, RefundConfirmRequest, RefundLinkCreate, RefundNoExpenseRequest, RefundSelectionRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementBalancePreviewUpdate, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
+from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkDuplicateResolutionRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, DuplicateSelectionPreviewRequest, DuplicateSelectionResolutionRequest, ExternalPaymentRequest, HistoricalRefundBulkRequest, HoldingLotCreate, HoldingLotUpdate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, ManualTransactionCreate, MonthlyAllocationRequest, NetWorthSnapshotUpdate, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, PaymentVerificationDismissRequest, RefundConfirmRequest, RefundLinkCreate, RefundNoExpenseRequest, RefundSelectionRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementBalancePreviewUpdate, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, get_session_from_request, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
-from .services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_timeseries
+from .services.aggregation import aggregate_by_account, aggregate_by_category, aggregate_summary, aggregate_timeseries
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
 from .services.duplicates import duplicate_queue_summary, link_historical_refund_pairs, pending_duplicate_pairs, preview_duplicate_selection, preview_historical_refund_links, preview_safe_duplicate_resolution, resolve_all_exact_duplicates, resolve_duplicate, resolve_duplicate_selection, resolve_safe_duplicate_reimports
 from .services.duplicate_scan import scan_ledger_duplicates
@@ -2166,6 +2166,15 @@ def get_aggregate_timeseries(
     return aggregate_timeseries(db, filters, bucket)
 
 
+@app.get("/api/aggregate/summary")
+def get_aggregate_summary(
+    filters: TransactionFilter = Depends(transaction_filter_dependency),
+    session: SessionToken = Depends(current_session),
+    db: Session = Depends(get_db),
+):
+    return aggregate_summary(db, filters)
+
+
 @app.get("/api/net-worth/timeseries")
 def get_net_worth_timeseries(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     rows = db.execute(
@@ -2247,11 +2256,77 @@ def save_manual_net_worth_snapshot(payload: NetWorthSnapshotUpsert, request: Req
     return {"ok": True, "snapshot_id": snapshot.id, "operation_id": operation_id}
 
 
+@app.get("/api/snapshots/networth/manual")
+def list_manual_net_worth_snapshots(account_id: int | None = None, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    query = select(NetWorthSnapshot).where(NetWorthSnapshot.source == "manual").order_by(NetWorthSnapshot.snapshot_date.desc(), NetWorthSnapshot.id.desc())
+    if account_id is not None:
+        query = query.where(NetWorthSnapshot.account_id == account_id)
+    accounts = {account.id: account for account in db.scalars(select(Account)).all()}
+    checkpoint_keys = {
+        (checkpoint.account_id, checkpoint.statement_date)
+        for checkpoint in db.scalars(select(StatementCheckpoint)).all()
+    }
+    return [
+        {
+            "id": snapshot.id,
+            "account_id": snapshot.account_id,
+            "account": accounts[snapshot.account_id].display_name if snapshot.account_id in accounts else "Unknown account",
+            "snapshot_date": snapshot.snapshot_date.isoformat(),
+            "balance_cents": snapshot.balance_cents,
+            "source": snapshot.source,
+        }
+        for snapshot in db.scalars(query).all()
+        if (snapshot.account_id, snapshot.snapshot_date) not in checkpoint_keys
+    ]
+
+
+def _editable_manual_snapshot(db: Session, snapshot_id: int) -> NetWorthSnapshot:
+    snapshot = db.get(NetWorthSnapshot, snapshot_id)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Net-worth snapshot not found")
+    if snapshot.source != "manual":
+        raise HTTPException(status_code=400, detail="Imported snapshots cannot be edited")
+    checkpoint = db.scalar(select(StatementCheckpoint).where(StatementCheckpoint.account_id == snapshot.account_id, StatementCheckpoint.statement_date == snapshot.snapshot_date))
+    if checkpoint:
+        raise HTTPException(status_code=400, detail="Statement-backed balances must be changed through reconciliation")
+    return snapshot
+
+
+@app.patch("/api/snapshots/networth/{snapshot_id}")
+def update_manual_net_worth_snapshot(snapshot_id: int, payload: NetWorthSnapshotUpdate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    snapshot = _editable_manual_snapshot(db, snapshot_id)
+    conflict = db.scalar(select(NetWorthSnapshot).where(NetWorthSnapshot.account_id == snapshot.account_id, NetWorthSnapshot.snapshot_date == payload.snapshot_date, NetWorthSnapshot.id != snapshot.id))
+    if conflict:
+        raise HTTPException(status_code=409, detail="That account already has a balance on this date")
+    before = full_values(snapshot)
+    snapshot.snapshot_date = payload.snapshot_date
+    snapshot.balance_cents = payload.balance_cents
+    db.flush()
+    operation_id = journal_mutation(db, kind="update", entity_type="net_worth_snapshot", actor=actor_for_session(session), description=f"Updated manual balance for {payload.snapshot_date.isoformat()}", changes=[MutationChange(snapshot.id, before, full_values(snapshot))])
+    record_audit_event(db, "net_worth_snapshot_update", actor_for_session(session), "net_worth_snapshot", str(snapshot.id), {"operation_id": operation_id})
+    db.commit()
+    return {"ok": True, "operation_id": operation_id}
+
+
+@app.delete("/api/snapshots/networth/{snapshot_id}")
+def delete_manual_net_worth_snapshot(snapshot_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    snapshot = _editable_manual_snapshot(db, snapshot_id)
+    before = full_values(snapshot)
+    operation_id = journal_mutation(db, kind="delete", entity_type="net_worth_snapshot", actor=actor_for_session(session), description=f"Deleted manual balance for {snapshot.snapshot_date.isoformat()}", changes=[MutationChange(snapshot.id, before, None)])
+    record_audit_event(db, "net_worth_snapshot_delete", actor_for_session(session), "net_worth_snapshot", str(snapshot.id), {"operation_id": operation_id})
+    db.delete(snapshot)
+    db.commit()
+    return {"ok": True, "operation_id": operation_id}
+
+
 @app.get("/api/investments/lots")
 def get_holding_lots(account_id: int | None = None, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     query = select(HoldingLot).order_by(HoldingLot.acquisition_date.asc(), HoldingLot.id.asc())
     if account_id is not None:
         query = query.where(HoldingLot.account_id == account_id)
+    accounts = {account.id: account for account in db.scalars(select(Account)).all()}
     return [
         {
             "id": lot.id,
@@ -2262,6 +2337,9 @@ def get_holding_lots(account_id: int | None = None, session: SessionToken = Depe
             "quantity": lot.quantity_basis_points / 10000,
             "cost_basis_cents": lot.cost_basis_cents,
             "note": lot.note,
+            "source": lot.source,
+            "import_batch_id": lot.import_batch_id,
+            "account": accounts[lot.account_id].display_name if lot.account_id in accounts else "Unknown account",
         }
         for lot in db.scalars(query).all()
     ]
@@ -2292,6 +2370,24 @@ def create_holding_lot(payload: HoldingLotCreate, request: Request, session: Ses
     return {"ok": True, "lot_id": lot.id, "operation_id": operation_id}
 
 
+@app.patch("/api/investments/lots/{lot_id}")
+def update_holding_lot(lot_id: int, payload: HoldingLotUpdate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    lot = db.get(HoldingLot, lot_id)
+    if not lot:
+        raise HTTPException(status_code=404, detail="Holding lot not found")
+    before = full_values(lot)
+    lot.acquisition_date = payload.acquisition_date
+    lot.quantity_basis_points = payload.quantity_basis_points
+    lot.cost_basis_cents = payload.cost_basis_cents
+    lot.note = payload.note.strip() if payload.note and payload.note.strip() else None
+    db.flush()
+    operation_id = journal_mutation(db, kind="update", entity_type="holding_lot", actor=actor_for_session(session), description=f"Updated {lot.symbol} tax lot", changes=[MutationChange(lot.id, before, full_values(lot))])
+    record_audit_event(db, "holding_lot_update", actor_for_session(session), "holding_lot", str(lot.id), {"account_id": lot.account_id, "symbol": lot.symbol, "operation_id": operation_id})
+    db.commit()
+    return {"ok": True, "operation_id": operation_id}
+
+
 @app.delete("/api/investments/lots/{lot_id}")
 def delete_holding_lot(lot_id: int, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
@@ -2308,6 +2404,7 @@ def delete_holding_lot(lot_id: int, request: Request, session: SessionToken = De
 @app.get("/api/investments/holdings")
 def get_investment_holdings(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     accounts = {account.id: account for account in db.scalars(select(Account)).all()}
+    institutions = {institution.id: institution.name for institution in db.scalars(select(Institution)).all()}
     metadata = {item.symbol.upper(): item for item in db.scalars(select(SecurityMetadata)).all()}
     prices = db.scalars(select(SecurityPrice).order_by(SecurityPrice.price_date.asc(), SecurityPrice.id.asc())).all()
     latest_prices: dict[str, SecurityPrice] = {}
@@ -2339,6 +2436,7 @@ def get_investment_holdings(session: SessionToken = Depends(current_session), db
                 "id": row.id,
                 "account_id": row.account_id,
                 "account": accounts[row.account_id].display_name if row.account_id in accounts else "Unknown account",
+                "institution": institutions.get(accounts[row.account_id].institution_id) if row.account_id in accounts else None,
                 "snapshot_date": row.snapshot_date.isoformat(),
                 "symbol": row.symbol,
                 "description": meta.user_description if meta and meta.user_description else row.description,

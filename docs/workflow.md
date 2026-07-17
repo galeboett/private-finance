@@ -62,8 +62,13 @@ The app builds a full personal finance picture by turning account exports into a
    - Cash-flow summaries use checking, savings, income, spending, transfers, and card payments.
    - Spending summaries use expense transactions and fixed categories.
    - Net-worth views use account balances and investment snapshots.
-   - Use the Overview tabs for Cash Flow, Spending, Income, and Net Worth. The tabs, date range, refresh, and import controls remain visible while the page scrolls.
+   - Use the Overview tabs in this order: **Overview, Net Worth, Spending, Cash Flow**. Income-versus-expense analysis is part of Cash Flow; old `?tab=Income` bookmarks redirect there.
    - The customizable finance cockpit appears only on Overview. Its account map, cash-flow trend, and top-spending cards provide a high-level summary; dedicated analysis tabs avoid repeating those same cards.
+
+7. Investigate filtered activity.
+   - All Accounts and individual account ledgers show total in, total out, net, transaction count, and average monthly outflow for the current filters. Select a value to preview its matching transactions.
+   - Use **Custom…** for a bookmarkable two-month date-range calendar. **Last 90 days** and **This quarter** fill the same canonical `dateFrom`/`dateTo` URL filters used by drill-downs and removable chips.
+   - Institutions with one account appear as one direct sidebar row. Institutions with several accounts remain collapsible groups.
 
 ## Net Worth History
 
@@ -76,10 +81,11 @@ The app builds a full personal finance picture by turning account exports into a
 - Imported running balances and brokerage positions create durable snapshots. Between known balances, the app reconstructs checking and savings history from ledger movements and forward-fills investment values.
 - An account in **Automatic** net-worth mode is included only after it has a real balance anchor: a statement balance, imported/manual balance, or holdings snapshot. Unanchored accounts show `—` in the sidebar and appear in the Net Worth warning banner instead of treating lifetime activity as today's balance.
 - On an account page, use the **Net worth** selector to keep automatic anchoring, explicitly include an unanchored history, or exclude the account. Untracked accounts are always excluded.
-- On **Net Worth**, use **Add a manual balance** for accounts without an imported value, such as a home or vehicle. Choose the account and date, enter the balance, and save; the change supports Undo and appears in Activity.
+- On **Net Worth**, use **Manual balances** for accounts without an imported value, such as a home or vehicle. Choose the account and date, enter the balance, and save. Direct manual balances can be edited or deleted later; every change supports Undo and appears in Activity. Imported and statement-backed balances remain protected from this editor.
 - Use **Add transaction** on an account page to enter money out or money in manually. Enter a positive dollar amount and choose the direction; the form writes the canonical negative/positive ledger sign, confirms the deliberate entry, and records it in Activity with Undo.
 - On **Net Worth**, **Add transaction** is limited to brokerage and retirement accounts and records the row as investment activity. Use **Add tax lot** under Holding details when an export does not provide acquisition date and total basis.
-- Tax lots are separate from daily holding snapshots. Holding details show total basis, unrealized gain/loss (latest value minus basis), and the age/count of saved lots. Compatible Fidelity position exports populate lots when they contain acquisition and cost-basis columns; later imports refresh imported lots without deleting manual lots.
+- Tax lots are separate from daily holding snapshots. Holding details show institution, account, value, total basis, unrealized gain/loss (latest value minus basis), and the age/count of saved lots. Columns are sortable and the pinned total row sums value, basis, and gain/loss. Compatible Fidelity position exports populate lots when they contain acquisition and cost-basis columns; later imports refresh imported lots without deleting manual lots.
+- Open **Lots** to edit acquisition date, quantity, total basis, or note, or to delete a lot. Imported lots can be corrected but may be replaced by a later positions import; all lot edits and deletes support Undo.
 - After selecting a net-worth chart range, drag either circular edge handle to refine it. Account rows show six-month balance trends and open account-filtered transaction previews.
 
 ## Reconciling an Account
