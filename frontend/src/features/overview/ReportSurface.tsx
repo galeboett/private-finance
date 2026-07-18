@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useApiClient } from "../../api/hooks";
 import { readAppRoute, routeUrl } from "../../app/router";
 import { CashFlowGraphic, DrillDownLink } from "../../components/AppPrimitives";
@@ -377,6 +377,7 @@ function MonthlyCashFlowReport({ rows, income, expenses, net, reportFilter, onPe
 
 function NetWorthHistoryChart({ onViewTransactions, onPeekNetWorth }: { onViewTransactions: (fromDate: string, toDate: string) => void; onPeekNetWorth: (fromDate: string, toDate: string) => void }) {
   const api = useApiClient();
+  const chartWrapRef = useRef<HTMLDivElement>(null);
   const [period, setPeriod] = useState<NetWorthPeriod>(() => readAppRoute(window.location).filters.netWorthPeriod ?? "6M");
   const [data, setData] = useState<NetWorthSeriesResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -386,6 +387,31 @@ function NetWorthHistoryChart({ onViewTransactions, onPeekNetWorth }: { onViewTr
   const [isDragging, setIsDragging] = useState(false);
   const [dragMode, setDragMode] = useState<"new" | "start" | "end" | null>(null);
   const [selectionStats, setSelectionStats] = useState<NetWorthStats | null>(null);
+  const [chartSize, setChartSize] = useState({ width: 800, height: 300 });
+
+  useEffect(() => {
+    function updateChartSize() {
+      const availableWidth = Math.max(320, Math.round(chartWrapRef.current?.clientWidth ?? 800));
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const nextHeight = availableWidth < 520
+        ? 220
+        : availableWidth < 900
+          ? 260
+          : Math.min(340, Math.max(260, Math.round(viewportHeight * 0.36)));
+      setChartSize((current) => current.width === availableWidth && current.height === nextHeight ? current : { width: availableWidth, height: nextHeight });
+    }
+
+    updateChartSize();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateChartSize);
+    if (chartWrapRef.current) observer?.observe(chartWrapRef.current);
+    window.addEventListener("resize", updateChartSize);
+    window.visualViewport?.addEventListener("resize", updateChartSize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateChartSize);
+      window.visualViewport?.removeEventListener("resize", updateChartSize);
+    };
+  }, [loading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -432,12 +458,11 @@ function NetWorthHistoryChart({ onViewTransactions, onPeekNetWorth }: { onViewTr
   }
 
   const rows = data?.series ?? [];
-  const width = 800;
-  const height = 300;
-  const left = 72;
-  const right = 18;
-  const top = 24;
-  const bottom = 44;
+  const { width, height } = chartSize;
+  const left = width < 520 ? 54 : 72;
+  const right = width < 520 ? 10 : 18;
+  const top = 20;
+  const bottom = width < 520 ? 38 : 44;
   const chartWidth = width - left - right;
   const chartHeight = height - top - bottom;
   const values = rows.map((row) => row.total_cents);
@@ -511,10 +536,11 @@ function NetWorthHistoryChart({ onViewTransactions, onPeekNetWorth }: { onViewTr
         </div>
       ) : null}
       {loading ? <p className="emptyText">Loading net worth history…</p> : rows.length === 0 ? <p className="emptyText">Import account balances or brokerage positions to build net worth history.</p> : (
-        <div className="netWorthChartWrap">
+        <div className="netWorthChartWrap" ref={chartWrapRef}>
           <svg
             className="netWorthChart"
             viewBox={`0 0 ${width} ${height}`}
+            style={{ height }}
             role="img"
             aria-label="Interactive net worth history. Drag across the chart to inspect a date range."
             onPointerDown={(event) => {

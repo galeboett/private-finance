@@ -303,7 +303,7 @@ type DashboardWidgetConfig = Record<DashboardWidgetKey, boolean>;
 
 const primaryNavItems: Array<{ id: AppView; label: string; icon: typeof LayoutDashboard }> = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "all-accounts", label: "All Accounts", icon: Landmark },
+  { id: "all-accounts", label: "All Transactions", icon: Landmark },
   { id: "review", label: "Review", icon: ListChecks },
   { id: "history", label: "Activity", icon: History },
   { id: "settings", label: "Settings", icon: Settings },
@@ -1088,6 +1088,32 @@ export function useFinanceController() {
     setFocusedAccountId(null);
     setCategoryEditor(null);
     window.history.pushState({}, "", routeUrl("all-accounts", null, nextFilter));
+  }
+
+  function resetAllTransactionFilters() {
+    setSelectedTransactionAccountFilters(accounts.map((account) => account.id));
+    setSelectedTransactionMonthFilters(monthOptions.map((month) => month.value));
+    setSelectedTransactionYearFilters(transactionYears);
+    setSelectedTransactionCategoryFilters(transactionCategoryOptions.map((option) => option.value));
+    setSelectedTransactionTypeFilters([]);
+    setTransactionDateFrom("");
+    setTransactionDateTo("");
+    setTransactionDateBasis(undefined);
+    setTransactionAmountMin(undefined);
+    setTransactionAmountMax(undefined);
+    setTransactionDirection(undefined);
+    setTransactionHasRefund(false);
+    setTransactionSearch("");
+    setTransactionView("live");
+    setTransactionSortKey("date");
+    setTransactionSortDirection("desc");
+    setTransactionPage(1);
+    setSelectedTransactionIds([]);
+    resetTransactionSelectionAnchor();
+    setBulkEditorOpen(false);
+    setFocusedTransactionId(null);
+    setEditingTransactionId(null);
+    setCategoryEditor(null);
   }
 
   function clearAccountForm() {
@@ -2791,8 +2817,10 @@ export function useFinanceController() {
 
   function navigateToView(view: AppView, accountId: number | null = null) {
     const nextAccountId = view === "account" ? accountId : null;
-    const nextFilters = readAppRoute(window.location).filters;
-    if (view !== "account" && view !== "all-accounts") {
+    const nextFilters = view === "all-accounts" ? {} : readAppRoute(window.location).filters;
+    if (view === "all-accounts") {
+      resetAllTransactionFilters();
+    } else if (view !== "account") {
       nextFilters.view = undefined;
       if (transactionView === "trash") setTransactionView("live");
     }

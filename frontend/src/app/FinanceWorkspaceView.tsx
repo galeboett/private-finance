@@ -301,7 +301,7 @@ type DashboardWidgetConfig = Record<DashboardWidgetKey, boolean>;
 
 const primaryNavItems: Array<{ id: AppView; label: string; icon: typeof LayoutDashboard }> = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "all-accounts", label: "Accounts", icon: Landmark },
+  { id: "all-accounts", label: "All Transactions", icon: Landmark },
   { id: "review", label: "Review", icon: ListChecks },
   { id: "history", label: "Activity", icon: History },
 ];
@@ -779,7 +779,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
   }
 
   return (
-    <div className="appFrame" style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)`, "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
+    <div className="appFrame" style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
       <aside className="sidebar">
         <div className="brandBlock">
           <span className="brandMark"><Landmark size={16} /></span>
@@ -1122,7 +1122,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
           <div className="stickyAccountChrome">
             <header className="accountLedgerHeader">
               <div>
-                <h1>All Accounts</h1>
+                <h1>All Transactions</h1>
                 <div className="accountMetaRow">
                   <span>{accounts.length} accounts</span>
                   <span>{missingCategoryTransactions.length} need a category</span>
