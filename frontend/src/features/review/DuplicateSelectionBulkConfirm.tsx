@@ -28,10 +28,10 @@ function signedMoney(cents: number) {
   return `${cents > 0 ? "+" : "-"}${money.format(Math.abs(cents) / 100)}`;
 }
 
-export function DuplicateSelectionBulkConfirm({ preview, busy, onClose, onConfirm }: { preview: DuplicateSelectionPreview; busy: boolean; onClose: () => void; onConfirm: () => void }) {
+export function DuplicateSelectionBulkConfirm({ preview, busy, onClose, onConfirm, backdropClassName = "" }: { preview: DuplicateSelectionPreview; busy: boolean; onClose: () => void; onConfirm: () => void; backdropClassName?: string }) {
   const removing = preview.action === "remove_new";
   const preferringHistory = preview.action === "prefer_authoritative_history";
-  return <div className="modalBackdrop" onClick={busy ? undefined : onClose}>
+  return <div className={`modalBackdrop ${backdropClassName}`.trim()} onClick={busy ? undefined : onClose}>
     <section className="modalCard duplicateBulkModal" role="dialog" aria-modal="true" aria-labelledby="duplicate-selection-title" onClick={(event) => event.stopPropagation()}>
       <div className="modalHeader">
         <div><h2 id="duplicate-selection-title">Confirm selected duplicate action</h2><p>This applies only to the pairs you selected on the current page.</p></div>

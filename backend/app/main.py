@@ -1764,8 +1764,8 @@ def list_pending_duplicates(limit: int = Query(default=25, ge=1, le=100), offset
 
 
 @app.get("/api/duplicates/summary")
-def get_duplicate_queue_summary(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
-    return duplicate_queue_summary(db)
+def get_duplicate_queue_summary(account_id: int | None = Query(default=None, ge=1), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return duplicate_queue_summary(db, account_id=account_id)
 
 
 @app.get("/api/duplicates/bulk-preview")
@@ -1832,11 +1832,11 @@ def ledger_duplicate_scan_results(session: SessionToken = Depends(current_sessio
 
 
 @app.post("/api/duplicates/scan")
-def scan_duplicates(request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+def scan_duplicates(request: Request, account_id: int | None = Query(default=None, ge=1), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     require_csrf(request, session)
-    result = scan_ledger_duplicates(db, actor=actor_for_session(session))
+    result = scan_ledger_duplicates(db, actor=actor_for_session(session), account_id=account_id)
     db.commit()
-    return {**result, "queue": duplicate_queue_summary(db)}
+    return {**result, "queue": duplicate_queue_summary(db, account_id=account_id)}
 
 
 @app.post("/api/duplicates/resolve-exact")

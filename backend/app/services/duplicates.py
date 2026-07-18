@@ -75,8 +75,8 @@ def pending_duplicate_pairs(db: Session, *, limit: int | None = None, offset: in
     return results[offset:offset + limit] if limit is not None else results[offset:]
 
 
-def duplicate_queue_summary(db: Session) -> dict[str, Any]:
-    pairs = pending_duplicate_pairs(db)
+def duplicate_queue_summary(db: Session, *, account_id: int | None = None) -> dict[str, Any]:
+    pairs = pending_duplicate_pairs(db, account_id=account_id)
     counts = {name: 0 for name in ("cross_source", "exact", "probable", "mirrored", "import")}
     for pair in pairs:
         counts[pair["tier"]] += 1

@@ -6596,6 +6596,33 @@ body {
   min-width: 0;
 }
 
+.accountDuplicateToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+
+.accountDuplicateToolbar > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.accountDuplicateSelectionBar {
+  top: 0;
+  margin: 0 0 12px;
+}
+
+.accountDuplicateConfirmBackdrop {
+  z-index: 105;
+}
+
 .accountRefundModalBody .refundReviewPanel {
   margin: 0;
   padding: 0;
@@ -6924,6 +6951,15 @@ body {
   .accountRefundModal,
   .accountDuplicateModal {
     max-height: calc(100dvh - 20px);
+  }
+
+  .accountDuplicateToolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .accountDuplicateToolbar > button {
+    width: 100%;
   }
 
   .unanchoredAlert {
