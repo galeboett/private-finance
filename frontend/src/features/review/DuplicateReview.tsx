@@ -36,7 +36,6 @@ export function DuplicateReview({ pairs, busyAction, onResolve, onBulkPreview, t
   const selectablePairs = pairs.filter((pair) => pair.tier === "exact" || pair.tier === "probable");
   const selectableIds = selectablePairs.map((pair) => pair.candidate.id);
   const selectedPairs = selectablePairs.filter((pair) => selectedCandidateIds.includes(pair.candidate.id));
-  const selectedHasProbable = selectedPairs.some((pair) => pair.tier === "probable");
   const selectedCanPreferHistory = selectedPairs.length === selectedCandidateIds.length && selectedPairs.length > 0 && selectedPairs.every((pair) =>
     pair.original.import_source === "Manual entry" && pair.candidate.import_source.toLocaleLowerCase() === authoritativeHistoryFilename.toLocaleLowerCase()
   );
@@ -60,7 +59,7 @@ export function DuplicateReview({ pairs, busyAction, onResolve, onBulkPreview, t
         <span>{selectedCandidateIds.length} selected</span>
         <button className="secondaryButton compactButton" onClick={() => onSelectionPreview("keep_both")} disabled={selectedCandidateIds.length === 0 || busyAction !== null}>Keep both selected</button>
         <button className="primaryButton compactButton" title={selectedCanPreferHistory ? `Use ${authoritativeHistoryFilename} as the source of record while preserving established transaction annotations and links.` : `Available when every selected pair has Manual entry on the established side and ${authoritativeHistoryFilename} on the imported side.`} onClick={() => onSelectionPreview("prefer_authoritative_history")} disabled={!selectedCanPreferHistory || busyAction !== null}>Prefer authoritative history</button>
-        <button className="primaryButton compactButton" title={selectedHasProbable ? "Probable matches can only be kept in bulk." : "Move the selected exact-match candidates to Trash."} onClick={() => onSelectionPreview("remove_new")} disabled={selectedCandidateIds.length === 0 || selectedHasProbable || busyAction !== null}>Remove selected new copies</button>
+        <button className="primaryButton compactButton" title="Move the selected new copies to Trash, including probable matches." onClick={() => onSelectionPreview("remove_new")} disabled={selectedCandidateIds.length === 0 || busyAction !== null}>Remove selected new copies</button>
       </div> : null}
       <div className="duplicatePairList">
         {(["cross_source", "exact", "probable", "mirrored", "import"] as const).map((tier) => {

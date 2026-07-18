@@ -28,9 +28,12 @@ class LedgerDuplicateCandidate:
     similarity: float
 
 
-def scan_ledger_duplicates(db: Session, *, actor: str) -> dict:
+def scan_ledger_duplicates(db: Session, *, actor: str, account_id: int | None = None) -> dict:
     migrated = migrate_keep_both_decisions(db)
-    rows = db.scalars(live_transaction_select()).all()
+    transaction_query = live_transaction_select()
+    if account_id is not None:
+        transaction_query = transaction_query.where(Transaction.account_id == account_id)
+    rows = db.scalars(transaction_query).all()
     reviewed_groups = _keep_both_group_roots(db)
     already_flagged = {row.id for row in rows if row.review_status == "possible_duplicate"}
     already_flagged.update(row.duplicate_of_transaction_id for row in rows if row.review_status == "possible_duplicate" and row.duplicate_of_transaction_id is not None)
@@ -107,7 +110,7 @@ def scan_ledger_duplicates(db: Session, *, actor: str) -> dict:
         ),
         changes=changes,
     ) if changes else None
-    record_audit_event(db, "duplicate_ledger_scan", actor, "transactions", f"scan:{len(selected)}", {"counts": counts, "migrated_keep_both": migrated, "cleared_reviewed": cleared_reviewed, "limited": len(selected) == MAX_SCAN_PAIRS, "operation_id": operation_id})
+    record_audit_event(db, "duplicate_ledger_scan", actor, "transactions", f"scan:{len(selected)}", {"account_id": account_id, "counts": counts, "migrated_keep_both": migrated, "cleared_reviewed": cleared_reviewed, "limited": len(selected) == MAX_SCAN_PAIRS, "operation_id": operation_id})
     return {"flagged": len(selected), "counts": counts, "migrated_keep_both": migrated, "cleared_reviewed": cleared_reviewed, "limit": MAX_SCAN_PAIRS, "limited": len(selected) == MAX_SCAN_PAIRS, "operation_id": operation_id}
 
 

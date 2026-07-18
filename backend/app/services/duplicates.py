@@ -22,7 +22,7 @@ AUTHORITATIVE_HISTORY_FILENAME = "transaction history for private finance 7.14.2
 AUTHORITATIVE_HISTORY_FIELDS = (*NEW_IMPORT_FIELDS, "category_id", "transaction_type", "review_status")
 
 
-def pending_duplicate_pairs(db: Session, *, limit: int | None = None, offset: int = 0, tier_filter: str | None = None) -> list[dict[str, Any]]:
+def pending_duplicate_pairs(db: Session, *, limit: int | None = None, offset: int = 0, tier_filter: str | None = None, account_id: int | None = None) -> list[dict[str, Any]]:
     candidate_query = (
         select(Transaction).where(
             Transaction.deleted_at.is_(None),
@@ -31,6 +31,8 @@ def pending_duplicate_pairs(db: Session, *, limit: int | None = None, offset: in
             Transaction.duplicate_of_transaction_id.is_not(None),
         ).order_by(Transaction.transaction_date.desc(), Transaction.id.desc())
     )
+    if account_id is not None:
+        candidate_query = candidate_query.where(Transaction.account_id == account_id)
     paged_in_query = limit is not None and tier_filter is None
     if paged_in_query:
         candidate_query = candidate_query.offset(offset).limit(limit)
@@ -73,8 +75,8 @@ def pending_duplicate_pairs(db: Session, *, limit: int | None = None, offset: in
     return results[offset:offset + limit] if limit is not None else results[offset:]
 
 
-def duplicate_queue_summary(db: Session) -> dict[str, Any]:
-    pairs = pending_duplicate_pairs(db)
+def duplicate_queue_summary(db: Session, *, account_id: int | None = None) -> dict[str, Any]:
+    pairs = pending_duplicate_pairs(db, account_id=account_id)
     counts = {name: 0 for name in ("cross_source", "exact", "probable", "mirrored", "import")}
     for pair in pairs:
         counts[pair["tier"]] += 1
@@ -179,9 +181,6 @@ def preview_duplicate_selection(db: Session, *, transaction_ids: list[int], acti
     selected = _selected_duplicate_pairs(db, transaction_ids)
     if action not in {"keep_both", "remove_new", "prefer_authoritative_history"}:
         raise ValueError("Choose keep_both, remove_new, or prefer_authoritative_history")
-    if action == "remove_new" and any(tier != "exact" for _, _, tier in selected):
-        raise ValueError("Bulk removal is limited to exact matches. Probable matches can only be kept in bulk.")
-
     account_ids = {candidate.account_id for candidate, _, _ in selected}
     accounts = {row.id: row for row in db.scalars(select(Account).where(Account.id.in_(account_ids))).all()} if account_ids else {}
     batch_ids = {row.import_batch_id for candidate, original, _ in selected for row in (candidate, original) if row.import_batch_id is not None}
@@ -561,8 +560,8 @@ def _selected_duplicate_pairs(db: Session, transaction_ids: list[int]) -> list[t
     for transaction_id in unique_ids:
         candidate, original = _duplicate_pair(db, transaction_id)
         tier, _ = classify_duplicate_pair(candidate, original)
-        if tier not in {"exact", "probable"}:
-            raise ValueError("Bulk selection is limited to exact and probable duplicate pairs")
+        if tier not in {"exact", "cross_source", "probable"}:
+            raise ValueError("Bulk selection is limited to exact, cross-source, and probable duplicate pairs")
         selected.append((candidate, original, tier))
     return selected
 

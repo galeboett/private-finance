@@ -77,6 +77,17 @@ def test_pending_duplicates_return_side_by_side_context_and_diff_fields():
         assert pair["exact_match"] is False
 
 
+def test_pending_duplicates_can_be_scoped_to_one_account():
+    with _session() as db:
+        first_candidate, _, _ = _pair(db, suffix="-first")
+        second_candidate, _, _ = _pair(db, suffix="-second")
+
+        pairs = pending_duplicate_pairs(db, account_id=second_candidate.account_id)
+
+        assert [pair["candidate"]["id"] for pair in pairs] == [second_candidate.id]
+        assert first_candidate.id not in {pair["candidate"]["id"] for pair in pairs}
+
+
 def test_remove_new_is_one_undoable_operation():
     with _session() as db:
         candidate, _, _ = _pair(db)
@@ -345,7 +356,7 @@ def test_selected_exact_and_probable_pairs_can_be_kept_in_one_undoable_operation
         assert db.query(DuplicatePairDecision).count() == 0
 
 
-def test_selected_bulk_removal_accepts_exact_and_rejects_probable_pairs():
+def test_selected_bulk_removal_accepts_exact_and_probable_pairs():
     with _session() as db:
         exact, _, _ = _pair(db, exact=True, suffix="-remove-exact")
         probable, probable_original, _ = _pair(db, suffix="-remove-probable")
@@ -354,18 +365,31 @@ def test_selected_bulk_removal_accepts_exact_and_rejects_probable_pairs():
         probable.raw_description = "MARKET PURCHASES"
         db.commit()
 
-        try:
-            preview_duplicate_selection(db, transaction_ids=[probable.id], action="remove_new")
-        except ValueError as error:
-            assert "Probable matches" in str(error)
-        else:
-            raise AssertionError("Probable pairs must not support bulk deletion")
-
-        preview = preview_duplicate_selection(db, transaction_ids=[exact.id], action="remove_new")
-        result = resolve_duplicate_selection(db, transaction_ids=[exact.id], action="remove_new", preview_token=preview["selection_token"], actor="user:7")
+        preview = preview_duplicate_selection(db, transaction_ids=[exact.id, probable.id], action="remove_new")
+        assert preview["tiers"] == {"exact": 1, "probable": 1}
+        result = resolve_duplicate_selection(db, transaction_ids=[exact.id, probable.id], action="remove_new", preview_token=preview["selection_token"], actor="user:7")
         db.commit()
-        assert result["resolved"] == 1
+        assert result["resolved"] == 2
         assert exact.deleted_at is not None
+        assert probable.deleted_at is not None
+
+
+def test_selected_bulk_removal_accepts_safe_cross_source_pairs():
+    with _session() as db:
+        candidate, original, _ = _pair(db, exact=True, suffix="-remove-cross-source")
+        original.source_reference = "categorized-history-row-10863"
+        candidate.source_reference = "BANK-2403638602307111598855"
+        db.commit()
+
+        preview = preview_duplicate_selection(db, transaction_ids=[candidate.id], action="remove_new")
+        assert preview["tiers"] == {"cross_source": 1}
+
+        result = resolve_duplicate_selection(db, transaction_ids=[candidate.id], action="remove_new", preview_token=preview["selection_token"], actor="user:7")
+        db.commit()
+
+        assert result["resolved"] == 1
+        assert candidate.deleted_at is not None
+        assert original.deleted_at is None
 
 
 def test_selected_probable_pair_can_prefer_authoritative_history_and_undo():

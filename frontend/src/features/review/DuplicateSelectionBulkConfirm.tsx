@@ -5,7 +5,7 @@ export type DuplicateSelectionPreview = {
   action: DuplicateSelectionAction;
   selection_token: string;
   pair_count: number;
-  tiers: Partial<Record<"exact" | "probable", number>>;
+  tiers: Partial<Record<"exact" | "cross_source" | "probable", number>>;
   rows_soft_deleted: number;
   decisions_saved: number;
   balance_change_cents: number;
@@ -28,10 +28,11 @@ function signedMoney(cents: number) {
   return `${cents > 0 ? "+" : "-"}${money.format(Math.abs(cents) / 100)}`;
 }
 
-export function DuplicateSelectionBulkConfirm({ preview, busy, onClose, onConfirm }: { preview: DuplicateSelectionPreview; busy: boolean; onClose: () => void; onConfirm: () => void }) {
+export function DuplicateSelectionBulkConfirm({ preview, busy, onClose, onConfirm, backdropClassName = "" }: { preview: DuplicateSelectionPreview; busy: boolean; onClose: () => void; onConfirm: () => void; backdropClassName?: string }) {
   const removing = preview.action === "remove_new";
   const preferringHistory = preview.action === "prefer_authoritative_history";
-  return <div className="modalBackdrop" onClick={busy ? undefined : onClose}>
+  const removingProbable = removing && (preview.tiers.probable ?? 0) > 0;
+  return <div className={`modalBackdrop ${backdropClassName}`.trim()} onClick={busy ? undefined : onClose}>
     <section className="modalCard duplicateBulkModal" role="dialog" aria-modal="true" aria-labelledby="duplicate-selection-title" onClick={(event) => event.stopPropagation()}>
       <div className="modalHeader">
         <div><h2 id="duplicate-selection-title">Confirm selected duplicate action</h2><p>This applies only to the pairs you selected on the current page.</p></div>
@@ -43,7 +44,7 @@ export function DuplicateSelectionBulkConfirm({ preview, busy, onClose, onConfir
       </div>
       <div className="duplicateBulkMetrics">
         <div><span>Selected pairs</span><strong>{preview.pair_count}</strong></div>
-        <div><span>Exact / probable</span><strong>{preview.tiers.exact ?? 0} / {preview.tiers.probable ?? 0}</strong></div>
+        <div><span>Exact / cross-source / probable</span><strong>{preview.tiers.exact ?? 0} / {preview.tiers.cross_source ?? 0} / {preview.tiers.probable ?? 0}</strong></div>
         <div><span>{preferringHistory ? "Category / type changes" : "Rows moved to Trash"}</span><strong>{preferringHistory ? `${preview.category_changes} / ${preview.type_changes}` : preview.rows_soft_deleted}</strong></div>
         <div><span>Ledger adjustment</span><strong className={preview.balance_change_cents < 0 ? "negativeValue" : "positiveValue"}>{signedMoney(preview.balance_change_cents)}</strong></div>
       </div>
@@ -51,7 +52,7 @@ export function DuplicateSelectionBulkConfirm({ preview, busy, onClose, onConfir
         <section><h3>Accounts</h3><div className="duplicateBulkSources">{preview.accounts.map((row) => <span key={row.account_id}><strong>{row.pairs}</strong>{row.account}</span>)}</div></section>
         <section><h3>{preferringHistory ? "Authoritative source" : "Selected candidate sources"}</h3><div className="duplicateBulkSources">{preview.sources.map((row) => <span key={row.source}><strong>{row.pairs}</strong>{row.source}</span>)}</div></section>
       </div>
-      <div className="duplicateBulkSafety"><AlertTriangle size={18} /><div><strong>{removing ? "Exact matches can still be legitimate repeated purchases" : preferringHistory ? "Established record identity and annotations are preserved" : "Probable pairs are only eligible for Keep both in bulk"}</strong><span>{preferringHistory ? `Notes (${preview.annotations_preserved.notes}), labels (${preview.annotations_preserved.labels}), splits (${preview.annotations_preserved.splits}), allocations (${preview.annotations_preserved.allocations}), and existing links stay attached. ${preview.rows_soft_deleted} redundant row${preview.rows_soft_deleted === 1 ? "" : "s"} will move to Trash.` : "Confirm that the selected scope matches your intent."} The action is recorded once and can be undone from Activity.</span></div></div>
+      <div className="duplicateBulkSafety"><AlertTriangle size={18} /><div><strong>{removingProbable ? "Probable matches can be legitimate, similar purchases" : removing ? "Exact matches can still be legitimate repeated purchases" : preferringHistory ? "Established record identity and annotations are preserved" : "Keep both decisions are remembered by future scans"}</strong><span>{preferringHistory ? `Notes (${preview.annotations_preserved.notes}), labels (${preview.annotations_preserved.labels}), splits (${preview.annotations_preserved.splits}), allocations (${preview.annotations_preserved.allocations}), and existing links stay attached. ${preview.rows_soft_deleted} redundant row${preview.rows_soft_deleted === 1 ? "" : "s"} will move to Trash.` : removingProbable ? "This selection includes description-similarity matches. Confirm each selected pair before removing the new copies." : "Confirm that the selected scope matches your intent."} The action is recorded once and can be undone from Activity.</span></div></div>
       <div className="buttonRow duplicateBulkActions">
         <button className="secondaryButton" onClick={onClose} disabled={busy}>Cancel</button>
         <button className="primaryButton" onClick={onConfirm} disabled={busy}>{busy ? "Applying…" : removing ? `Remove ${preview.pair_count} new copies` : preferringHistory ? `Prefer history for ${preview.pair_count} pairs` : `Keep ${preview.pair_count} pairs`}</button>

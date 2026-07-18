@@ -48,6 +48,32 @@ def test_scan_finds_each_confidence_tier_and_flags_existing_review_queue():
         assert sum(row.review_status == "possible_duplicate" for row in rows) == 4
 
 
+def test_scan_can_refresh_one_account_without_scanning_other_accounts():
+    with _session() as db:
+        first = Account(display_name="First card", account_type="credit_card")
+        second = Account(display_name="Second card", account_type="credit_card")
+        db.add_all([first, second])
+        db.flush()
+        first_rows = [
+            _transaction(first.id, -2037, "PAYPAL *WALMART.COM 800-925-6278 CA", "first-a"),
+            _transaction(first.id, -2037, "PAYPAL *WALMART.COM 800-925-6278 CA", "first-b"),
+        ]
+        second_rows = [
+            _transaction(second.id, -900, "AMAZON ONEMED 855-684-4722 WA", "second-a"),
+            _transaction(second.id, -900, "AMAZON ONEMED 855-684-4722 WA", "second-b"),
+        ]
+        db.add_all([*first_rows, *second_rows])
+        db.commit()
+
+        result = scan_ledger_duplicates(db, actor="user:7", account_id=first.id)
+        db.commit()
+
+        assert result["flagged"] == 1
+        assert len(pending_duplicate_pairs(db, account_id=first.id)) == 1
+        assert pending_duplicate_pairs(db, account_id=second.id) == []
+        assert all(row.review_status == "needs_review" for row in second_rows)
+
+
 def test_keep_both_decision_survives_future_scans():
     with _session() as db:
         card = Account(display_name="Card", account_type="credit_card")
