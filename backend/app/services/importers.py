@@ -29,6 +29,7 @@ from .fidelity import fidelity_position_row_kind, resolve_fidelity_category_acco
 from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from .snapshots import record_imported_snapshots
 from .reconciliation import record_imported_checkpoints
+from .account_identifiers import matching_accounts_for_last_four, replacement_card_candidate
 
 
 CARD_REFERENCE_HEADER = "Posted Date,Reference Number,Payee,Address,Amount"
@@ -59,6 +60,7 @@ class AccountImportSuggestion:
     reason: str
     proposed_account: dict
     warnings: list[str]
+    replacement_candidate_id: int | None = None
 
 
 def decode_text(content: bytes) -> str:
@@ -98,6 +100,16 @@ def suggest_account_for_import(db: Session, filename: str, content: bytes) -> Ac
     preview = preview_import(content, preset_type)
     proposed = _proposed_account_from_import(filename, preset_type, preview)
     accounts = db.scalars(select(Account).where(Account.status == "active", Account.account_type != "external")).all()
+    identifier_matches = matching_accounts_for_last_four(db, accounts, proposed.get("last_four"))
+    if len(identifier_matches) == 1:
+        return AccountImportSuggestion(
+            preset_type=preset_type,
+            suggested_account_id=identifier_matches[0].id,
+            match_confidence=100,
+            reason="Matched this account using its current or previous last four digits.",
+            proposed_account=proposed,
+            warnings=preview.warnings,
+        )
     best_account: Account | None = None
     best_score = 0
     best_reason = "No obvious existing account match was found."
@@ -107,6 +119,17 @@ def suggest_account_for_import(db: Session, filename: str, content: bytes) -> Ac
             best_account = account
             best_score = score
             best_reason = reason
+    replacement_candidate = replacement_card_candidate(db, accounts, proposed)
+    if replacement_candidate and best_score < 70:
+        return AccountImportSuggestion(
+            preset_type=preset_type,
+            suggested_account_id=None,
+            match_confidence=70,
+            reason="This looks like a replacement card number for an existing account. Confirm before combining its history.",
+            proposed_account=proposed,
+            warnings=preview.warnings,
+            replacement_candidate_id=replacement_candidate.id,
+        )
     if best_score < 70:
         exact_candidates = [
             account

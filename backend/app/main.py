@@ -24,11 +24,12 @@ from .bootstrap import initialize_database
 from .config import settings
 from .db import get_db
 from .middleware import LocalhostSecurityMiddleware
-from .models import Account, AppUser, Category, CategoryRule, DuplicatePairDecision, ExpenseAllocation, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, PaymentVerificationDismissal, RefundLink, RefundPairDecision, RefundReviewResolution, SecurityMetadata, SecurityPrice, SessionToken, StatementCheckpoint, StatementPdfPattern, StagingRow, Transaction, TransactionSplit, TransferLink
+from .models import Account, AccountIdentifier, AppUser, Category, CategoryRule, DuplicatePairDecision, ExpenseAllocation, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, NetWorthSnapshot, PaymentVerificationDismissal, RefundLink, RefundPairDecision, RefundReviewResolution, SecurityMetadata, SecurityPrice, SessionToken, StatementCheckpoint, StatementPdfPattern, StagingRow, Transaction, TransactionSplit, TransferLink
 from .money import cents_to_decimal_string, escape_csv_formula
-from .schemas import AccountCreate, AccountUpdate, BulkDeleteRequest, BulkDuplicateResolutionRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, DuplicateSelectionPreviewRequest, DuplicateSelectionResolutionRequest, ExternalPaymentRequest, HistoricalRefundBulkRequest, HoldingLotCreate, HoldingLotUpdate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, ManualTransactionCreate, MonthlyAllocationRequest, NetWorthSnapshotUpdate, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, PaymentVerificationDismissRequest, RefundConfirmRequest, RefundLinkCreate, RefundNoExpenseRequest, RefundSelectionRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementBalancePreviewUpdate, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
+from .schemas import AccountCreate, AccountIdentifierCreate, AccountUpdate, BulkDeleteRequest, BulkDuplicateResolutionRequest, BulkIdsRequest, BulkRuleCreateRequest, BulkTransactionUpdateRequest, CategoryCreate, CategoryUpdate, DeleteConfirmRequest, DuplicateResolutionRequest, DuplicateSelectionPreviewRequest, DuplicateSelectionResolutionRequest, ExternalPaymentRequest, HistoricalRefundBulkRequest, HoldingLotCreate, HoldingLotUpdate, HoldingMetadataUpdate, ImportPresetCreate, LoginRequest, ManualTransactionCreate, MonthlyAllocationRequest, NetWorthSnapshotUpdate, NetWorthSnapshotUpsert, OperationBulkUpdateRequest, PasswordChangeRequest, PaymentVerificationDismissRequest, RefundConfirmRequest, RefundLinkCreate, RefundNoExpenseRequest, RefundSelectionRequest, ReviewStatus, RuleApplyRequest, RuleCreate, RuleUpdate, SetupRequest, SplitSetRequest, StatementBalancePreviewUpdate, StatementCheckpointCreate, TransactionFilter, TransactionReviewUpdate, TransactionType, TransferLinkCreate, UndoOperationRequest
 from .security import clear_login_failures, create_session, enforce_login_rate_limit, ensure_setup_state, hash_password, password_needs_rehash, purge_expired_sessions, record_login_failure, require_csrf, set_session_cookie, verify_password
 from .services.accounts import cleanup_imported_accounts
+from .services.account_identifiers import record_account_identifier
 from .services.backups import BackupError, create_backup, list_backups, resolve_backup_destination, resolve_restore_source, restore_backup
 from .services.duplicates import duplicate_queue_summary, link_historical_refund_pairs, pending_duplicate_pairs, preview_duplicate_selection, preview_historical_refund_links, preview_safe_duplicate_resolution, resolve_all_exact_duplicates, resolve_duplicate, resolve_duplicate_selection, resolve_safe_duplicate_reimports
 from .services.duplicate_scan import scan_ledger_duplicates
@@ -317,12 +318,21 @@ def create_account(payload: AccountCreate, request: Request, session: SessionTok
         display_name=payload.display_name,
         account_type=payload.account_type,
         currency=payload.currency,
-        last_four=payload.last_four,
+        last_four=payload.last_four or None,
         net_worth_inclusion="never" if payload.account_type == "external" else payload.net_worth_inclusion,
     )
     db.add(account)
     db.flush()
-    operation_id = journal_mutation(db, kind="create", entity_type="account", actor=actor_for_session(session), description=f'Created account "{account.display_name}"', changes=[MutationChange(account.id, None, full_values(account))])
+    identifier = None
+    if payload.last_four:
+        try:
+            identifier = record_account_identifier(db, account, payload.last_four, source="manual")
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+    create_changes = [MutationChange(account.id, None, full_values(account))]
+    if identifier:
+        create_changes.append(MutationChange(identifier.id, None, full_values(identifier), entity_type="account_identifier"))
+    operation_id = journal_mutation(db, kind="create", entity_type="account", actor=actor_for_session(session), description=f'Created account "{account.display_name}"', changes=create_changes)
     record_audit_event(db, "account_create", "local-user", "account", str(account.id), payload.model_dump())
     db.commit()
     return {"id": account.id, "operation_id": operation_id}
@@ -412,6 +422,78 @@ def list_accounts(session: SessionToken = Depends(current_session), db: Session 
     return result
 
 
+@app.get("/api/accounts/{account_id}/identifiers")
+def list_account_identifiers(account_id: int, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    account = db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    identifiers = db.scalars(
+        select(AccountIdentifier)
+        .where(AccountIdentifier.account_id == account_id)
+        .order_by(AccountIdentifier.is_current.desc(), AccountIdentifier.created_at.desc())
+    ).all()
+    return [
+        {
+            "id": identifier.id,
+            "identifier_type": identifier.identifier_type,
+            "last_four": identifier.identifier_value,
+            "is_current": identifier.is_current,
+            "source": identifier.source,
+            "valid_from": identifier.valid_from,
+            "valid_to": identifier.valid_to,
+        }
+        for identifier in identifiers
+    ]
+
+
+@app.post("/api/accounts/{account_id}/identifiers")
+def create_account_identifier(account_id: int, payload: AccountIdentifierCreate, request: Request, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    require_csrf(request, session)
+    account = db.get(Account, account_id)
+    if not account or account.status != "active":
+        raise HTTPException(status_code=404, detail="Active account not found")
+    if account.account_type != "credit_card":
+        raise HTTPException(status_code=400, detail="Replacement card numbers can only be added to credit-card accounts")
+    before = changed_values(account, ["last_four"])
+    identifier_before = {
+        row.id: full_values(row)
+        for row in db.scalars(select(AccountIdentifier).where(AccountIdentifier.account_id == account.id)).all()
+    }
+    try:
+        identifier = record_account_identifier(
+            db,
+            account,
+            payload.last_four,
+            make_current=payload.make_current,
+            source=payload.source,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    identifier_changes = [
+        MutationChange(row.id, identifier_before.get(row.id), full_values(row), entity_type="account_identifier")
+        for row in db.scalars(select(AccountIdentifier).where(AccountIdentifier.account_id == account.id)).all()
+        if identifier_before.get(row.id) != full_values(row)
+    ]
+    operation_id = journal_mutation(
+        db,
+        kind="update",
+        entity_type="account",
+        actor=actor_for_session(session),
+        description=f'Updated card number for "{account.display_name}"',
+        changes=[MutationChange(account.id, before, changed_values(account, ["last_four"])), *identifier_changes],
+    )
+    record_audit_event(
+        db,
+        "account_identifier_create",
+        "local-user",
+        "account",
+        str(account.id),
+        {"last_four": identifier.identifier_value, "make_current": payload.make_current, "source": payload.source},
+    )
+    db.commit()
+    return {"ok": True, "account_id": account.id, "last_four": account.last_four, "operation_id": operation_id}
+
+
 @app.get("/api/reconciliation")
 def get_reconciliation_statuses(session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
     return list_reconciliation_statuses(db)
@@ -451,14 +533,39 @@ def update_account(account_id: int, payload: AccountUpdate, request: Request, se
     if updates.get("account_type") == "external":
         changed_fields.add("net_worth_inclusion")
     before = changed_values(account, changed_fields)
+    identifier_before = {
+        row.id: full_values(row)
+        for row in db.scalars(select(AccountIdentifier).where(AccountIdentifier.account_id == account.id)).all()
+    } if "last_four" in changed_fields else {}
     if "institution_name" in updates:
         institution = upsert_institution(db, updates.pop("institution_name"))
         account.institution_id = institution.id if institution else None
+    updated_last_four = updates.pop("last_four", None) if "last_four" in updates else None
     for key, value in updates.items():
         setattr(account, key, value)
+    if updated_last_four:
+        try:
+            record_account_identifier(db, account, updated_last_four, source="manual")
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+    elif "last_four" in changed_fields and updated_last_four is None:
+        account.last_four = None
+        for identifier in db.scalars(
+            select(AccountIdentifier).where(
+                AccountIdentifier.account_id == account.id,
+                AccountIdentifier.is_current.is_(True),
+            )
+        ).all():
+            identifier.is_current = False
+            identifier.valid_to = date.today()
     if account.account_type == "external":
         account.net_worth_inclusion = "never"
-    operation_id = journal_mutation(db, kind="update", entity_type="account", actor=actor_for_session(session), description=f'Updated account "{account.display_name}"', changes=[MutationChange(account.id, before, changed_values(account, changed_fields))])
+    identifier_changes = [
+        MutationChange(row.id, identifier_before.get(row.id), full_values(row), entity_type="account_identifier")
+        for row in db.scalars(select(AccountIdentifier).where(AccountIdentifier.account_id == account.id)).all()
+        if identifier_before.get(row.id) != full_values(row)
+    ]
+    operation_id = journal_mutation(db, kind="update", entity_type="account", actor=actor_for_session(session), description=f'Updated account "{account.display_name}"', changes=[MutationChange(account.id, before, changed_values(account, changed_fields)), *identifier_changes])
     record_audit_event(db, "account_update", "local-user", "account", str(account.id), payload.model_dump(exclude_unset=True))
     db.commit()
     return {"ok": True, "operation_id": operation_id}
@@ -629,6 +736,7 @@ def _delete_account_tree(db: Session, account: Account) -> list[MutationChange]:
     holdings = db.scalars(select(HoldingSnapshot).where(HoldingSnapshot.account_id == account.id)).all()
     lots = db.scalars(select(HoldingLot).where(HoldingLot.account_id == account.id)).all()
     checkpoints = db.scalars(select(StatementCheckpoint).where(StatementCheckpoint.account_id == account.id)).all()
+    identifiers = db.scalars(select(AccountIdentifier).where(AccountIdentifier.account_id == account.id)).all()
     changes: list[MutationChange] = [MutationChange(account.id, full_values(account), None, entity_type="account")]
     changes.extend(MutationChange(preset.id, full_values(preset), None, entity_type="import_preset") for preset in presets)
     changes.extend(MutationChange(profile.id, full_values(profile), None, entity_type="import_sign_profile") for profile in sign_profiles)
@@ -637,6 +745,7 @@ def _delete_account_tree(db: Session, account: Account) -> list[MutationChange]:
     changes.extend(MutationChange(holding.id, full_values(holding), None, entity_type="holding_snapshot") for holding in holdings)
     changes.extend(MutationChange(lot.id, full_values(lot), None, entity_type="holding_lot") for lot in lots)
     changes.extend(MutationChange(checkpoint.id, full_values(checkpoint), None, entity_type="statement_checkpoint") for checkpoint in checkpoints)
+    changes.extend(MutationChange(identifier.id, full_values(identifier), None, entity_type="account_identifier") for identifier in identifiers)
     unassigned_account = None
     if transactions:
         unassigned_account = Account(
@@ -662,6 +771,7 @@ def _delete_account_tree(db: Session, account: Account) -> list[MutationChange]:
     db.execute(delete(ImportBatch).where(ImportBatch.account_id == account.id))
     db.execute(delete(ImportPreset).where(ImportPreset.account_id == account.id))
     db.execute(delete(ImportSignProfile).where(ImportSignProfile.account_id == account.id))
+    db.execute(delete(AccountIdentifier).where(AccountIdentifier.account_id == account.id))
     record_audit_event(
         db,
         "account_delete",
@@ -787,18 +897,18 @@ async def imports_analyze(file: UploadFile = File(...), session: SessionToken = 
     suffix = Path(filename).suffix.casefold()
     if suffix in {".ofx", ".qfx"}:
         try:
-            account, confidence, reason, proposed = suggest_ofx_account(db, content)
+            account, confidence, reason, proposed, replacement_candidate_id = suggest_ofx_account(db, content)
             parsed = parse_ofx(content)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        return {"preset_type": "ofx_statement", "suggested_account_id": account.id if account else None, "match_confidence": confidence, "reason": reason, "proposed_account": proposed, "warnings": parsed.warnings}
+        return {"preset_type": "ofx_statement", "suggested_account_id": account.id if account else None, "replacement_candidate_id": replacement_candidate_id, "match_confidence": confidence, "reason": reason, "proposed_account": proposed, "warnings": parsed.warnings}
     if suffix == ".pdf":
         try:
             pdf_preview = extract_statement_pdf(content, filename)
-            account, confidence, reason, proposed = suggest_pdf_account(db, filename, pdf_preview)
+            account, confidence, reason, proposed, replacement_candidate_id = suggest_pdf_account(db, filename, pdf_preview)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        return {"preset_type": "pdf_statement", "suggested_account_id": account.id if account else None, "match_confidence": confidence, "reason": reason, "proposed_account": proposed, "warnings": pdf_preview.warnings}
+        return {"preset_type": "pdf_statement", "suggested_account_id": account.id if account else None, "replacement_candidate_id": replacement_candidate_id, "match_confidence": confidence, "reason": reason, "proposed_account": proposed, "warnings": pdf_preview.warnings}
     try:
         suggestion = suggest_account_for_import(db, file.filename or "import.csv", content)
     except ValueError as error:
@@ -814,6 +924,7 @@ async def imports_analyze(file: UploadFile = File(...), session: SessionToken = 
         return {
             "preset_type": None,
             "suggested_account_id": None,
+            "replacement_candidate_id": None,
             "match_confidence": 0,
             "reason": "Choose the date, description, and amount columns once. This browser will remember the mapping for matching headers.",
             "proposed_account": None,
@@ -824,6 +935,7 @@ async def imports_analyze(file: UploadFile = File(...), session: SessionToken = 
     return {
         "preset_type": suggestion.preset_type,
         "suggested_account_id": suggestion.suggested_account_id,
+        "replacement_candidate_id": suggestion.replacement_candidate_id,
         "match_confidence": suggestion.match_confidence,
         "reason": suggestion.reason,
         "proposed_account": suggestion.proposed_account,

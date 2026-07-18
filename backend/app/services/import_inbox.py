@@ -80,12 +80,12 @@ def scan_import_inbox(db: Session) -> dict:
             is_ofx = path.suffix.casefold() in {".ofx", ".qfx"}
             is_pdf = path.suffix.casefold() == ".pdf"
             if is_ofx:
-                suggested_account, match_confidence, match_reason, proposed_account = suggest_ofx_account(db, content)
-                suggestion = AccountImportSuggestion("ofx_statement", suggested_account.id if suggested_account else None, match_confidence, match_reason, proposed_account, [])
+                suggested_account, match_confidence, match_reason, proposed_account, replacement_candidate_id = suggest_ofx_account(db, content)
+                suggestion = AccountImportSuggestion("ofx_statement", suggested_account.id if suggested_account else None, match_confidence, match_reason, proposed_account, [], replacement_candidate_id)
             elif is_pdf:
                 pdf_preview = extract_statement_pdf(content, relative_name)
-                suggested_account, match_confidence, match_reason, proposed_account = suggest_pdf_account(db, relative_name, pdf_preview)
-                suggestion = AccountImportSuggestion("pdf_statement", suggested_account.id if suggested_account else None, match_confidence, match_reason, proposed_account, pdf_preview.warnings)
+                suggested_account, match_confidence, match_reason, proposed_account, replacement_candidate_id = suggest_pdf_account(db, relative_name, pdf_preview)
+                suggestion = AccountImportSuggestion("pdf_statement", suggested_account.id if suggested_account else None, match_confidence, match_reason, proposed_account, pdf_preview.warnings, replacement_candidate_id)
             else:
                 suggestion = suggest_account_for_import(db, relative_name, content)
             if refreshes_holding_data and exact_match:
@@ -109,6 +109,7 @@ def scan_import_inbox(db: Session) -> dict:
                     "preset_type": suggestion.preset_type,
                     "reason": suggestion.reason,
                     "proposed_account": suggestion.proposed_account,
+                    "replacement_candidate_id": suggestion.replacement_candidate_id,
                 })
                 continue
 

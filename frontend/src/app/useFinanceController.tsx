@@ -121,6 +121,7 @@ type ImportPreview = {
 type ImportAnalysis = {
   preset_type: string | null;
   suggested_account_id: number | null;
+  replacement_candidate_id: number | null;
   match_confidence: number;
   reason: string;
   proposed_account: {
@@ -665,6 +666,7 @@ export function useFinanceController() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importAnalysis, setImportAnalysis] = useState<ImportAnalysis | null>(null);
+  const [createSeparateReplacement, setCreateSeparateReplacement] = useState(false);
   const [genericCsvMapping, setGenericCsvMapping] = useState<GenericCsvMapping>({ date: "", description: "", amount: "" });
   const [importSignConvention, setImportSignConvention] = useState<ImportSignConvention>("auto");
   const [importInbox, setImportInbox] = useState<ImportInboxState>({ folder: "", pending: [] });
@@ -932,7 +934,8 @@ export function useFinanceController() {
       try {
         const me = await api<{ csrf_token: string }>("/api/me");
         setCsrf(me.csrf_token);
-        await loadData();
+        await loadCoreData();
+        void loadSecondaryData();
         const noticeKey = `privateFinance.netWorthAnchoringNotice.${data.net_worth_notice.map((account) => account.id).join("-")}`;
         if (data.net_worth_notice.length && !window.localStorage.getItem(noticeKey)) {
           window.localStorage.setItem(noticeKey, "seen");
@@ -944,41 +947,34 @@ export function useFinanceController() {
     }
   }
 
-  async function loadData() {
-    const [dashboardData, accountsData, transactionData, rulesData, categoryData, cashFlowData, netWorthData, allocationData, holdingsData, transferData, refundData, duplicateData, reconciliationData, paymentData, inboxData, operationData] = await Promise.all([
-      api<DashboardSummary>("/api/dashboard/summary"),
-      api<AccountSummary[]>("/api/accounts"),
-      api<TransactionRow[]>(`/api/transactions?view=${transactionView}`),
-      api<RuleSummary[]>("/api/rules"),
-      loadCategoryAggregates(api, reportPeriod),
-      loadCashFlowAggregates(api),
-      api<NetWorthAccount[]>("/api/net-worth/accounts"),
-      api<AllocationRow[]>("/api/investments/allocation"),
-      api<HoldingRow[]>("/api/investments/holdings"),
-      api<TransferCandidate[]>("/api/transfers/unconfirmed"),
-      api<RefundSuggestionGroup[]>("/api/refunds/suggestions"),
-      api<DuplicatePair[]>("/api/duplicates/pending"),
-      api<ReconciliationStatus[]>("/api/reconciliation"),
-      api<PaymentVerificationStatus[]>("/api/transfers/payments"),
-      api<ImportInboxState>("/api/imports/inbox"),
-      api<OperationSummary[]>("/api/operations?limit=100"),
+  async function loadCoreData() {
+    await Promise.all([
+      api<DashboardSummary>("/api/dashboard/summary").then(setDashboard),
+      api<AccountSummary[]>("/api/accounts").then(setAccounts),
+      api<TransactionRow[]>(`/api/transactions?view=${transactionView}`).then(setTransactions),
     ]);
-    setDashboard(dashboardData);
-    setAccounts(accountsData);
-    setTransactions(transactionData);
-    setRules(rulesData);
-    setCategoryTotals(categoryData);
-    setCashFlowRows(cashFlowData);
-    setNetWorthAccounts(netWorthData);
-    setAllocationRows(allocationData);
-    setHoldingRows(holdingsData);
-    setTransferCandidates(transferData);
-    setRefundSuggestions(refundData);
-    setDuplicatePairs(duplicateData);
-    setReconciliationStatuses(reconciliationData);
-    setPaymentVerification(paymentData);
-    setImportInbox(inboxData);
-    setOperations(operationData);
+  }
+
+  async function loadSecondaryData() {
+    await Promise.allSettled([
+      api<RuleSummary[]>("/api/rules").then(setRules),
+      loadCategoryAggregates(api, reportPeriod).then(setCategoryTotals),
+      loadCashFlowAggregates(api).then(setCashFlowRows),
+      api<NetWorthAccount[]>("/api/net-worth/accounts").then(setNetWorthAccounts),
+      api<AllocationRow[]>("/api/investments/allocation").then(setAllocationRows),
+      api<HoldingRow[]>("/api/investments/holdings").then(setHoldingRows),
+      api<TransferCandidate[]>("/api/transfers/unconfirmed").then(setTransferCandidates),
+      api<RefundSuggestionGroup[]>("/api/refunds/suggestions").then(setRefundSuggestions),
+      api<DuplicatePair[]>("/api/duplicates/pending").then(setDuplicatePairs),
+      api<ReconciliationStatus[]>("/api/reconciliation").then(setReconciliationStatuses),
+      api<PaymentVerificationStatus[]>("/api/transfers/payments").then(setPaymentVerification),
+      api<ImportInboxState>("/api/imports/inbox").then(setImportInbox),
+      api<OperationSummary[]>("/api/operations?limit=100").then(setOperations),
+    ]);
+  }
+
+  async function loadData() {
+    await Promise.all([loadCoreData(), loadSecondaryData()]);
   }
 
   function showToast(nextToast: ToastState) {
@@ -1115,6 +1111,7 @@ export function useFinanceController() {
     setSelectedFile(file);
     setImportPreview(null);
     setImportAnalysis(null);
+    setCreateSeparateReplacement(false);
     setGenericCsvMapping({ date: "", description: "", amount: "" });
   }
 
@@ -1161,7 +1158,8 @@ export function useFinanceController() {
       const result = await api<{ csrf_token: string }>("/api/login", { method: "POST", body: JSON.stringify({ password }) });
       setCsrf(result.csrf_token);
       setPassword("");
-      await loadData();
+      await loadCoreData();
+      void loadSecondaryData();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Login failed.");
     } finally {
@@ -1592,6 +1590,7 @@ export function useFinanceController() {
       }
       const analysis = await parseApiJson<ImportAnalysis>(response, "/api/imports/analyze");
       setImportAnalysis(analysis);
+      setCreateSeparateReplacement(false);
       if (analysis.preset_type === null) {
         const signature = (analysis.headers ?? []).join("\u001f");
         const saved = window.localStorage.getItem(`privateFinance.csvMapping.${signature}`);
@@ -1619,10 +1618,35 @@ export function useFinanceController() {
           account_type: analysis.proposed_account.account_type,
           last_four: analysis.proposed_account.last_four ?? "",
         });
-        showToast({ tone: "info", message: "No obvious account match found. I prefilled a new account for you to review." });
+        showToast({ tone: "info", message: analysis.replacement_candidate_id ? "Confirm whether this is a replacement card before importing." : "No obvious account match found. I prefilled a new account for you to review." });
       }
     } catch (error) {
       showToast({ tone: "error", message: error instanceof Error ? error.message : "CSV analysis failed." });
+    }
+  }
+
+  async function confirmReplacementCard() {
+    const candidateId = importAnalysis?.replacement_candidate_id;
+    const lastFour = importAnalysis?.proposed_account?.last_four;
+    if (!candidateId || !lastFour) {
+      showToast({ tone: "error", message: "Analyze the replacement-card file again before confirming it." });
+      return;
+    }
+    setBusyAction("card-replacement");
+    try {
+      const result = await api<{ operation_id: string }>(`/api/accounts/${candidateId}/identifiers`, {
+        method: "POST",
+        headers: { "x-csrf-token": csrf },
+        body: JSON.stringify({ last_four: lastFour, make_current: true, source: "import_confirmation" }),
+      });
+      setSelectedAccountId(candidateId);
+      setImportAnalysis((current) => current ? { ...current, suggested_account_id: candidateId, replacement_candidate_id: null, match_confidence: 100, reason: "Replacement card confirmed; prior and current card numbers now map to one account." } : current);
+      await loadCoreData();
+      showToast({ tone: "success", message: "Replacement card confirmed. Existing history stays together and both card suffixes will match future imports.", operationId: result.operation_id });
+    } catch (error) {
+      showToast({ tone: "error", message: error instanceof Error ? error.message : "The replacement card could not be confirmed." });
+    } finally {
+      setBusyAction(null);
     }
   }
 
@@ -2427,6 +2451,7 @@ export function useFinanceController() {
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId);
   const focusedAccount = accounts.find((account) => account.id === focusedAccountId) ?? null;
   const analyzedAccount = accounts.find((account) => account.id === importAnalysis?.suggested_account_id);
+  const replacementCandidate = accounts.find((account) => account.id === importAnalysis?.replacement_candidate_id);
   const previewRows = importPreview?.rows.slice(0, 6) ?? [];
   const normalizedTransactionSearch = transactionSearch.trim().toLowerCase();
   const transactionMatchesSearch = (transaction: TransactionRow) => {
@@ -2880,7 +2905,7 @@ export function useFinanceController() {
     categorizedHistoryFile, categorizedHistoryMissingFields, categorizedHistoryRows, categorizedHistorySignConvention, categorizeTransaction, categoryEditor, categoryReassignId,
     categorySuggestions, chooseImportFile, cleanupImportedAccounts, clearAccountForm, clearTaxonomyOverride, collapsedTaxonomyGroups,
     commitReviewedCategorizedHistory, commitSelectedImport, confirmDelete, confirmInboxBatch, confirmRefundSelections, confirmRefundSuggestion,
-    confirmStatementBalanceBatch, confirmTransaction, confirmTransactionEdit, confirmTransferCandidate, createAccountFromAnalysis, createCategory,
+    confirmReplacementCard, confirmStatementBalanceBatch, confirmTransaction, confirmTransactionEdit, confirmTransferCandidate, createAccountFromAnalysis, createCategory,
     csrf, dashboardCustomizeOpen, dashboardWidgets, deleteCategorizedHistoryRow, deleteConfirmText, deleteOrMergeCategory,
     deleteRule, deleteTarget, detectRefunds, detectTransfers, discardInboxBatch,
     downloadAppExport, duplicatePairs, editingAccountId, editingCategoryId, editingCategoryLabel, editingCategoryParentId,
@@ -2896,7 +2921,7 @@ export function useFinanceController() {
     openImportModal, openNetWorthPeek, openSplitEditor, openTransactionEditor, openTransactionPeek, openTransactionView, operations,
     pagedTransactions, peekDrawer, pendingRuleTransaction, periodCashFlowRows, periodCategoryTotals, previewHistorySignCleanup, previewRows,
     previewRule, previewSelectedImport, refundPicker, refundSearchTimer, refundSuggestionByTransactionId,
-    refundSuggestions, rejectRefundSelections, rejectRefundSuggestion, rejectTransferCandidate, rememberImportSignConvention, removeMonthlyAllocation,
+    refundSuggestions, rejectRefundSelections, rejectRefundSuggestion, rejectTransferCandidate, rememberImportSignConvention, removeMonthlyAllocation, replacementCandidate,
     reportExpenseCents, reportIncomeCents, reportNetCents, reportPeriod, repositoryTransactionIds, requestBulkAccountDelete,
     requestBulkHoldingDelete, requestBulkTransactionDelete, requestDelete, resetAccountSelectionAnchor, resetHoldingSelectionAnchor, resetTransactionSelectionAnchor,
     restoreAppExport, restoreDeletedTransaction, restoreSelectedTransactions, reviewCount, reviewQueueFilter, reviewQueueTransactions,
@@ -2909,14 +2934,14 @@ export function useFinanceController() {
     setBulkReviewCategoryId, setBulkReviewType, setCategorizedHistoryFile, setCategorizedHistoryFilename, setCategorizedHistoryRows, setCategorizedHistorySignConvention,
     setCategoryEditor, setCategoryReassignId, setDashboardCustomizeOpen, setDeleteConfirmText, setDeleteTarget, setEditingCategoryId,
     setEditingCategoryLabel, setEditingCategoryParentId, setEditingRule, setGenericCsvMapping, setHistoryCleanupConfirm, setImportModalOpen,
-    setImportPreview, setImportSignConvention, setImportWorkspaceTab, setMonthlyAllocationEditor, setNetWorthPeek, setNewCategoryLabel,
+    setCreateSeparateReplacement, setImportPreview, setImportSignConvention, setImportWorkspaceTab, setMonthlyAllocationEditor, setNetWorthPeek, setNewCategoryLabel,
     setNewCategoryParentId, setPeekDrawer, setRefundPicker, setReportPeriod, setReviewQueueFilter, setSelectedAccountId,
     setSelectedAccountIds, setSelectedHoldingIds, setSelectedTransactionAccountFilters, setSelectedTransactionCategoryFilters, setSelectedTransactionIds, setSelectedTransactionMonthFilters, setSelectedTransactionTypeFilters,
     setSelectedTransactionYearFilters, setSettingsTab, setShowAssetTransactions, setSplitEditor, setTaxonomyAccountId, setTaxonomyEditorOpen,
     setPendingRuleTransaction, setTaxonomyGroupDraft, setToast, setTransactionAmountMax, setTransactionAmountMin, setTransactionDateFrom, setTransactionDateTo,
     setTransactionDirection, setTransactionHasRefund, setTransactionPage, setTransactionSearch, setTransactionView, settingsTab,
     settleRefundsWithoutExpense, showAssetTransactions, showToast, sidebarTaxonomyTree, sidebarWidth, sortIndicator,
-    splitEditor, startSidebarResize, taxonomyAccountId, taxonomyEditorOpen, taxonomyGroupDraft, taxonomyOverrides,
+    splitEditor, startSidebarResize, taxonomyAccountId, taxonomyEditorOpen, taxonomyGroupDraft, taxonomyOverrides, createSeparateReplacement,
     taxonomyTree, toast, toggleAccountSelection, toggleDashboardWidget, toggleHoldingSelection, toggleOperationDetail,
     toggleTaxonomyGroup, toggleTransactionSelection, toggleTransactionSort, totalExpenseCents, totalIncomeCents,
     transactionCategoryOptions, transactionDateFrom, transactionDateTo, transactionFilterChips, transactionHasRefund,
