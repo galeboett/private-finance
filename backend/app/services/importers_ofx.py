@@ -16,6 +16,7 @@ from ..models import Account, CategoryRule, HoldingSnapshot, ImportBatch, NetWor
 from ..money import parse_decimal_to_cents
 from .dedupe import canonical_source_hash, find_reference_matches
 from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
+from .account_identifiers import matching_accounts_for_last_four, replacement_card_candidate
 
 
 @dataclass(frozen=True)
@@ -122,7 +123,7 @@ def parse_ofx(content: bytes) -> OfxParseResult:
     return OfxParseResult(rows=rows, warnings=warnings, account=account)
 
 
-def suggest_ofx_account(db: Session, content: bytes) -> tuple[Account | None, int, str, dict]:
+def suggest_ofx_account(db: Session, content: bytes) -> tuple[Account | None, int, str, dict, int | None]:
     parsed = parse_ofx(content)
     metadata = parsed.account
     proposed = {
@@ -134,20 +135,23 @@ def suggest_ofx_account(db: Session, content: bytes) -> tuple[Account | None, in
     }
     accounts = db.scalars(select(Account).where(Account.status == "active", Account.account_type != "external")).all()
     last_four = metadata.get("last_four")
-    matching_last_four = [account for account in accounts if last_four and account.last_four == last_four]
+    matching_last_four = matching_accounts_for_last_four(db, accounts, last_four)
     if len(matching_last_four) == 1:
-        return matching_last_four[0], 100, "Matched the OFX account number to this account's last four digits.", proposed
+        return matching_last_four[0], 100, "Matched the OFX account number to this account's current or previous last four digits.", proposed, None
     typed = [account for account in accounts if account.account_type == metadata.get("account_type")]
     institution = (metadata.get("institution") or "").casefold()
     institution_matches = [
         account for account in typed
         if account.institution and institution and (institution in account.institution.name.casefold() or account.institution.name.casefold() in institution)
     ]
+    replacement_candidate = replacement_card_candidate(db, accounts, proposed)
+    if replacement_candidate:
+        return None, 70, "This OFX file may use a replacement card number. Confirm before combining its history.", proposed, replacement_candidate.id
     if len(institution_matches) == 1:
-        return institution_matches[0], 85, "Matched the OFX institution and account type.", proposed
+        return institution_matches[0], 85, "Matched the OFX institution and account type.", proposed, None
     if len(typed) == 1 and not last_four:
-        return typed[0], 70, "Matched the only active account of this OFX account type.", proposed
-    return None, 0, "Choose the account for this OFX/QFX statement once; its account number will match future downloads.", proposed
+        return typed[0], 70, "Matched the only active account of this OFX account type.", proposed, None
+    return None, 0, "Choose the account for this OFX/QFX statement once; its account number will match future downloads.", proposed, None
 
 
 def semantic_ofx_hash(content: bytes) -> str:

@@ -72,7 +72,7 @@ class AccountCreate(BaseModel):
     display_name: str
     account_type: AccountType
     currency: str = "USD"
-    last_four: str | None = None
+    last_four: str | None = Field(default=None, pattern=r"^(?:|\d{4})$")
     net_worth_inclusion: NetWorthInclusion = NetWorthInclusion.AUTO
 
 
@@ -81,9 +81,15 @@ class AccountUpdate(BaseModel):
     display_name: str | None = None
     account_type: AccountType | None = None
     currency: str | None = None
-    last_four: str | None = None
+    last_four: str | None = Field(default=None, pattern=r"^(?:|\d{4})$")
     status: AccountStatus | None = None
     net_worth_inclusion: NetWorthInclusion | None = None
+
+
+class AccountIdentifierCreate(BaseModel):
+    last_four: str = Field(pattern=r"^\d{4}$")
+    make_current: bool = True
+    source: Literal["manual", "import_confirmation"] = "manual"
 
 
 class CategoryCreate(BaseModel):

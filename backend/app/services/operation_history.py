@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..models import (
     Account,
+    AccountIdentifier,
     Category,
     CategoryRule,
     DuplicatePairDecision,
@@ -42,6 +43,7 @@ from .mutation_log import MutationChange, journal_mutation
 ENTITY_MODELS = {
     "transaction": Transaction,
     "account": Account,
+    "account_identifier": AccountIdentifier,
     "holding_snapshot": HoldingSnapshot,
     "holding_lot": HoldingLot,
     "net_worth_snapshot": NetWorthSnapshot,

@@ -8,6 +8,7 @@ from .services.fidelity import repair_fidelity_holding_history
 from .services.duplicate_scan import migrate_keep_both_decisions
 from .services.snapshots import backfill_net_worth_snapshots
 from .services.trash import purge_expired_trash
+from .services.account_identifiers import backfill_account_identifiers
 
 
 def migrate_category_rules_for_optional_category(connection) -> None:
@@ -103,5 +104,6 @@ def initialize_database() -> None:
         backfill_statement_checkpoints(db)
         repair_fidelity_holding_history(db)
         migrate_keep_both_decisions(db)
+        backfill_account_identifiers(db)
         purge_expired_trash(db, retention_days=settings.trash_retention_days)
     settings.import_inbox_dir.expanduser().mkdir(parents=True, exist_ok=True)

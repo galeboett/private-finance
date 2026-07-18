@@ -119,6 +119,7 @@ type ImportPreview = {
 type ImportAnalysis = {
   preset_type: string | null;
   suggested_account_id: number | null;
+  replacement_candidate_id: number | null;
   match_confidence: number;
   reason: string;
   proposed_account: {
@@ -636,7 +637,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
     categorizedHistoryFile, categorizedHistoryMissingFields, categorizedHistoryRows, categorizedHistorySignConvention, categorizeTransaction, categoryEditor, categoryReassignId,
     categorySuggestions, chooseImportFile, cleanupImportedAccounts, clearAccountForm, clearTaxonomyOverride, collapsedTaxonomyGroups,
     commitReviewedCategorizedHistory, commitSelectedImport, confirmDelete, confirmInboxBatch, confirmRefundSelections, confirmRefundSuggestion,
-    confirmStatementBalanceBatch, confirmTransaction, confirmTransactionEdit, confirmTransferCandidate, createAccountFromAnalysis, createCategory,
+    confirmReplacementCard, confirmStatementBalanceBatch, confirmTransaction, confirmTransactionEdit, confirmTransferCandidate, createAccountFromAnalysis, createCategory,
     csrf, dashboardCustomizeOpen, dashboardWidgets, deleteCategorizedHistoryRow, deleteConfirmText, deleteOrMergeCategory,
     deleteRule, deleteTarget, detectRefunds, detectTransfers, discardInboxBatch,
     downloadAppExport, duplicatePairs, editingAccountId, editingCategoryId, editingCategoryLabel, editingCategoryParentId,
@@ -652,7 +653,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
     openImportModal, openNetWorthPeek, openSplitEditor, openTransactionEditor, openTransactionPeek, openTransactionView, operations,
     pagedTransactions, peekDrawer, pendingRuleTransaction, periodCashFlowRows, periodCategoryTotals, previewHistorySignCleanup, previewRows,
     previewRule, previewSelectedImport, refundPicker, refundSearchTimer, refundSuggestionByTransactionId,
-    refundSuggestions, rejectRefundSelections, rejectRefundSuggestion, rejectTransferCandidate, rememberImportSignConvention, removeMonthlyAllocation,
+    refundSuggestions, rejectRefundSelections, rejectRefundSuggestion, rejectTransferCandidate, rememberImportSignConvention, removeMonthlyAllocation, replacementCandidate,
     reportExpenseCents, reportIncomeCents, reportNetCents, reportPeriod, repositoryTransactionIds, requestBulkAccountDelete,
     requestBulkHoldingDelete, requestBulkTransactionDelete, requestDelete, resetAccountSelectionAnchor, resetHoldingSelectionAnchor, resetTransactionSelectionAnchor,
     restoreAppExport, restoreDeletedTransaction, restoreSelectedTransactions, reviewCount, reviewQueueFilter, reviewQueueTransactions,
@@ -665,14 +666,14 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
     setBulkReviewCategoryId, setBulkReviewType, setCategorizedHistoryFile, setCategorizedHistoryFilename, setCategorizedHistoryRows, setCategorizedHistorySignConvention,
     setCategoryEditor, setCategoryReassignId, setDashboardCustomizeOpen, setDeleteConfirmText, setDeleteTarget, setEditingCategoryId,
     setEditingCategoryLabel, setEditingCategoryParentId, setEditingRule, setGenericCsvMapping, setHistoryCleanupConfirm, setImportModalOpen,
-    setImportPreview, setImportSignConvention, setImportWorkspaceTab, setMonthlyAllocationEditor, setNetWorthPeek, setNewCategoryLabel,
+    setCreateSeparateReplacement, setImportPreview, setImportSignConvention, setImportWorkspaceTab, setMonthlyAllocationEditor, setNetWorthPeek, setNewCategoryLabel,
     setNewCategoryParentId, setPeekDrawer, setRefundPicker, setReportPeriod, setReviewQueueFilter, setSelectedAccountId,
     setSelectedAccountIds, setSelectedHoldingIds, setSelectedTransactionAccountFilters, setSelectedTransactionCategoryFilters, setSelectedTransactionIds, setSelectedTransactionMonthFilters, setSelectedTransactionTypeFilters,
     setSelectedTransactionYearFilters, setSettingsTab, setShowAssetTransactions, setSplitEditor, setTaxonomyAccountId, setTaxonomyEditorOpen,
     setPendingRuleTransaction, setTaxonomyGroupDraft, setToast, setTransactionAmountMax, setTransactionAmountMin, setTransactionDateFrom, setTransactionDateTo,
     setTransactionDirection, setTransactionHasRefund, setTransactionPage, setTransactionSearch, setTransactionView, settingsTab,
     settleRefundsWithoutExpense, showAssetTransactions, showToast, sidebarTaxonomyTree, sidebarWidth, sortIndicator,
-    splitEditor, startSidebarResize, taxonomyAccountId, taxonomyEditorOpen, taxonomyGroupDraft, taxonomyOverrides,
+    splitEditor, startSidebarResize, taxonomyAccountId, taxonomyEditorOpen, taxonomyGroupDraft, taxonomyOverrides, createSeparateReplacement,
     taxonomyTree, toast, toggleAccountSelection, toggleDashboardWidget, toggleHoldingSelection, toggleOperationDetail,
     toggleTaxonomyGroup, toggleTransactionSelection, toggleTransactionSort, totalExpenseCents, totalIncomeCents,
     transactionCategoryOptions, transactionDateFrom, transactionDateTo, transactionFilterChips, transactionHasRefund,
@@ -1326,6 +1327,25 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
                           ))}
                         </div>
                         <small>Review the preview before staging. Use the Amount signs control below if this CSV's convention needs to be reversed.</small>
+                      </div>
+                    ) : replacementCandidate && importAnalysis.proposed_account && !createSeparateReplacement ? (
+                      <div className="replacementCardPrompt">
+                        <div>
+                          <span className="eyebrow">Possible replacement card</span>
+                          <strong>{replacementCandidate.display_name}</strong>
+                          <p>
+                            Current suffix {replacementCandidate.last_four ?? "unknown"} → new suffix {importAnalysis.proposed_account.last_four ?? "unknown"}.
+                            Confirming keeps balances, rules, refunds, and transaction history on one account.
+                          </p>
+                        </div>
+                        <div className="replacementCardActions">
+                          <button className="secondaryButton" onClick={() => setCreateSeparateReplacement(true)} disabled={busyAction !== null}>
+                            Create separate account
+                          </button>
+                          <button className="primaryButton" onClick={() => void confirmReplacementCard()} disabled={busyAction !== null}>
+                            Use as replacement card
+                          </button>
+                        </div>
                       </div>
                     ) : analyzedAccount ? (
                       <div className="matchedAccountCard">

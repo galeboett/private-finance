@@ -15,6 +15,7 @@ from ..audit import record_audit_event
 from ..models import Account, ImportBatch, NetWorthSnapshot, StatementCheckpoint, StatementPdfPattern, StagingRow
 from ..money import parse_decimal_to_cents
 from .mutation_log import MutationChange, full_values, journal_mutation
+from .account_identifiers import matching_accounts_for_last_four, replacement_card_candidate
 
 
 @dataclass(frozen=True)
@@ -117,7 +118,7 @@ def statement_preview_row(preview: StatementPdfPreview, account: Account) -> dic
     }
 
 
-def suggest_pdf_account(db: Session, filename: str, preview: StatementPdfPreview) -> tuple[Account | None, int, str, dict]:
+def suggest_pdf_account(db: Session, filename: str, preview: StatementPdfPreview) -> tuple[Account | None, int, str, dict, int | None]:
     accounts = db.scalars(select(Account).where(Account.status == "active", Account.account_type != "external")).all()
     digits = "".join(character for character in filename if character.isdigit())
     last_four = digits[-4:] if len(digits) >= 4 else None
@@ -128,9 +129,9 @@ def suggest_pdf_account(db: Session, filename: str, preview: StatementPdfPreview
         "currency": "USD",
         "last_four": last_four,
     }
-    suffix_matches = [account for account in accounts if account.last_four and account.last_four in digits]
+    suffix_matches = matching_accounts_for_last_four(db, accounts, last_four)
     if len(suffix_matches) == 1:
-        return suffix_matches[0], 95, "Matched the account's last four digits in the PDF filename.", proposed
+        return suffix_matches[0], 95, "Matched the account's current or previous last four digits in the PDF filename.", proposed, None
     institution = (preview.institution or "").casefold()
     institution_matches = [
         account for account in accounts
@@ -138,9 +139,12 @@ def suggest_pdf_account(db: Session, filename: str, preview: StatementPdfPreview
             institution in account.institution.name.casefold() or account.institution.name.casefold() in institution
         )
     ]
+    replacement_candidate = replacement_card_candidate(db, accounts, proposed)
+    if replacement_candidate:
+        return None, 70, "This PDF may use a replacement card number. Confirm before combining its history.", proposed, replacement_candidate.id
     if len(institution_matches) == 1:
-        return institution_matches[0], 80, "Matched the only active account for the detected PDF institution.", proposed
-    return None, 0, "Choose the account for this statement PDF; include its last four digits in future filenames for automatic matching.", proposed
+        return institution_matches[0], 80, "Matched the only active account for the detected PDF institution.", proposed, None
+    return None, 0, "Choose the account for this statement PDF; include its last four digits in future filenames for automatic matching.", proposed, None
 
 
 def semantic_pdf_hash(content: bytes) -> str:

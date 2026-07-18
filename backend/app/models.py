@@ -57,6 +57,22 @@ class Account(TimestampMixin, Base):
     presets: Mapped[list["ImportPreset"]] = relationship(back_populates="account")
 
 
+class AccountIdentifier(TimestampMixin, Base):
+    __tablename__ = "account_identifiers"
+    __table_args__ = (
+        UniqueConstraint("account_id", "identifier_type", "identifier_value", name="uq_account_identifier_value"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False, index=True)
+    identifier_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    identifier_value: Mapped[str] = mapped_column(String(128), nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    source: Mapped[str | None] = mapped_column(String(40))
+    valid_from: Mapped[date | None] = mapped_column(Date)
+    valid_to: Mapped[date | None] = mapped_column(Date)
+
+
 class ImportPreset(TimestampMixin, Base):
     __tablename__ = "import_presets"
 

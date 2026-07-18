@@ -7,7 +7,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
-from ..models import Account, DuplicatePairDecision, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, PaymentVerificationDismissal, RefundLink, RefundPairDecision, RefundReviewResolution, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
+from ..models import Account, AccountIdentifier, DuplicatePairDecision, HoldingLot, HoldingSnapshot, ImportBatch, ImportPreset, ImportSignProfile, Institution, PaymentVerificationDismissal, RefundLink, RefundPairDecision, RefundReviewResolution, StatementCheckpoint, StagingRow, Transaction, TransactionSplit, TransferLink
 from .dedupe import canonical_source_hash, find_merge_match, is_categorized_history_reference
 from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 
@@ -132,6 +132,16 @@ def merge_account_into(db: Session, source: Account, target: Account, actor: str
     db.execute(update(HoldingLot).where(HoldingLot.account_id == source.id).values(account_id=target.id))
     db.execute(update(ImportBatch).where(ImportBatch.account_id == source.id).values(account_id=target.id))
     db.execute(update(ImportPreset).where(ImportPreset.account_id == source.id).values(account_id=target.id))
+    target_identifiers = db.scalars(select(AccountIdentifier).where(AccountIdentifier.account_id == target.id)).all()
+    target_identifier_keys = {(row.identifier_type, row.identifier_value) for row in target_identifiers}
+    target_has_current = any(row.is_current for row in target_identifiers)
+    for identifier in db.scalars(select(AccountIdentifier).where(AccountIdentifier.account_id == source.id)).all():
+        if (identifier.identifier_type, identifier.identifier_value) in target_identifier_keys:
+            db.delete(identifier)
+        else:
+            identifier.account_id = target.id
+            if target_has_current:
+                identifier.is_current = False
     source_profiles = db.scalars(select(ImportSignProfile).where(ImportSignProfile.account_id == source.id)).all()
     target_profiles = db.scalars(select(ImportSignProfile).where(ImportSignProfile.account_id == target.id)).all()
     target_by_preset = {profile.preset_type: profile for profile in target_profiles}

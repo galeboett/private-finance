@@ -2389,6 +2389,34 @@ textarea {
   background: #fbfcfb;
 }
 
+.replacementCardPrompt {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #cbd8ff;
+  border-radius: 8px;
+  background: #f5f7ff;
+}
+
+.replacementCardPrompt > div:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.replacementCardPrompt p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.replacementCardActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .navItemCount {
   margin-left: auto;
   min-width: 1.35rem;
