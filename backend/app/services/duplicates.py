@@ -181,9 +181,6 @@ def preview_duplicate_selection(db: Session, *, transaction_ids: list[int], acti
     selected = _selected_duplicate_pairs(db, transaction_ids)
     if action not in {"keep_both", "remove_new", "prefer_authoritative_history"}:
         raise ValueError("Choose keep_both, remove_new, or prefer_authoritative_history")
-    if action == "remove_new" and any(tier not in {"exact", "cross_source"} for _, _, tier in selected):
-        raise ValueError("Bulk removal is limited to exact and cross-source matches. Probable matches can only be kept in bulk.")
-
     account_ids = {candidate.account_id for candidate, _, _ in selected}
     accounts = {row.id: row for row in db.scalars(select(Account).where(Account.id.in_(account_ids))).all()} if account_ids else {}
     batch_ids = {row.import_batch_id for candidate, original, _ in selected for row in (candidate, original) if row.import_batch_id is not None}

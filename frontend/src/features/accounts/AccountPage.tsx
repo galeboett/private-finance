@@ -238,7 +238,6 @@ export function AccountPage(props: Props) {
   const selectableDuplicateIds = selectableDuplicatePairs.map((pair) => pair.candidate.id);
   const selectedDuplicatePairs = selectableDuplicatePairs.filter((pair) => selectedDuplicateIds.includes(pair.candidate.id));
   const allSelectableDuplicatesSelected = selectableDuplicateIds.length > 0 && selectableDuplicateIds.every((id) => selectedDuplicateIds.includes(id));
-  const selectedDuplicatesHaveProbable = selectedDuplicatePairs.some((pair) => pair.tier === "probable");
   const authoritativeHistoryFilename = "transaction history for private finance 7.14.26v2.csv";
   const selectedCanPreferHistory = selectedDuplicatePairs.length === selectedDuplicateIds.length && selectedDuplicatePairs.length > 0 && selectedDuplicatePairs.every((pair) => pair.original.import_source === "Manual entry" && pair.candidate.import_source.toLocaleLowerCase() === authoritativeHistoryFilename.toLocaleLowerCase());
   return <>
@@ -312,7 +311,7 @@ export function AccountPage(props: Props) {
           <span>{selectedDuplicateIds.length} selected</span>
           <button type="button" className="secondaryButton compactButton" disabled={selectedDuplicateIds.length === 0 || bulkDuplicateBusy || resolvingDuplicateId !== null} onClick={() => void openDuplicateBulkPreview("keep_both")}>Keep both selected</button>
           <button type="button" className="secondaryButton compactButton" title={selectedCanPreferHistory ? `Use ${authoritativeHistoryFilename} while preserving established annotations.` : "Available only for eligible authoritative-history pairs."} disabled={!selectedCanPreferHistory || bulkDuplicateBusy || resolvingDuplicateId !== null} onClick={() => void openDuplicateBulkPreview("prefer_authoritative_history")}>Prefer history</button>
-          <button type="button" className="primaryButton compactButton" title={selectedDuplicatesHaveProbable ? "Probable matches can only be kept in bulk." : "Move the selected exact new copies to Trash."} disabled={selectedDuplicateIds.length === 0 || selectedDuplicatesHaveProbable || bulkDuplicateBusy || resolvingDuplicateId !== null} onClick={() => void openDuplicateBulkPreview("remove_new")}>Remove selected new copies</button>
+          <button type="button" className="primaryButton compactButton" title="Move the selected new copies to Trash, including probable matches." disabled={selectedDuplicateIds.length === 0 || bulkDuplicateBusy || resolvingDuplicateId !== null} onClick={() => void openDuplicateBulkPreview("remove_new")}>Remove selected new copies</button>
         </div> : null}
         <div className="accountDuplicateList">
           {accountDuplicatePairs.map((pair) => <article className="duplicatePair" key={pair.candidate.id}>
