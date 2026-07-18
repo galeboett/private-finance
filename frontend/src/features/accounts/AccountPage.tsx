@@ -1,10 +1,12 @@
-import { CreditCard, FileUp, Plus, RefreshCw, Settings, Tags, Undo2, X } from "lucide-react";
+import { CopyCheck, CreditCard, FileUp, Plus, RefreshCw, Settings, Tags, Undo2, X } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useApiClient } from "../../api/hooks";
 import type { ReconciliationStatus } from "./ReconciliationBadge";
 import { PaymentVerification, type PaymentVerificationStatus, type PaymentWarning } from "../transfers/PaymentVerification";
 import { ManualTransactionForm, type ManualTransactionAccount, type ManualTransactionCategory } from "../transactions/ManualTransactionForm";
 import type { ExternalAccountOption } from "./ExternalPaymentAction";
+import type { DuplicateAction, DuplicatePair } from "../review/DuplicateReview";
+import { TransactionCompareCard } from "../review/TransactionCompareCard";
 
 export type AccountPageSummary = {
   id: number;
@@ -26,6 +28,7 @@ type Props = {
   averageMonthlySpendCents: number;
   missingCategoryCount: number;
   suggestedRefundCount: number;
+  duplicatePairs: DuplicatePair[];
   uncategorizedActive: boolean;
   reconciliation: ReconciliationStatus | null;
   paymentVerification: PaymentVerificationStatus | null;
@@ -59,12 +62,37 @@ export function AccountPage(props: Props) {
   const [saving, setSaving] = useState(false);
   const [showManualTransaction, setShowManualTransaction] = useState(false);
   const [savingInclusion, setSavingInclusion] = useState(false);
-  const [activeOverlay, setActiveOverlay] = useState<"bill-pay" | "refunds" | "settings" | null>(null);
+  const [activeOverlay, setActiveOverlay] = useState<"bill-pay" | "refunds" | "duplicates" | "settings" | null>(null);
+  const [accountDuplicatePairs, setAccountDuplicatePairs] = useState<DuplicatePair[]>(props.duplicatePairs);
+  const [loadingDuplicates, setLoadingDuplicates] = useState(false);
+  const [resolvingDuplicateId, setResolvingDuplicateId] = useState<number | null>(null);
 
   useEffect(() => {
     setActiveOverlay(null);
     setShowManualTransaction(false);
+    setAccountDuplicatePairs(props.duplicatePairs);
   }, [props.account.id]);
+
+  useEffect(() => {
+    setAccountDuplicatePairs(props.duplicatePairs);
+  }, [props.duplicatePairs]);
+
+  async function loadAccountDuplicates() {
+    setLoadingDuplicates(true);
+    try {
+      const pairs = await api<DuplicatePair[]>(`/api/duplicates/pending?account_id=${props.account.id}&limit=100`);
+      setAccountDuplicatePairs(pairs);
+    } catch (error) {
+      props.onCheckpointError(error instanceof Error ? error.message : "Suggested duplicates could not be loaded.");
+    } finally {
+      setLoadingDuplicates(false);
+    }
+  }
+
+  function openDuplicates() {
+    setActiveOverlay("duplicates");
+    void loadAccountDuplicates();
+  }
 
   async function submitCheckpoint(event: FormEvent) {
     event.preventDefault();
@@ -111,6 +139,30 @@ export function AccountPage(props: Props) {
     }
   }
 
+  async function resolveDuplicate(transactionId: number, action: DuplicateAction) {
+    setResolvingDuplicateId(transactionId);
+    try {
+      const result = await api<{ operation_id: string }>(`/api/duplicates/${transactionId}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-csrf-token": props.csrf },
+        body: JSON.stringify({ action }),
+      });
+      const message = action === "remove_new"
+        ? "Removed the new duplicate copy."
+        : action === "keep_both"
+          ? "Kept both transactions and remembered this decision."
+          : action === "remove_sign_artifact"
+            ? "Removed the positive mirrored-sign artifact."
+            : "Updated the original with the newer bank details and preserved your annotations.";
+      await props.onAccountChanged(result.operation_id, message);
+      await loadAccountDuplicates();
+    } catch (error) {
+      props.onCheckpointError(error instanceof Error ? error.message : "The duplicate could not be resolved.");
+    } finally {
+      setResolvingDuplicateId(null);
+    }
+  }
+
   const latest = props.reconciliation?.latest;
   const paymentWarningCount = props.paymentVerification?.warnings.length ?? 0;
   return <>
@@ -140,6 +192,7 @@ export function AccountPage(props: Props) {
         <button type="button" className={props.uncategorizedActive ? "active" : ""} onClick={props.onViewUncategorized}><Tags size={15} />Uncategorized{props.missingCategoryCount > 0 ? <span>{props.missingCategoryCount}</span> : null}</button>
         <button type="button" className={activeOverlay === "bill-pay" ? "active" : ""} onClick={() => setActiveOverlay("bill-pay")}><CreditCard size={15} />Bill pay{paymentWarningCount > 0 ? <span>{paymentWarningCount}</span> : null}</button>
         <button type="button" className={activeOverlay === "refunds" ? "active" : ""} onClick={() => setActiveOverlay("refunds")}><Undo2 size={15} />Suggested refunds{props.suggestedRefundCount > 0 ? <span>{props.suggestedRefundCount}</span> : null}</button>
+        <button type="button" className={activeOverlay === "duplicates" ? "active" : ""} onClick={openDuplicates}><CopyCheck size={15} />Duplicates{accountDuplicatePairs.length > 0 ? <span>{accountDuplicatePairs.length}</span> : null}</button>
         <button type="button" className={activeOverlay === "settings" ? "active" : ""} onClick={() => setActiveOverlay("settings")}><Settings size={15} />Settings</button>
       </nav>
 
@@ -168,6 +221,31 @@ export function AccountPage(props: Props) {
       <section className="modalCard accountActionModal accountRefundModal" role="dialog" aria-modal="true" aria-label={`${props.account.display_name} suggested refunds`} onClick={(event) => event.stopPropagation()}>
         <header className="modalHeader"><div><span className="eyebrow">Suggested refunds</span><h2>{props.account.display_name}</h2><p>Review refund matches found for this account.</p></div><button type="button" className="ghostButton compactIconButton" onClick={() => setActiveOverlay(null)} aria-label="Close suggested refunds"><X size={16} /></button></header>
         <div className="accountRefundModalBody">{props.suggestedRefunds ?? <p className="emptyText accountOverlayEmpty">No suggested refund matches for this account.</p>}</div>
+      </section>
+    </div> : null}
+
+    {activeOverlay === "duplicates" ? <div className="modalBackdrop accountSettingsBackdrop" onClick={() => setActiveOverlay(null)}>
+      <section className="modalCard accountActionModal accountDuplicateModal" role="dialog" aria-modal="true" aria-label={`${props.account.display_name} suggested duplicates`} onClick={(event) => event.stopPropagation()}>
+        <header className="modalHeader"><div><span className="eyebrow">Suggested duplicates</span><h2>{props.account.display_name}</h2><p>Compare possible duplicate transactions found for this account.</p></div><button type="button" className="ghostButton compactIconButton" onClick={() => setActiveOverlay(null)} aria-label="Close suggested duplicates"><X size={16} /></button></header>
+        <div className="accountDuplicateList">
+          {accountDuplicatePairs.map((pair) => <article className="duplicatePair" key={pair.candidate.id}>
+            <div className="duplicatePairHeader">
+              <div><strong>{pair.tier === "mirrored" ? "Opposite-sign pair" : pair.exact_match ? "Exact transaction facts" : `${pair.diff_fields.length} field${pair.diff_fields.length === 1 ? "" : "s"} differ`}</strong><span>{pair.tier === "mirrored" ? "Verify that no money was returned before removing the positive row." : pair.exact_match ? "Repeated same-day purchases are possible. Review both rows before deciding." : `Description similarity ${Math.round(pair.similarity * 100)}%.`}</span></div>
+              <span className={pair.exact_match ? "statusBadge confirmed" : "statusBadge possible-duplicate"}>{pair.tier.replace("_", " ")}</span>
+            </div>
+            <div className="transactionCompareGrid">
+              <TransactionCompareCard title="Existing ledger transaction" transaction={pair.original} diffFields={pair.diff_fields} emphasis="original" />
+              <TransactionCompareCard title="New imported copy" transaction={pair.candidate} diffFields={pair.diff_fields} />
+            </div>
+            <div className="duplicateActions">
+              {pair.tier === "mirrored" ? <button className="primaryButton" title="Move the positive refund-typed row to Trash." onClick={() => void resolveDuplicate(pair.candidate.id, "remove_sign_artifact")} disabled={resolvingDuplicateId !== null}>Remove positive copy</button> : <button className={pair.safe_reimport ? "primaryButton" : "secondaryButton"} onClick={() => void resolveDuplicate(pair.candidate.id, "remove_new")} disabled={resolvingDuplicateId !== null}>Remove new copy</button>}
+              <button className="secondaryButton" onClick={() => void resolveDuplicate(pair.candidate.id, "keep_both")} disabled={resolvingDuplicateId !== null}>Keep both</button>
+              {pair.tier !== "mirrored" ? <button className="secondaryButton" onClick={() => void resolveDuplicate(pair.candidate.id, "replace_old")} disabled={resolvingDuplicateId !== null}>Replace old bank details</button> : null}
+            </div>
+          </article>)}
+          {loadingDuplicates ? <p className="emptyText accountOverlayEmpty">Loading suggested duplicates...</p> : null}
+          {!loadingDuplicates && accountDuplicatePairs.length === 0 ? <p className="emptyText accountOverlayEmpty">No suggested duplicates were found for this account.</p> : null}
+        </div>
       </section>
     </div> : null}
 

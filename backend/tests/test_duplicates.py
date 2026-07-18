@@ -77,6 +77,17 @@ def test_pending_duplicates_return_side_by_side_context_and_diff_fields():
         assert pair["exact_match"] is False
 
 
+def test_pending_duplicates_can_be_scoped_to_one_account():
+    with _session() as db:
+        first_candidate, _, _ = _pair(db, suffix="-first")
+        second_candidate, _, _ = _pair(db, suffix="-second")
+
+        pairs = pending_duplicate_pairs(db, account_id=second_candidate.account_id)
+
+        assert [pair["candidate"]["id"] for pair in pairs] == [second_candidate.id]
+        assert first_candidate.id not in {pair["candidate"]["id"] for pair in pairs}
+
+
 def test_remove_new_is_one_undoable_operation():
     with _session() as db:
         candidate, _, _ = _pair(db)

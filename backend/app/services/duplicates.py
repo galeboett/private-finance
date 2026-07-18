@@ -22,7 +22,7 @@ AUTHORITATIVE_HISTORY_FILENAME = "transaction history for private finance 7.14.2
 AUTHORITATIVE_HISTORY_FIELDS = (*NEW_IMPORT_FIELDS, "category_id", "transaction_type", "review_status")
 
 
-def pending_duplicate_pairs(db: Session, *, limit: int | None = None, offset: int = 0, tier_filter: str | None = None) -> list[dict[str, Any]]:
+def pending_duplicate_pairs(db: Session, *, limit: int | None = None, offset: int = 0, tier_filter: str | None = None, account_id: int | None = None) -> list[dict[str, Any]]:
     candidate_query = (
         select(Transaction).where(
             Transaction.deleted_at.is_(None),
@@ -31,6 +31,8 @@ def pending_duplicate_pairs(db: Session, *, limit: int | None = None, offset: in
             Transaction.duplicate_of_transaction_id.is_not(None),
         ).order_by(Transaction.transaction_date.desc(), Transaction.id.desc())
     )
+    if account_id is not None:
+        candidate_query = candidate_query.where(Transaction.account_id == account_id)
     paged_in_query = limit is not None and tier_filter is None
     if paged_in_query:
         candidate_query = candidate_query.offset(offset).limit(limit)

@@ -1759,8 +1759,8 @@ def review_inbox(session: SessionToken = Depends(current_session), db: Session =
 
 
 @app.get("/api/duplicates/pending")
-def list_pending_duplicates(limit: int = Query(default=25, ge=1, le=100), offset: int = Query(default=0, ge=0), tier: Literal["exact", "cross_source", "probable", "mirrored", "import"] | None = None, session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
-    return pending_duplicate_pairs(db, limit=limit, offset=offset, tier_filter=tier)
+def list_pending_duplicates(limit: int = Query(default=25, ge=1, le=100), offset: int = Query(default=0, ge=0), tier: Literal["exact", "cross_source", "probable", "mirrored", "import"] | None = None, account_id: int | None = Query(default=None, ge=1), session: SessionToken = Depends(current_session), db: Session = Depends(get_db)):
+    return pending_duplicate_pairs(db, limit=limit, offset=offset, tier_filter=tier, account_id=account_id)
 
 
 @app.get("/api/duplicates/summary")

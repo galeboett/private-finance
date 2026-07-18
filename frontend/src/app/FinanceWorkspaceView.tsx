@@ -695,6 +695,9 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
   const focusedRefundSuggestions = focusedAccount
     ? refundSuggestions.filter((suggestion) => suggestion.refund_transaction.account_id === focusedAccount.id)
     : [];
+  const focusedDuplicatePairs = focusedAccount
+    ? duplicatePairs.filter((pair) => pair.candidate.account_id === focusedAccount.id)
+    : [];
   const focusedSpendByMonth = new Map<string, number>();
   focusedAccountTransactionsForSummary
     .filter((transaction) => transaction.transaction_type === "expense")
@@ -1080,6 +1083,7 @@ export function FinanceWorkspaceView({ controller }: { controller: FinanceContro
             averageMonthlySpendCents={focusedAverageMonthlySpendCents}
             missingCategoryCount={focusedMissingCategoryCount}
             suggestedRefundCount={focusedRefundSuggestions.length}
+            duplicatePairs={focusedDuplicatePairs}
             uncategorizedActive={selectedTransactionCategoryFilters.length === 1 && selectedTransactionCategoryFilters[0] === uncategorizedFilterValue}
             reconciliation={focusedReconciliation}
             paymentVerification={focusedPaymentVerification}
