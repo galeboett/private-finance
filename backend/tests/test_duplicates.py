@@ -379,6 +379,24 @@ def test_selected_bulk_removal_accepts_exact_and_rejects_probable_pairs():
         assert exact.deleted_at is not None
 
 
+def test_selected_bulk_removal_accepts_safe_cross_source_pairs():
+    with _session() as db:
+        candidate, original, _ = _pair(db, exact=True, suffix="-remove-cross-source")
+        original.source_reference = "categorized-history-row-10863"
+        candidate.source_reference = "BANK-2403638602307111598855"
+        db.commit()
+
+        preview = preview_duplicate_selection(db, transaction_ids=[candidate.id], action="remove_new")
+        assert preview["tiers"] == {"cross_source": 1}
+
+        result = resolve_duplicate_selection(db, transaction_ids=[candidate.id], action="remove_new", preview_token=preview["selection_token"], actor="user:7")
+        db.commit()
+
+        assert result["resolved"] == 1
+        assert candidate.deleted_at is not None
+        assert original.deleted_at is None
+
+
 def test_selected_probable_pair_can_prefer_authoritative_history_and_undo():
     with _session() as db:
         candidate, original, original_category = _pair(db, suffix="-authoritative")

@@ -234,7 +234,7 @@ export function AccountPage(props: Props) {
 
   const latest = props.reconciliation?.latest;
   const paymentWarningCount = props.paymentVerification?.warnings.length ?? 0;
-  const selectableDuplicatePairs = accountDuplicatePairs.filter((pair) => pair.tier === "exact" || pair.tier === "probable");
+  const selectableDuplicatePairs = accountDuplicatePairs.filter((pair) => pair.tier === "exact" || pair.tier === "cross_source" || pair.tier === "probable");
   const selectableDuplicateIds = selectableDuplicatePairs.map((pair) => pair.candidate.id);
   const selectedDuplicatePairs = selectableDuplicatePairs.filter((pair) => selectedDuplicateIds.includes(pair.candidate.id));
   const allSelectableDuplicatesSelected = selectableDuplicateIds.length > 0 && selectableDuplicateIds.every((id) => selectedDuplicateIds.includes(id));
@@ -308,7 +308,7 @@ export function AccountPage(props: Props) {
           <button type="button" className="ghostButton compactButton" disabled={loadingDuplicates || resolvingDuplicateId !== null || bulkDuplicateBusy} onClick={() => void loadAccountDuplicates(true)}><RefreshCw size={14} />Refresh recommendations</button>
         </div>
         {selectableDuplicateIds.length > 0 ? <div className="duplicateSelectionBar accountDuplicateSelectionBar">
-          <button type="button" className="ghostButton compactButton" disabled={loadingDuplicates || bulkDuplicateBusy || resolvingDuplicateId !== null} onClick={() => setSelectedDuplicateIds(allSelectableDuplicatesSelected ? [] : selectableDuplicateIds)}>{allSelectableDuplicatesSelected ? "Clear selection" : `Select exact/probable (${selectableDuplicateIds.length})`}</button>
+          <button type="button" className="ghostButton compactButton" disabled={loadingDuplicates || bulkDuplicateBusy || resolvingDuplicateId !== null} onClick={() => setSelectedDuplicateIds(allSelectableDuplicatesSelected ? [] : selectableDuplicateIds)}>{allSelectableDuplicatesSelected ? "Clear selection" : `Select eligible pairs (${selectableDuplicateIds.length})`}</button>
           <span>{selectedDuplicateIds.length} selected</span>
           <button type="button" className="secondaryButton compactButton" disabled={selectedDuplicateIds.length === 0 || bulkDuplicateBusy || resolvingDuplicateId !== null} onClick={() => void openDuplicateBulkPreview("keep_both")}>Keep both selected</button>
           <button type="button" className="secondaryButton compactButton" title={selectedCanPreferHistory ? `Use ${authoritativeHistoryFilename} while preserving established annotations.` : "Available only for eligible authoritative-history pairs."} disabled={!selectedCanPreferHistory || bulkDuplicateBusy || resolvingDuplicateId !== null} onClick={() => void openDuplicateBulkPreview("prefer_authoritative_history")}>Prefer history</button>
@@ -317,7 +317,7 @@ export function AccountPage(props: Props) {
         <div className="accountDuplicateList">
           {accountDuplicatePairs.map((pair) => <article className="duplicatePair" key={pair.candidate.id}>
             <div className="duplicatePairHeader">
-              <div>{pair.tier === "exact" || pair.tier === "probable" ? <label className="duplicatePairSelect"><input type="checkbox" checked={selectedDuplicateIds.includes(pair.candidate.id)} onChange={() => toggleDuplicateSelection(pair.candidate.id)} disabled={loadingDuplicates || bulkDuplicateBusy || resolvingDuplicateId !== null} /><span>Select for bulk action</span></label> : null}<strong>{pair.tier === "mirrored" ? "Opposite-sign pair" : pair.exact_match ? "Exact transaction facts" : `${pair.diff_fields.length} field${pair.diff_fields.length === 1 ? "" : "s"} differ`}</strong><span>{pair.tier === "mirrored" ? "Verify that no money was returned before removing the positive row." : pair.exact_match ? "Repeated same-day purchases are possible. Review both rows before deciding." : `Description similarity ${Math.round(pair.similarity * 100)}%.`}</span></div>
+              <div>{pair.tier === "exact" || pair.tier === "cross_source" || pair.tier === "probable" ? <label className="duplicatePairSelect"><input type="checkbox" checked={selectedDuplicateIds.includes(pair.candidate.id)} onChange={() => toggleDuplicateSelection(pair.candidate.id)} disabled={loadingDuplicates || bulkDuplicateBusy || resolvingDuplicateId !== null} /><span>Select for bulk action</span></label> : null}<strong>{pair.tier === "mirrored" ? "Opposite-sign pair" : pair.exact_match ? "Exact transaction facts" : `${pair.diff_fields.length} field${pair.diff_fields.length === 1 ? "" : "s"} differ`}</strong><span>{pair.tier === "mirrored" ? "Verify that no money was returned before removing the positive row." : pair.exact_match ? "Repeated same-day purchases are possible. Review both rows before deciding." : `Description similarity ${Math.round(pair.similarity * 100)}%.`}</span></div>
               <span className={pair.exact_match ? "statusBadge confirmed" : "statusBadge possible-duplicate"}>{pair.tier.replace("_", " ")}</span>
             </div>
             <div className="transactionCompareGrid">

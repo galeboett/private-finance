@@ -5,7 +5,7 @@ export type DuplicateSelectionPreview = {
   action: DuplicateSelectionAction;
   selection_token: string;
   pair_count: number;
-  tiers: Partial<Record<"exact" | "probable", number>>;
+  tiers: Partial<Record<"exact" | "cross_source" | "probable", number>>;
   rows_soft_deleted: number;
   decisions_saved: number;
   balance_change_cents: number;
@@ -43,7 +43,7 @@ export function DuplicateSelectionBulkConfirm({ preview, busy, onClose, onConfir
       </div>
       <div className="duplicateBulkMetrics">
         <div><span>Selected pairs</span><strong>{preview.pair_count}</strong></div>
-        <div><span>Exact / probable</span><strong>{preview.tiers.exact ?? 0} / {preview.tiers.probable ?? 0}</strong></div>
+        <div><span>Exact / cross-source / probable</span><strong>{preview.tiers.exact ?? 0} / {preview.tiers.cross_source ?? 0} / {preview.tiers.probable ?? 0}</strong></div>
         <div><span>{preferringHistory ? "Category / type changes" : "Rows moved to Trash"}</span><strong>{preferringHistory ? `${preview.category_changes} / ${preview.type_changes}` : preview.rows_soft_deleted}</strong></div>
         <div><span>Ledger adjustment</span><strong className={preview.balance_change_cents < 0 ? "negativeValue" : "positiveValue"}>{signedMoney(preview.balance_change_cents)}</strong></div>
       </div>
