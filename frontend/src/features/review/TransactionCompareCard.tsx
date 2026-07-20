@@ -1,5 +1,6 @@
 export type DuplicateTransaction = {
   id: number;
+  import_batch_id: number | null;
   account_id: number;
   account: string;
   institution: string | null;

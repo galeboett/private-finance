@@ -85,7 +85,7 @@ cd backend
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -e .[dev]
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
 ```
 
 ### Frontend
@@ -110,7 +110,7 @@ npm run dev
 
 Settings can be provided via a `.env` file in `backend/` or environment variables prefixed with `PF_`:
 
-- `PF_IMPORT_INBOX` — where statement files are scanned and staged (default `~/PrivateFinance/import-inbox`, outside the repository; the older `PF_IMPORT_INBOX_DIR` name is also accepted).
+- `PF_IMPORT_INBOX` — where statement files are scanned and staged (default `~/PrivateFinance/import-inbox`, outside the repository).
 
 - `PF_VENMO_SELF_NAME` — your display name as it appears in Venmo statement `From`/`To` columns. When set, imported Venmo descriptions correctly phrase who paid whom; when unset, descriptions keep the statement's own From/To order.
 - `PF_BACKUP_DIR` — where database backups are stored (default `data/backups`).

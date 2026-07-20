@@ -1,9 +1,35 @@
 import { useCallback } from "react";
-import { useMutation, useQuery, useQueryClient, type QueryKey, type UseMutationOptions, type UseQueryOptions } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryKey, type UseMutationOptions, type UseQueryOptions } from "@tanstack/react-query";
 import { api, apiUrl, notifyApiMutation } from "./client";
+
+export {
+  api,
+  apiUrl,
+  bumpTransactionsVersion,
+  getTransactionsVersion,
+  parseApiJson,
+  readableApiError,
+  subscribeTransactionsVersion,
+} from "./client";
 
 export function useApiQuery<T>(queryKey: QueryKey, path: string, options?: Omit<UseQueryOptions<T>, "queryKey" | "queryFn">) {
   return useQuery<T>({ queryKey, queryFn: () => api<T>(path), ...options });
+}
+
+export type PagedResponse<T> = { items: T[]; next_cursor: string | null };
+
+export function usePagedTransactions<T>(path: string, enabled: boolean, refreshKey: number) {
+  return useInfiniteQuery({
+    queryKey: ["transactions", "paged", path, refreshKey],
+    initialPageParam: null as string | null,
+    enabled,
+    queryFn: ({ pageParam }) => {
+      const separator = path.includes("?") ? "&" : "?";
+      const cursor = pageParam ? `${separator}cursor=${encodeURIComponent(pageParam)}` : "";
+      return api<PagedResponse<T>>(`${path}${cursor}`);
+    },
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+  });
 }
 
 export function useApiMutation<TData, TVariables = void>(

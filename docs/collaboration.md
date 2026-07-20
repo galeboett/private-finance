@@ -64,6 +64,17 @@ GitHub does not automatically show detailed notes just because a commit exists. 
 - Put product decisions in `docs/` when they should outlive a chat or pull request.
 - Prefer small pull requests. They are easier to review and less likely to conflict.
 
+## Compatibility Policy
+
+The frontend and backend ship together to one deployment, so interface compatibility is not a project requirement.
+When an API route, setting, or URL changes, update every in-repository caller and remove the old interface in the same change.
+Do not add API aliases, renamed-setting shims, redirect routes, or deprecated-path support.
+
+The production database is the sole compatibility exception because it contains financial history that cannot be regenerated.
+Every schema or data change must use the numbered migration runner and must be safe to apply exactly once.
+A one-time data-repair migration must state the version after which it can be retired, and its implementation should be deleted after both collaborators' databases have recorded that version.
+Never hardcode a user-specific filename, name, path, or account detail in product code; represent it as data or an explicit user choice.
+
 ## Suggested PR Template
 
 ```markdown

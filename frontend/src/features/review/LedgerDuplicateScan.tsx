@@ -158,14 +158,14 @@ export function LedgerDuplicateScan({ pairs, csrf, onChanged, onError, onRerunTr
     }
   }
 
-  async function openSelectionPreview(action: DuplicateSelectionAction) {
+  async function openSelectionPreview(action: DuplicateSelectionAction, authoritativeBatchId?: number) {
     if (!selectedCandidateIds.length) return;
     setBusyAction("preview-selection");
     try {
       const preview = await api<DuplicateSelectionPreview>("/api/duplicates/selection-preview", {
         method: "POST",
         headers: { "x-csrf-token": csrf },
-        body: JSON.stringify({ transaction_ids: selectedCandidateIds, action }),
+        body: JSON.stringify({ transaction_ids: selectedCandidateIds, action, authoritative_batch_id: authoritativeBatchId }),
       });
       setSelectionPreview(preview);
     } catch (error) {
@@ -182,7 +182,7 @@ export function LedgerDuplicateScan({ pairs, csrf, onChanged, onError, onRerunTr
       const result = await api<{ resolved: number; operation_id: string; affected_card_account: boolean }>("/api/duplicates/resolve-selection", {
         method: "POST",
         headers: { "x-csrf-token": csrf },
-        body: JSON.stringify({ transaction_ids: selectionPreview.transaction_ids, action: selectionPreview.action, preview_token: selectionPreview.selection_token }),
+        body: JSON.stringify({ transaction_ids: selectionPreview.transaction_ids, action: selectionPreview.action, authoritative_batch_id: selectionPreview.authoritative_batch_id, preview_token: selectionPreview.selection_token }),
       });
       if (result.affected_card_account) setSuggestTransferRerun(true);
       const message = selectionPreview.action === "keep_both"
@@ -220,7 +220,7 @@ export function LedgerDuplicateScan({ pairs, csrf, onChanged, onError, onRerunTr
       {summary?.limited ? <small>Showing the first {summary.limit} non-overlapping pairs. Resolve some, then scan again.</small> : null}
       {suggestTransferRerun ? <div className="duplicateTransferPrompt"><span>Card duplicates changed. Re-run transfer matching so the surviving payment can link correctly.</span><button className="secondaryButton compactButton" onClick={() => { setSuggestTransferRerun(false); void onRerunTransfers(); }}><RefreshCw size={13} />Re-run transfer matching</button></div> : null}
     </section>
-    <DuplicateReview pairs={pagePairs} totalCount={filteredTotal} safeReimportCount={queueSummary?.safe_reimports ?? 0} historicalRefundCount={queueSummary?.historical_refunds ?? 0} selectedCandidateIds={selectedCandidateIds} busyAction={busyAction} onResolve={(transactionId, action) => void resolve(transactionId, action)} onBulkPreview={(strategy) => void openBulkPreview(strategy)} onHistoricalRefundPreview={() => void openHistoricalRefundPreview()} onToggleSelected={toggleCandidateSelection} onSelectPage={(ids) => { setSelectedCandidateIds(ids); resetCandidateSelectionAnchor(); }} onClearSelected={() => { setSelectedCandidateIds([]); resetCandidateSelectionAnchor(); }} onSelectionPreview={(action) => void openSelectionPreview(action)} />
+    <DuplicateReview pairs={pagePairs} totalCount={filteredTotal} safeReimportCount={queueSummary?.safe_reimports ?? 0} historicalRefundCount={queueSummary?.historical_refunds ?? 0} selectedCandidateIds={selectedCandidateIds} busyAction={busyAction} onResolve={(transactionId, action) => void resolve(transactionId, action)} onBulkPreview={(strategy) => void openBulkPreview(strategy)} onHistoricalRefundPreview={() => void openHistoricalRefundPreview()} onToggleSelected={toggleCandidateSelection} onSelectPage={(ids) => { setSelectedCandidateIds(ids); resetCandidateSelectionAnchor(); }} onClearSelected={() => { setSelectedCandidateIds([]); resetCandidateSelectionAnchor(); }} onSelectionPreview={(action, batchId) => void openSelectionPreview(action, batchId)} />
     {bulkPreview ? <DuplicateBulkConfirm preview={bulkPreview} busy={busyAction === "resolve-safe"} onClose={() => setBulkPreview(null)} onConfirm={() => void confirmBulk()} /> : null}
     {historicalRefundPreview ? <HistoricalRefundBulkConfirm preview={historicalRefundPreview} busy={busyAction === "link-historical-refunds"} onClose={() => setHistoricalRefundPreview(null)} onConfirm={() => void confirmHistoricalRefunds()} /> : null}
     {selectionPreview ? <DuplicateSelectionBulkConfirm preview={selectionPreview} busy={busyAction === "resolve-selection"} onClose={() => setSelectionPreview(null)} onConfirm={() => void confirmSelection()} /> : null}

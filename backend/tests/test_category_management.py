@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.db import Base
-from app.main import cleanup_duplicate_categories, delete_category
+from app.api.categories import cleanup_duplicate_categories, delete_category
 from app.models import Account, Category, CategoryRule, ExpenseAllocation, SessionToken, Transaction, TransactionSplit
 from app.services.operation_history import undo_operation
 

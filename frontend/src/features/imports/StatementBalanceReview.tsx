@@ -2,22 +2,26 @@ import { useMemo, useState } from "react";
 import { FileText } from "lucide-react";
 
 import type { InboxBatch, StatementBalancePreview } from "./ImportReview";
+import { PdfRegionTeacher } from "./PdfRegionTeacher";
 
 type Props = {
   batch: InboxBatch;
+  csrf: string;
   preview: StatementBalancePreview;
   busy: boolean;
   onConfirm: (batch: InboxBatch, selection: { statement_date: string; balance_cents: number; candidate_index: number | null }) => Promise<void>;
   onDiscard: (batch: InboxBatch) => void;
 };
 
-export function StatementBalanceReview({ batch, preview, busy, onConfirm, onDiscard }: Props) {
+export function StatementBalanceReview({ batch, preview, csrf, busy, onConfirm, onDiscard }: Props) {
   const initialBalance = preview.selected_balance_cents === null || preview.selected_balance_cents === undefined
     ? ""
     : (preview.selected_balance_cents / 100).toFixed(2);
   const [statementDate, setStatementDate] = useState(preview.statement_date ?? "");
   const [balance, setBalance] = useState(initialBalance);
   const [candidateIndex, setCandidateIndex] = useState<number | null>(preview.selected_index ?? null);
+  const [teacherOpen, setTeacherOpen] = useState(false);
+  const [teacherMessage, setTeacherMessage] = useState("");
   const balanceCents = useMemo(() => parseMoneyToCents(balance), [balance]);
   const canConfirm = Boolean(statementDate && balanceCents !== null);
 
@@ -62,6 +66,8 @@ export function StatementBalanceReview({ batch, preview, busy, onConfirm, onDisc
         <label>Ending balance<input type="text" inputMode="decimal" placeholder="0.00" value={balance} onChange={(event) => { setBalance(event.target.value); setCandidateIndex(null); }} /></label>
       </div>
       {preview.warnings.length > 0 ? <small>{preview.warnings.join(" ")}</small> : null}
+      {preview.template_extracted ? <small className="templateTrustStatus">Saved template used via {preview.template_status === "anchored" ? "its text anchor" : "the fallback region"}. {preview.template_confirmations ?? 0} clean confirmation{preview.template_confirmations === 1 ? "" : "s"}.</small> : null}
+      {teacherMessage ? <small className="successText">{teacherMessage}</small> : null}
       <div className="buttonRow">
         <button
           className="primaryButton"
@@ -70,9 +76,11 @@ export function StatementBalanceReview({ batch, preview, busy, onConfirm, onDisc
         >
           Confirm anchor
         </button>
+        <button className="secondaryButton" onClick={() => setTeacherOpen(true)} disabled={busy}>Teach the extractor</button>
         <button className="secondaryButton" onClick={() => onDiscard(batch)} disabled={busy}>Discard preview</button>
       </div>
       <small>The PDF itself is not added to the ledger. Confirmation saves only this date and balance as an undoable anchor.</small>
+      {teacherOpen ? <PdfRegionTeacher batchId={batch.id} csrf={csrf} onSaved={setTeacherMessage} onClose={() => setTeacherOpen(false)} /> : null}
     </article>
   );
 }

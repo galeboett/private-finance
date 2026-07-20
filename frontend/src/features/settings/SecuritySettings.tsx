@@ -1,6 +1,6 @@
 import { ShieldCheck } from "lucide-react";
 import { useState } from "react";
-import { api } from "../../api/client";
+import { api } from "../../api/hooks";
 import { useApiMutation } from "../../api/hooks";
 import { PanelTitle } from "../../components/AppPrimitives";
 

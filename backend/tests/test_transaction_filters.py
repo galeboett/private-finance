@@ -4,6 +4,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
+from app.api.transactions import list_transactions
 from app.models import Account, Category, Institution, Transaction
 from app.schemas import TransactionFilter, TransactionType
 from app.services.transaction_filters import parse_csv_ints, parse_csv_values, transaction_filter_conditions
@@ -81,3 +82,38 @@ def test_live_and_trash_views_are_mutually_exclusive():
 def test_csv_query_values_are_deduplicated_and_invalid_account_ids_are_ignored():
     assert parse_csv_values("7,8,7,__uncategorized__") == ["7", "8", "__uncategorized__"]
     assert parse_csv_ints("4,nope,5,4") == [4, 5]
+
+
+def test_transaction_pages_use_stable_date_and_id_cursor_without_overlap():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        account = Account(display_name="Checking", account_type="checking")
+        db.add(account)
+        db.flush()
+        rows = [
+            Transaction(
+                account_id=account.id,
+                transaction_date=date(2026, 7, 20 if index < 3 else 19),
+                amount_cents=-(index + 1) * 100,
+                raw_description=f"Row {index}",
+                transaction_type="expense",
+                review_status="confirmed",
+                source_hash=f"page-{index}",
+            )
+            for index in range(5)
+        ]
+        db.add_all(rows)
+        db.commit()
+
+        first = list_transactions(filters=TransactionFilter(), page_size=2, cursor=None, session=None, db=db)
+        second = list_transactions(filters=TransactionFilter(), page_size=2, cursor=first["next_cursor"], session=None, db=db)
+        third = list_transactions(filters=TransactionFilter(), page_size=2, cursor=second["next_cursor"], session=None, db=db)
+
+        page_ids = [[item["id"] for item in page["items"]] for page in (first, second, third)]
+        assert [len(ids) for ids in page_ids] == [2, 2, 1]
+        assert len(set().union(*map(set, page_ids))) == 5
+        assert first["next_cursor"] is not None
+        assert second["next_cursor"] is not None
+        assert third["next_cursor"] is None
+        assert [item_id for ids in page_ids for item_id in ids] == [rows[2].id, rows[1].id, rows[0].id, rows[4].id, rows[3].id]

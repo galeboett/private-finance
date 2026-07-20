@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.db import Base
-from app.main import create_statement_checkpoint
+from app.api.accounts import create_statement_checkpoint
 from app.models import Account, SessionToken, StatementCheckpoint, Transaction
 from app.schemas import StatementCheckpointCreate
 from app.services.accounts import merge_account_into

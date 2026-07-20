@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -30,6 +30,7 @@ class SessionToken(TimestampMixin, Base):
     session_token: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     csrf_token: Mapped[str] = mapped_column(String(128), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    reauthenticated_at: Mapped[datetime | None] = mapped_column(DateTime)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     user: Mapped["AppUser"] = relationship()
 
@@ -340,6 +341,26 @@ class StatementPdfPattern(TimestampMixin, Base):
     institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), nullable=False, index=True)
     balance_label: Mapped[str] = mapped_column(String(120), nullable=False)
     date_label: Mapped[str | None] = mapped_column(String(120))
+
+
+class PdfExtractionTemplate(TimestampMixin, Base):
+    __tablename__ = "pdf_extraction_templates"
+    __table_args__ = (UniqueConstraint("institution", "account_id", "field", name="uq_pdf_template_scope_field"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    institution: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), index=True)
+    field: Mapped[str] = mapped_column(String(30), nullable=False)
+    page_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    anchor_text: Mapped[str | None] = mapped_column(String(255))
+    anchor_dx: Mapped[float | None] = mapped_column(Float)
+    anchor_dy: Mapped[float | None] = mapped_column(Float)
+    region_x0: Mapped[float] = mapped_column(Float, nullable=False)
+    region_y0: Mapped[float] = mapped_column(Float, nullable=False)
+    region_x1: Mapped[float] = mapped_column(Float, nullable=False)
+    region_y1: Mapped[float] = mapped_column(Float, nullable=False)
+    value_pattern: Mapped[str] = mapped_column(String(255), nullable=False)
+    confirmations: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 class SecurityMetadata(TimestampMixin, Base):

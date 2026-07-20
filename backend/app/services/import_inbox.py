@@ -31,6 +31,7 @@ from .statement_pdf import (
     statement_preview_row,
     suggest_pdf_account,
 )
+from .pdf_teaching import apply_pdf_templates, cache_pdf_content, forget_pdf_content, templates_for_account
 
 
 SUPPORTED_INBOX_SUFFIXES = {".csv", ".ofx", ".qfx", ".pdf"}
@@ -127,7 +128,7 @@ def scan_import_inbox(db: Session) -> dict:
             elif is_pdf:
                 pattern = saved_pdf_pattern(db, account)
                 parsed_pdf = extract_statement_pdf(content, relative_name, preferred_label=pattern.balance_label if pattern else None)
-                normalized = statement_preview_row(parsed_pdf, account)
+                normalized = apply_pdf_templates(content, templates_for_account(db, account), account, statement_preview_row(parsed_pdf, account))
                 raw_preview = PreviewResult(rows=[normalized], warnings=parsed_pdf.warnings, detected_preset="pdf_statement")
                 preview = raw_preview
                 sign_resolution = None
@@ -159,6 +160,8 @@ def scan_import_inbox(db: Session) -> dict:
             )
             db.add(batch)
             db.flush()
+            if is_pdf:
+                cache_pdf_content(batch.id, content)
             for raw_row, row in zip(raw_preview.rows, preview.rows, strict=True):
                 db.add(
                     StagingRow(
@@ -170,7 +173,11 @@ def scan_import_inbox(db: Session) -> dict:
                         normalized_json=json.dumps(row, default=str),
                     )
                 )
-            staged.append({"batch_id": batch.id, "filename": relative_name, "account_id": account.id, "row_count": len(preview.rows)})
+            if is_pdf and normalized.get("auto_commit_eligible"):
+                committed = commit_pdf_statement(db, batch, account, actor="system:pdf-template")
+                staged.append({"batch_id": batch.id, "filename": relative_name, "account_id": account.id, "row_count": 1, "auto_committed": True, "operation_id": committed["operation_id"]})
+            else:
+                staged.append({"batch_id": batch.id, "filename": relative_name, "account_id": account.id, "row_count": len(preview.rows)})
         except (OSError, ValueError) as error:
             errors.append({"filename": relative_name, "message": str(error)})
 
@@ -215,7 +222,7 @@ def stage_uploaded_import(db: Session, *, account: Account, filename: str, conte
     elif is_pdf:
         pattern = saved_pdf_pattern(db, account)
         parsed_pdf = extract_statement_pdf(content, filename, preferred_label=pattern.balance_label if pattern else None)
-        normalized = statement_preview_row(parsed_pdf, account)
+        normalized = apply_pdf_templates(content, templates_for_account(db, account), account, statement_preview_row(parsed_pdf, account))
         raw_preview = PreviewResult(rows=[normalized], warnings=parsed_pdf.warnings, detected_preset="pdf_statement")
         preview = raw_preview
         sign_resolution = None
@@ -253,6 +260,8 @@ def stage_uploaded_import(db: Session, *, account: Account, filename: str, conte
     )
     db.add(batch)
     db.flush()
+    if is_pdf:
+        cache_pdf_content(batch.id, content)
     for raw_row, row in zip(raw_preview.rows, preview.rows, strict=True):
         db.add(
             StagingRow(
@@ -264,6 +273,9 @@ def stage_uploaded_import(db: Session, *, account: Account, filename: str, conte
                 normalized_json=json.dumps(row, default=str),
             )
         )
+    if is_pdf and normalized.get("auto_commit_eligible"):
+        committed = commit_pdf_statement(db, batch, account, actor="system:pdf-template")
+        return {"batch_id": batch.id, "filename": filename, "row_count": 1, "preset_type": preset_type, "auto_committed": True, "operation_id": committed["operation_id"], "sign_convention": "preset", "sign_decision": None}
     return {"batch_id": batch.id, "filename": filename, "row_count": len(preview.rows), "preset_type": preset_type, "sign_convention": sign_resolution.sign_convention if sign_resolution else "preset", "sign_decision": resolution_payload(sign_resolution) if sign_resolution else None}
 
 
@@ -318,6 +330,7 @@ def discard_pending_import(batch: ImportBatch) -> dict:
     if batch.status != "pending":
         raise ValueError("Only pending inbox imports can be discarded")
     batch.status = "discarded"
+    forget_pdf_content(batch.id)
     return {"ok": True}
 
 
@@ -341,7 +354,8 @@ def _refresh_pending_pdf_preview(db: Session, batch: ImportBatch, content: bytes
         raise ValueError("The matched account no longer exists")
     pattern = saved_pdf_pattern(db, account)
     preview = extract_statement_pdf(content, filename, preferred_label=pattern.balance_label if pattern else None)
-    normalized = statement_preview_row(preview, account)
+    normalized = apply_pdf_templates(content, templates_for_account(db, account), account, statement_preview_row(preview, account))
+    cache_pdf_content(batch.id, content)
     row = db.scalar(select(StagingRow).where(StagingRow.import_batch_id == batch.id, StagingRow.row_kind == "statement_balance"))
     if row is None:
         row = StagingRow(import_batch_id=batch.id, account_id=account.id, row_index=1, row_kind="statement_balance", raw_json="{}", normalized_json="{}")

@@ -15,6 +15,15 @@ def current_session(request: Request, db: Session = Depends(get_db)) -> SessionT
     return get_session_from_request(db, request)
 
 
+def actor_for_session(session: SessionToken) -> str:
+    return f"user:{session.user_id}"
+
+
+def require_delete_confirmation(confirm_text: str) -> None:
+    if confirm_text != "DELETE":
+        raise HTTPException(status_code=400, detail='Type DELETE to confirm deletion')
+
+
 def transaction_filter_dependency(
     accounts: str | None = None,
     categories: str | None = None,

@@ -1,4 +1,5 @@
 import { useApiQuery } from "../../api/hooks";
+import { PdfTemplatesPanel } from "./PdfTemplatesPanel";
 
 type ImportMetadata = {
   sign_profiles: Array<{ id: number; account: string; preset_type: string | null; sign_convention: string; decided_by: string }>;
@@ -6,7 +7,7 @@ type ImportMetadata = {
   pdf_patterns: Array<{ id: number; institution: string; balance_label: string; date_label: string | null }>;
 };
 
-export function ImportMetadataPanel() {
+export function ImportMetadataPanel({ csrf }: { csrf: string }) {
   const metadata = useApiQuery<ImportMetadata>(["imports", "metadata"], "/api/settings/import-metadata");
   if (metadata.isLoading) return <p className="emptyText">Loading saved import choices…</p>;
   if (metadata.isError) return <p className="validationError">Saved import choices could not be loaded.</p>;
@@ -19,6 +20,7 @@ export function ImportMetadataPanel() {
         <section><strong>Amount signs</strong>{data.sign_profiles.map((row) => <div key={row.id}><span>{row.account}</span><small>{row.preset_type ?? "All presets"} · {row.sign_convention.replaceAll("_", " ")} · {row.decided_by.replaceAll("_", " ")}</small></div>)}{data.sign_profiles.length === 0 ? <p className="emptyText">No sign decisions saved.</p> : null}</section>
         <section><strong>PDF balance patterns</strong>{data.pdf_patterns.map((row) => <div key={row.id}><span>{row.institution}</span><small>{row.balance_label}{row.date_label ? ` · ${row.date_label}` : ""}</small></div>)}{data.pdf_patterns.length === 0 ? <p className="emptyText">No PDF labels learned.</p> : null}</section>
       </div>
+      <PdfTemplatesPanel csrf={csrf} />
     </details>
   );
 }

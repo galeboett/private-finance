@@ -4,6 +4,7 @@ This index separates current operating guidance from dated design reviews. For i
 
 ## Current project status
 
+- [Feature request backlog](feature-requests.md) — proposed product ideas, statuses, acceptance criteria, and open design questions.
 - [Implementation plan, iteration 3](pf-implementation-plan-iteration-3-7-14-26.md) — active phased plan; Phases 6–12 are complete and Phase 13 remains open.
 - [Changelog](../CHANGELOG.md) — chronological record of implemented behavior.
 - [User workflow](workflow.md) — importing, reviewing, reporting, reconciliation, recovery, and maintenance.

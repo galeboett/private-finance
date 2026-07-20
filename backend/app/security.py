@@ -60,6 +60,7 @@ def create_session(db: Session, user_id: int) -> SessionToken:
         session_token=secrets.token_urlsafe(32),
         csrf_token=secrets.token_urlsafe(24),
         last_seen_at=now,
+        reauthenticated_at=now,
         expires_at=now + timedelta(minutes=settings.idle_timeout_minutes),
     )
     db.add(session)
@@ -67,13 +68,13 @@ def create_session(db: Session, user_id: int) -> SessionToken:
     return session
 
 
-def set_session_cookie(response: Response, session: SessionToken) -> None:
+def set_session_cookie(response: Response, request: Request, session: SessionToken) -> None:
     response.set_cookie(
         key=settings.session_cookie_name,
         value=session.session_token,
         httponly=True,
         samesite="strict",
-        secure=False,
+        secure=settings.cookie_secure or request.url.scheme == "https",
         max_age=settings.idle_timeout_minutes * 60,
     )
 
@@ -110,6 +111,19 @@ def require_csrf(request: Request, session: SessionToken) -> None:
     supplied = request.headers.get(settings.csrf_header_name)
     if supplied != session.csrf_token:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+
+
+def reauthenticate_session(db: Session, session: SessionToken, password: str) -> None:
+    user = db.get(AppUser, session.user_id)
+    if not user or not verify_password(password, user.password_hash):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Password is incorrect")
+    session.reauthenticated_at = datetime.utcnow()
+
+
+def require_recent_reauthentication(session: SessionToken) -> None:
+    cutoff = datetime.utcnow() - timedelta(minutes=settings.reauthentication_minutes)
+    if session.reauthenticated_at is None or session.reauthenticated_at < cutoff:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Re-enter your password before this sensitive action")
 
 
 def ensure_setup_state(db: Session) -> bool:

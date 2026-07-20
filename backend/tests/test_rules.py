@@ -4,9 +4,9 @@ from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
-from app.bootstrap import migrate_category_rules_for_optional_category
 from app.db import Base
-from app.main import apply_rule, apply_rule_to_row, apply_rule_to_transaction, create_rule, rule_matches_transaction
+from app.api.rules import apply_rule, apply_rule_to_row, apply_rule_to_transaction, create_rule, rule_matches_transaction
+from app.migrations.m0001_baseline import migrate_category_rules_for_optional_category
 from app.models import Account, Category, CategoryRule, PaymentVerificationDismissal, SessionToken, Transaction
 from app.schemas import RuleApplyRequest, RuleCreate, TransactionType
 

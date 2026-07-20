@@ -14,5 +14,13 @@ class LocalhostSecurityMiddleware(BaseHTTPMiddleware):
         if origin and origin not in settings.allowed_origins:
             return JSONResponse({"detail": "Invalid origin"}, status_code=403)
 
-        return await call_next(request)
-
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; "
+            "object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        return response

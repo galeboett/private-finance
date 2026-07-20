@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.db import Base
-from app.main import update_transaction
+from app.api.transactions import update_transaction
 from app.models import Account, Category, PaymentVerificationDismissal, SessionToken, Transaction, TransferLink
 from app.schemas import TransactionReviewUpdate, TransactionType
 from app.services.operation_history import undo_operation

@@ -2588,6 +2588,33 @@ textarea {
 
 .fileTypeBadge { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 999px; background: var(--blue-soft); color: var(--blue); font-size: 0.68rem; font-weight: 800; letter-spacing: 0.05em; }
 .statementBalanceCard .pendingInboxTitle strong { display: inline-flex; align-items: center; gap: 7px; }
+
+.templateTrustStatus { color: var(--color-success, #26734d); }
+.pdfTeacherBackdrop { z-index: 80; padding: 24px; }
+.pdfTeacherModal { width: min(1040px, 96vw); max-height: 94vh; overflow: auto; border-radius: 18px; background: var(--surface, #fff); padding: 20px; box-shadow: 0 24px 80px rgb(0 0 0 / 28%); }
+.pdfTeacherModal > header, .pdfTeacherModal > footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.pdfTeacherModal > header > div { display: grid; gap: 4px; }
+.pdfTeacherModal > header strong, .pdfTemplatesPanel > div:first-child strong { display: inline-flex; align-items: center; gap: 7px; }
+.pdfTeacherModal > header span, .pdfTemplatesPanel > div:first-child span { color: var(--text-muted, #667085); }
+.pdfTeacherControls { display: grid; grid-template-columns: minmax(160px, .7fr) minmax(220px, 1fr) auto; gap: 12px; align-items: end; margin: 18px 0 12px; }
+.pdfTeacherControls label { display: grid; gap: 6px; }
+.pdfPageControls { display: flex; align-items: center; gap: 8px; }
+.pdfWordCanvas { position: relative; width: min(100%, 760px); margin: 0 auto; overflow: hidden; border: 1px solid #cfd7e6; border-radius: 8px; background: #fff; color: #111827; cursor: crosshair; touch-action: none; user-select: none; }
+.pdfWordBox { position: absolute; overflow: hidden; outline: 1px solid rgb(59 130 246 / 20%); font-size: clamp(5px, .8vw, 10px); line-height: 1; white-space: nowrap; pointer-events: none; }
+.pdfSelectionBox { position: absolute; z-index: 3; border: 2px solid #2563eb; background: rgb(37 99 235 / 16%); pointer-events: none; }
+.pdfCanvasMessage { position: absolute; inset: 0; display: grid; place-items: center; }
+.pdfTeacherFeedback { display: grid; gap: 4px; margin: 12px 0; padding: 12px; border-radius: 10px; background: var(--surface-subtle, #f5f7fb); }
+.pdfTeacherFeedback > span { color: var(--text-muted, #667085); font-size: .8rem; }
+.pdfTemplatesPanel { grid-column: 1 / -1; display: grid; gap: 10px; margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--border, #dfe3ea); }
+.pdfTemplatesPanel > div:first-child { display: grid; gap: 3px; }
+.pdfTemplateRow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--border, #e5e7eb); }
+.pdfTemplateRow > span { display: grid; gap: 3px; }
+
+@media (max-width: 760px) {
+  .pdfTeacherBackdrop { padding: 0; }
+  .pdfTeacherModal { width: 100vw; max-height: 100vh; min-height: 100vh; border-radius: 0; }
+  .pdfTeacherControls { grid-template-columns: 1fr; }
+}
 .statementCandidates { margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
 .statementCandidates legend { padding: 0 6px; font-size: 0.78rem; font-weight: 700; }
 .statementCandidates label { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 0; cursor: pointer; }
@@ -2603,6 +2630,25 @@ textarea {
   margin-right: auto;
   color: var(--muted);
   font-size: 12px;
+}
+
+.duplicateAuthoritativePicker {
+  display: grid;
+  gap: 3px;
+  min-width: 190px;
+}
+
+.duplicateAuthoritativePicker > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.duplicateAuthoritativePicker select {
+  min-height: 34px;
+  max-width: 260px;
 }
 
 .duplicatePairSelect {
@@ -4612,15 +4658,13 @@ select.editableCell {
 
 .settingsSectionPanel,
 .settingsCard,
-.securitySettingsCard,
-.maintenanceSettings {
+.securitySettingsCard {
   display: grid;
   gap: 14px;
 }
 
 .settingsCard,
-.securitySettingsCard,
-.maintenanceSettings {
+.securitySettingsCard {
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -4629,16 +4673,14 @@ select.editableCell {
 
 .settingsCard > div:first-child,
 .securitySettingsCard label,
-.backupList span,
-.maintenanceSettings summary span {
+.backupList span {
   display: grid;
   gap: 4px;
 }
 
 .settingsCard > div:first-child span,
 .settingsCard small,
-.securitySettingsCard small,
-.maintenanceSettings small {
+.securitySettingsCard small {
   color: var(--muted);
 }
 
@@ -4657,10 +4699,6 @@ select.editableCell {
   padding: 9px;
   border-radius: 8px;
   background: var(--surface-2);
-}
-
-.maintenanceSettings summary {
-  cursor: pointer;
 }
 
 .importMetadataPanel {
@@ -5032,53 +5070,6 @@ select.editableCell {
   .transferPair {
     grid-template-columns: 1fr;
   }
-}
-
-.historyCleanupPreview {
-  display: grid;
-  gap: 8px;
-  margin: -4px 0 14px;
-  padding: 12px;
-  border: 1px solid #b9c9f4;
-  border-radius: 8px;
-  background: #f5f8ff;
-}
-
-.historyCleanupWarnings {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  padding: 10px;
-  border: 1px solid #e2bd70;
-  border-radius: 8px;
-  background: #fff9e9;
-  color: #604713;
-}
-
-.historyCleanupWarnings svg {
-  flex: 0 0 auto;
-  margin-top: 1px;
-}
-
-.historyCleanupWarnings div {
-  display: grid;
-  gap: 4px;
-}
-
-.historyCleanupWarnings span {
-  color: #705821;
-  font-size: 12px;
-}
-
-.cleanupConfirmRow {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.cleanupConfirmRow input {
-  min-width: 180px;
-  flex: 1;
 }
 
 .historyReviewPanel {

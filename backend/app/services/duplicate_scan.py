@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -10,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..audit import record_audit_event
-from ..models import AuditEvent, DuplicatePairDecision, RefundLink, Transaction, TransferLink
+from ..models import DuplicatePairDecision, RefundLink, Transaction, TransferLink
 from .dedupe import is_categorized_history_reference, normalize_transaction_description
 from .mutation_log import MutationChange, changed_values, journal_mutation
 from .transaction_queries import live_transaction_select
@@ -29,7 +28,6 @@ class LedgerDuplicateCandidate:
 
 
 def scan_ledger_duplicates(db: Session, *, actor: str, account_id: int | None = None) -> dict:
-    migrated = migrate_keep_both_decisions(db)
     transaction_query = live_transaction_select()
     if account_id is not None:
         transaction_query = transaction_query.where(Transaction.account_id == account_id)
@@ -110,8 +108,8 @@ def scan_ledger_duplicates(db: Session, *, actor: str, account_id: int | None = 
         ),
         changes=changes,
     ) if changes else None
-    record_audit_event(db, "duplicate_ledger_scan", actor, "transactions", f"scan:{len(selected)}", {"account_id": account_id, "counts": counts, "migrated_keep_both": migrated, "cleared_reviewed": cleared_reviewed, "limited": len(selected) == MAX_SCAN_PAIRS, "operation_id": operation_id})
-    return {"flagged": len(selected), "counts": counts, "migrated_keep_both": migrated, "cleared_reviewed": cleared_reviewed, "limit": MAX_SCAN_PAIRS, "limited": len(selected) == MAX_SCAN_PAIRS, "operation_id": operation_id}
+    record_audit_event(db, "duplicate_ledger_scan", actor, "transactions", f"scan:{len(selected)}", {"account_id": account_id, "counts": counts, "cleared_reviewed": cleared_reviewed, "limited": len(selected) == MAX_SCAN_PAIRS, "operation_id": operation_id})
+    return {"flagged": len(selected), "counts": counts, "cleared_reviewed": cleared_reviewed, "limit": MAX_SCAN_PAIRS, "limited": len(selected) == MAX_SCAN_PAIRS, "operation_id": operation_id}
 
 
 def classify_duplicate_pair(left: Transaction, right: Transaction) -> tuple[str, float]:
@@ -132,33 +130,6 @@ def classify_duplicate_pair(left: Transaction, right: Transaction) -> tuple[str,
         return "exact", 1.0
     similarity = SequenceMatcher(None, left_description, right_description).ratio()
     return ("probable", similarity) if similarity >= 0.85 else ("import", similarity)
-
-
-def migrate_keep_both_decisions(db: Session) -> int:
-    existing = {
-        (decision.transaction_a_id, decision.transaction_b_id)
-        for decision in db.scalars(select(DuplicatePairDecision)).all()
-    }
-    migrated = 0
-    events = db.scalars(select(AuditEvent).where(AuditEvent.event_type == "duplicate_resolve").order_by(AuditEvent.id)).all()
-    for event in events:
-        try:
-            details = json.loads(event.details_json)
-            candidate_id = int(event.entity_id)
-            original_id = int(details.get("original_transaction_id"))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
-        if details.get("action") != "keep_both":
-            continue
-        pair = normalized_pair(candidate_id, original_id)
-        if pair in existing or not db.get(Transaction, pair[0]) or not db.get(Transaction, pair[1]):
-            continue
-        db.add(DuplicatePairDecision(transaction_a_id=pair[0], transaction_b_id=pair[1], decision="keep_both"))
-        existing.add(pair)
-        migrated += 1
-    if migrated:
-        db.flush()
-    return migrated
 
 
 def normalized_pair(left_id: int, right_id: int) -> tuple[int, int]:

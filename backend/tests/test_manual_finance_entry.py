@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from fastapi import HTTPException
@@ -8,7 +8,9 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.db import Base
-from app.main import create_holding_lot, create_manual_transaction, delete_holding_lot, export_app_data, get_investment_holdings, update_holding_lot
+from app.api.networth import create_holding_lot, delete_holding_lot, get_investment_holdings, update_holding_lot
+from app.api.transactions import create_manual_transaction
+from app.api.settings import export_app_data
 from app.models import Account, Category, HoldingLot, HoldingSnapshot, SessionToken, Transaction
 from app.schemas import HoldingLotCreate, HoldingLotUpdate, ManualTransactionCreate
 from app.services.operation_history import undo_operation
@@ -19,7 +21,7 @@ def _request() -> Request:
 
 
 def _session_token() -> SessionToken:
-    return SessionToken(user_id=7, csrf_token="csrf")
+    return SessionToken(user_id=7, csrf_token="csrf", reauthenticated_at=datetime.utcnow())
 
 
 def test_manual_money_out_is_canonical_confirmed_and_undoable():

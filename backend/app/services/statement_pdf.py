@@ -16,6 +16,7 @@ from ..models import Account, ImportBatch, NetWorthSnapshot, StatementCheckpoint
 from ..money import parse_decimal_to_cents
 from .mutation_log import MutationChange, full_values, journal_mutation
 from .account_identifiers import matching_accounts_for_last_four, replacement_card_candidate
+from .pdf_teaching import forget_pdf_content, record_template_confirmation
 
 
 @dataclass(frozen=True)
@@ -171,6 +172,12 @@ def update_statement_preview(db: Session, batch: ImportBatch, *, statement_date:
             raise ValueError("Choose one of the extracted balance candidates")
         balance_cents = int(candidates[candidate_index]["balance_cents"])
         selected_label = candidates[candidate_index].get("label")
+    if normalized.get("template_extracted"):
+        normalized["template_edited"] = bool(
+            statement_date.isoformat() != normalized.get("template_original_statement_date")
+            or balance_cents != normalized.get("template_original_balance_cents")
+            or candidate_index is not None
+        )
     normalized.update(
         {
             "statement_date": statement_date.isoformat(),
@@ -230,6 +237,7 @@ def commit_pdf_statement(db: Session, batch: ImportBatch, account: Account, *, a
         snapshot.source = "manual"
         db.flush()
     changes.append(MutationChange(snapshot.id, before_snapshot, full_values(snapshot), entity_type="net_worth_snapshot"))
+    changes.extend(record_template_confirmation(db, normalized))
 
     label = normalized.get("selected_balance_label")
     if account.institution_id and label:
@@ -254,6 +262,7 @@ def commit_pdf_statement(db: Session, batch: ImportBatch, account: Account, *, a
     batch.skipped_duplicates = 0
     batch.warnings_json = json.dumps(normalized.get("warnings") or [])
     db.execute(delete(StagingRow).where(StagingRow.import_batch_id == batch.id))
+    forget_pdf_content(batch.id)
     operation_id = journal_mutation(
         db,
         kind="import",

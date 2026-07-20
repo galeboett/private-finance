@@ -60,6 +60,41 @@ class PasswordChangeRequest(BaseModel):
     new_password: str = Field(min_length=12)
 
 
+class ReauthenticationRequest(BaseModel):
+    password: str
+
+
+class BackupCreateRequest(BaseModel):
+    destination: str | None = None
+    passphrase: str | None = Field(default=None, min_length=12)
+
+
+class BackupRestoreRequest(BaseModel):
+    source: str
+    passphrase: str | None = None
+
+
+class EncryptedExportRequest(BaseModel):
+    passphrase: str = Field(min_length=12)
+
+
+class PdfInspectRequest(BaseModel):
+    staged_batch_id: int
+    page: int = Field(default=1, ge=1)
+
+
+class PdfTemplateCreate(BaseModel):
+    staged_batch_id: int
+    field: Literal["balance", "statement_date", "account_last4"]
+    page_number: int
+    region_x0: float = Field(ge=0, le=1)
+    region_y0: float = Field(ge=0, le=1)
+    region_x1: float = Field(ge=0, le=1)
+    region_y1: float = Field(ge=0, le=1)
+    anchor_text: str | None = None
+    value_pattern: str | None = None
+
+
 class RuleUpdate(BaseModel):
     category_id: int | None = None
     match_text: str | None = None
@@ -149,6 +184,7 @@ class HistoricalRefundBulkRequest(BaseModel):
 class DuplicateSelectionPreviewRequest(BaseModel):
     transaction_ids: list[int] = Field(min_length=1, max_length=500)
     action: Literal["keep_both", "remove_new", "prefer_authoritative_history"]
+    authoritative_batch_id: int | None = Field(default=None, ge=1)
 
 
 class DuplicateSelectionResolutionRequest(DuplicateSelectionPreviewRequest):

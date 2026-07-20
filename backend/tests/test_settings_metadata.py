@@ -2,7 +2,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.main import list_import_settings_metadata
+from app.api.imports import list_import_settings_metadata
 from app.models import Account, ImportPreset, ImportSignProfile, Institution, SessionToken, StatementPdfPattern
 
 

@@ -62,7 +62,8 @@ The app builds a full personal finance picture by turning account exports into a
    - Cash-flow summaries use checking, savings, income, spending, transfers, and card payments.
    - Spending summaries use expense transactions and fixed categories.
    - Net-worth views use account balances and investment snapshots.
-   - Use the Overview tabs in this order: **Overview, Net Worth, Spending, Cash Flow**. Income-versus-expense analysis is part of Cash Flow; old `?tab=Income` bookmarks redirect there.
+   - Use the Overview tabs in this order: **Overview, Net Worth, Spending, Cash Flow**.
+     Income-versus-expense analysis is part of Cash Flow.
    - The customizable finance cockpit appears only on Overview. Its account map, cash-flow trend, and top-spending cards provide a high-level summary; dedicated analysis tabs avoid repeating those same cards.
 
 7. Investigate filtered activity.

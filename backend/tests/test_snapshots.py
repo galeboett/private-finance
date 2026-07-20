@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.db import Base
 from app.models import Account, HoldingSnapshot, NetWorthSnapshot, StatementCheckpoint, Transaction
 from app.services.snapshots import backfill_net_worth_snapshots, net_worth_contributors, net_worth_series, net_worth_stats, upsert_net_worth_snapshot
-from app.main import delete_manual_net_worth_snapshot, save_manual_net_worth_snapshot, update_manual_net_worth_snapshot
+from app.api.networth import delete_manual_net_worth_snapshot, save_manual_net_worth_snapshot, update_manual_net_worth_snapshot
 from app.models import SessionToken
 from app.schemas import NetWorthSnapshotUpdate, NetWorthSnapshotUpsert
 from app.services.operation_history import undo_operation

@@ -49,10 +49,8 @@ export function readAppRoute(location: Pick<Location, "pathname" | "search">): A
       ? "all-accounts"
       : location.pathname.startsWith("/review")
         ? "review"
-        : location.pathname.startsWith("/reports")
-          ? "overview"
-          : location.pathname.startsWith("/history")
-            ? "history"
+        : location.pathname.startsWith("/history")
+          ? "history"
           : location.pathname.startsWith("/settings")
             ? "settings"
             : "overview";
@@ -96,7 +94,6 @@ export function decodeTxnFilter(params: URLSearchParams): TxnFilter {
   if (params.get("holdingSortDirection") === "desc") filter.holdingSortDirection = "desc";
   const reportTab = params.get("tab");
   if (reportTab === "Net Worth" || reportTab === "Spending" || reportTab === "Cash Flow") filter.reportTab = reportTab;
-  else if (reportTab?.toLowerCase() === "income") filter.reportTab = "Cash Flow";
   return filter;
 }
 

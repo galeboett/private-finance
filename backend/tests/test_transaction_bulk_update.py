@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.db import Base
-from app.main import bulk_update_transactions, operation_bulk_update, update_transaction
+from app.api.operations import operation_bulk_update
+from app.api.transactions import bulk_update_transactions, update_transaction
 from app.models import Account, Category, Operation, OperationChange, SessionToken, Transaction
 from app.schemas import BulkTransactionUpdateRequest, OperationBulkUpdateRequest, TransactionReviewUpdate
 from app.services.operation_history import undo_operation

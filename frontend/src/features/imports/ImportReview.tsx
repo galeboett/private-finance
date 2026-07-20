@@ -54,6 +54,10 @@ export type StatementBalancePreview = {
   selected_balance_label: string | null;
   confidence: "high" | "low" | "user_confirmed";
   warnings: string[];
+  template_extracted?: boolean;
+  template_status?: "anchored" | "absolute_fallback" | "validation_failed";
+  template_confirmations?: number;
+  auto_commit_eligible?: boolean;
 };
 
 export type ImportInboxState = { folder: string; pending: InboxBatch[] };
@@ -66,6 +70,7 @@ export type ImportInboxScan = ImportInboxState & {
 };
 
 type Props = {
+  csrf: string;
   inbox: ImportInboxState;
   lastScan: ImportInboxScan | null;
   busyAction: string | null;
@@ -75,7 +80,7 @@ type Props = {
   onDiscard: (batch: InboxBatch) => void;
 };
 
-export function ImportReview({ inbox, lastScan, busyAction, onScan, onConfirm, onConfirmStatement, onDiscard }: Props) {
+export function ImportReview({ csrf, inbox, lastScan, busyAction, onScan, onConfirm, onConfirmStatement, onDiscard }: Props) {
   return (
     <div className="importInboxPanel">
       <div className="importInboxHeader">
@@ -103,6 +108,7 @@ export function ImportReview({ inbox, lastScan, busyAction, onScan, onConfirm, o
               key={batch.id}
               batch={batch}
               preview={batch.preview[0] as StatementBalancePreview}
+              csrf={csrf}
               busy={busyAction !== null}
               onConfirm={onConfirmStatement}
               onDiscard={onDiscard}

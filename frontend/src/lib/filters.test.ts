@@ -13,8 +13,8 @@ describe("transaction filter URL codec", () => {
     expect(decodeTxnFilter(encodeTxnFilter(filter))).toEqual(filter);
   });
 
-  it("redirects the retired Income report tab to Cash Flow", () => {
-    expect(decodeTxnFilter(new URLSearchParams("tab=Income"))).toEqual({ reportTab: "Cash Flow" });
+  it("ignores removed report-tab aliases", () => {
+    expect(decodeTxnFilter(new URLSearchParams("tab=Income"))).toEqual({});
     expect(encodeTxnFilter({ reportTab: "Overview" }).toString()).toBe("");
   });
 

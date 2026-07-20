@@ -398,7 +398,7 @@ def test_selected_probable_pair_can_prefer_authoritative_history_and_undo():
         authoritative_category = Category(key="restaurants-authoritative", label="Restaurants")
         authoritative_batch = ImportBatch(
             account_id=original.account_id,
-            filename="transaction history for private finance 7.14.26v2.csv",
+            filename="authoritative-history.csv",
             file_hash="authoritative-history",
             status="committed",
         )
@@ -420,9 +420,14 @@ def test_selected_probable_pair_can_prefer_authoritative_history_and_undo():
 
         original_id = original.id
         old_description = original.raw_description
-        preview = preview_duplicate_selection(db, transaction_ids=[candidate.id], action="prefer_authoritative_history")
+        preview = preview_duplicate_selection(
+            db,
+            transaction_ids=[candidate.id],
+            action="prefer_authoritative_history",
+            authoritative_batch_id=authoritative_batch.id,
+        )
         assert preview["tiers"] == {"probable": 1}
-        assert preview["authoritative_source"] == "transaction history for private finance 7.14.26v2.csv"
+        assert preview["authoritative_source"] == "authoritative-history.csv"
         assert preview["category_changes"] == 1
         assert preview["annotations_preserved"] == {"notes": 1, "labels": 1, "splits": 1, "allocations": 0}
         assert preview["balance_change_cents"] == 1200
@@ -433,6 +438,7 @@ def test_selected_probable_pair_can_prefer_authoritative_history_and_undo():
             action="prefer_authoritative_history",
             preview_token=preview["selection_token"],
             actor="user:7",
+            authoritative_batch_id=authoritative_batch.id,
         )
         db.commit()
 
@@ -455,26 +461,40 @@ def test_selected_probable_pair_can_prefer_authoritative_history_and_undo():
         assert candidate.deleted_at is None
 
 
-def test_prefer_authoritative_history_rejects_mixed_or_wrong_sources():
+def test_prefer_authoritative_history_requires_manual_rows_and_an_explicit_batch():
     with _session() as db:
         candidate, original, _ = _pair(db, exact=True, suffix="-wrong-authority")
         candidate_batch = db.get(ImportBatch, candidate.import_batch_id)
-        candidate_batch.filename = "transaction history for private finance 7.14.26v2.csv"
+        candidate_batch.filename = "authoritative-history.csv"
         db.commit()
 
         try:
-            preview_duplicate_selection(db, transaction_ids=[candidate.id], action="prefer_authoritative_history")
+            preview_duplicate_selection(
+                db,
+                transaction_ids=[candidate.id],
+                action="prefer_authoritative_history",
+                authoritative_batch_id=candidate_batch.id,
+            )
         except ValueError as error:
             assert "Manual entry" in str(error)
         else:
             raise AssertionError("An imported established row must not be replaced by the Manual-entry-specific action")
 
         original.import_batch_id = None
-        candidate_batch.filename = "some other history.csv"
         db.commit()
         try:
             preview_duplicate_selection(db, transaction_ids=[candidate.id], action="prefer_authoritative_history")
         except ValueError as error:
-            assert "7.14.26v2.csv" in str(error)
+            assert "Choose the imported batch" in str(error)
         else:
-            raise AssertionError("Only the explicitly authoritative history filename should be accepted")
+            raise AssertionError("The authoritative source must be chosen explicitly")
+
+        candidate_batch.filename = "collaborator-selected-history.csv"
+        preview = preview_duplicate_selection(
+            db,
+            transaction_ids=[candidate.id],
+            action="prefer_authoritative_history",
+            authoritative_batch_id=candidate_batch.id,
+        )
+        assert preview["authoritative_batch_id"] == candidate_batch.id
+        assert preview["authoritative_source"] == "collaborator-selected-history.csv"

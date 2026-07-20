@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.main import _restore_transactions, _soft_delete_transactions
+from app.api.transactions import _restore_transactions, _soft_delete_transactions
 from app.models import Account, Category, CategoryRule, HoldingSnapshot, NetWorthSnapshot, Transaction
 from app.services.mutation_log import MutationChange, changed_values, full_values, journal_mutation
 from app.services.operation_history import OperationConflict, list_operations, operation_detail, undo_operation

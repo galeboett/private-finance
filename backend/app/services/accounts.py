@@ -12,6 +12,9 @@ from .dedupe import canonical_source_hash, find_merge_match, is_categorized_hist
 from .mutation_log import MutationChange, changed_values, full_values, journal_mutation
 
 
+UNASSIGNED_ACCOUNT_MARKER = "SYSTEM"
+
+
 @dataclass(frozen=True)
 class AccountCharacterization:
     institution_name: str | None

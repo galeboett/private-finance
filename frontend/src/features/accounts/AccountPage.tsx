@@ -69,6 +69,7 @@ export function AccountPage(props: Props) {
   const [resolvingDuplicateId, setResolvingDuplicateId] = useState<number | null>(null);
   const [selectedDuplicateIds, setSelectedDuplicateIds] = useState<number[]>([]);
   const [duplicateSelectionPreview, setDuplicateSelectionPreview] = useState<DuplicateSelectionPreview | null>(null);
+  const [authoritativeBatchId, setAuthoritativeBatchId] = useState<number | null>(null);
   const [bulkDuplicateBusy, setBulkDuplicateBusy] = useState(false);
 
   useEffect(() => {
@@ -77,6 +78,7 @@ export function AccountPage(props: Props) {
     setAccountDuplicatePairs(props.duplicatePairs);
     setSelectedDuplicateIds([]);
     setDuplicateSelectionPreview(null);
+    setAuthoritativeBatchId(null);
   }, [props.account.id]);
 
   useEffect(() => {
@@ -121,14 +123,14 @@ export function AccountPage(props: Props) {
     setSelectedDuplicateIds((current) => current.includes(candidateId) ? current.filter((id) => id !== candidateId) : [...current, candidateId]);
   }
 
-  async function openDuplicateBulkPreview(action: DuplicateSelectionAction) {
+  async function openDuplicateBulkPreview(action: DuplicateSelectionAction, selectedBatchId?: number) {
     if (selectedDuplicateIds.length === 0) return;
     setBulkDuplicateBusy(true);
     try {
       const preview = await api<DuplicateSelectionPreview>("/api/duplicates/selection-preview", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-csrf-token": props.csrf },
-        body: JSON.stringify({ transaction_ids: selectedDuplicateIds, action }),
+        body: JSON.stringify({ transaction_ids: selectedDuplicateIds, action, authoritative_batch_id: selectedBatchId }),
       });
       setDuplicateSelectionPreview(preview);
     } catch (error) {
@@ -145,7 +147,7 @@ export function AccountPage(props: Props) {
       const result = await api<{ resolved: number; operation_id: string }>("/api/duplicates/resolve-selection", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-csrf-token": props.csrf },
-        body: JSON.stringify({ transaction_ids: duplicateSelectionPreview.transaction_ids, action: duplicateSelectionPreview.action, preview_token: duplicateSelectionPreview.selection_token }),
+        body: JSON.stringify({ transaction_ids: duplicateSelectionPreview.transaction_ids, action: duplicateSelectionPreview.action, authoritative_batch_id: duplicateSelectionPreview.authoritative_batch_id, preview_token: duplicateSelectionPreview.selection_token }),
       });
       const message = duplicateSelectionPreview.action === "keep_both"
         ? `Kept both transactions in ${result.resolved} selected pair${result.resolved === 1 ? "" : "s"}.`
@@ -238,8 +240,12 @@ export function AccountPage(props: Props) {
   const selectableDuplicateIds = selectableDuplicatePairs.map((pair) => pair.candidate.id);
   const selectedDuplicatePairs = selectableDuplicatePairs.filter((pair) => selectedDuplicateIds.includes(pair.candidate.id));
   const allSelectableDuplicatesSelected = selectableDuplicateIds.length > 0 && selectableDuplicateIds.every((id) => selectedDuplicateIds.includes(id));
-  const authoritativeHistoryFilename = "transaction history for private finance 7.14.26v2.csv";
-  const selectedCanPreferHistory = selectedDuplicatePairs.length === selectedDuplicateIds.length && selectedDuplicatePairs.length > 0 && selectedDuplicatePairs.every((pair) => pair.original.import_source === "Manual entry" && pair.candidate.import_source.toLocaleLowerCase() === authoritativeHistoryFilename.toLocaleLowerCase());
+  const authoritativeBatches = Array.from(new Map(
+    selectableDuplicatePairs
+      .filter((pair) => pair.candidate.import_batch_id !== null)
+      .map((pair) => [pair.candidate.import_batch_id!, pair.candidate.import_source])
+  ).entries());
+  const selectedCanPreferHistory = selectedDuplicatePairs.length === selectedDuplicateIds.length && selectedDuplicatePairs.length > 0 && selectedDuplicatePairs.every((pair) => pair.original.import_source === "Manual entry" && pair.candidate.import_batch_id === authoritativeBatchId);
   return <>
     <div className="stickyAccountChrome accountOverviewChrome">
       <header className="accountLedgerHeader compactAccountHeader">
@@ -310,7 +316,14 @@ export function AccountPage(props: Props) {
           <button type="button" className="ghostButton compactButton" disabled={loadingDuplicates || bulkDuplicateBusy || resolvingDuplicateId !== null} onClick={() => setSelectedDuplicateIds(allSelectableDuplicatesSelected ? [] : selectableDuplicateIds)}>{allSelectableDuplicatesSelected ? "Clear selection" : `Select eligible pairs (${selectableDuplicateIds.length})`}</button>
           <span>{selectedDuplicateIds.length} selected</span>
           <button type="button" className="secondaryButton compactButton" disabled={selectedDuplicateIds.length === 0 || bulkDuplicateBusy || resolvingDuplicateId !== null} onClick={() => void openDuplicateBulkPreview("keep_both")}>Keep both selected</button>
-          <button type="button" className="secondaryButton compactButton" title={selectedCanPreferHistory ? `Use ${authoritativeHistoryFilename} while preserving established annotations.` : "Available only for eligible authoritative-history pairs."} disabled={!selectedCanPreferHistory || bulkDuplicateBusy || resolvingDuplicateId !== null} onClick={() => void openDuplicateBulkPreview("prefer_authoritative_history")}>Prefer history</button>
+          <label className="duplicateAuthoritativePicker">
+            <span>Source of record</span>
+            <select value={authoritativeBatchId ?? ""} onChange={(event) => setAuthoritativeBatchId(event.target.value ? Number(event.target.value) : null)} disabled={bulkDuplicateBusy || resolvingDuplicateId !== null}>
+              <option value="">Choose import batch</option>
+              {authoritativeBatches.map(([batchId, filename]) => <option key={batchId} value={batchId}>{filename} (batch {batchId})</option>)}
+            </select>
+          </label>
+          <button type="button" className="secondaryButton compactButton" title={selectedCanPreferHistory ? "Use the chosen import batch while preserving established annotations." : "Available when every selected pair has Manual entry on the established side and belongs to the chosen imported batch."} disabled={!selectedCanPreferHistory || bulkDuplicateBusy || resolvingDuplicateId !== null} onClick={() => void openDuplicateBulkPreview("prefer_authoritative_history", authoritativeBatchId!)}>Prefer chosen source</button>
           <button type="button" className="primaryButton compactButton" title="Move the selected new copies to Trash, including probable matches." disabled={selectedDuplicateIds.length === 0 || bulkDuplicateBusy || resolvingDuplicateId !== null} onClick={() => void openDuplicateBulkPreview("remove_new")}>Remove selected new copies</button>
         </div> : null}
         <div className="accountDuplicateList">

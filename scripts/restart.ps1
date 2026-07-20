@@ -83,11 +83,11 @@ if (-not (Test-Path $uvicorn)) {
 Write-Host "Starting backend at http://127.0.0.1:$port"
 
 if ($Background) {
-    Start-Process -FilePath $uvicorn -ArgumentList @("app.main:app", "--host", "127.0.0.1", "--port", "$port") -WorkingDirectory (Join-Path $root "backend") -WindowStyle Hidden
+    Start-Process -FilePath $uvicorn -ArgumentList @("app.main:app", "--host", "127.0.0.1", "--port", "$port", "--no-access-log") -WorkingDirectory (Join-Path $root "backend") -WindowStyle Hidden
     Write-Host "Backend started in the background."
     return
 }
 
 Push-Location "$root\backend"
-& $uvicorn app.main:app --host 127.0.0.1 --port $port
+& $uvicorn app.main:app --host 127.0.0.1 --port $port --no-access-log
 Pop-Location

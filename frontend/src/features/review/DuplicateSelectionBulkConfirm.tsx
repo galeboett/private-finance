@@ -11,6 +11,7 @@ export type DuplicateSelectionPreview = {
   balance_change_cents: number;
   category_changes: number;
   type_changes: number;
+  authoritative_batch_id: number | null;
   authoritative_source: string | null;
   annotations_preserved: { notes: number; labels: number; splits: number; allocations: number };
   uses_existing_record_identity: boolean;

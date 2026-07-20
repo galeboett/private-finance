@@ -1,4 +1,5 @@
 import { CopyCheck } from "lucide-react";
+import { useState } from "react";
 
 import type { DuplicateBulkStrategy } from "./DuplicateBulkConfirm";
 import type { DuplicateSelectionAction } from "./DuplicateSelectionBulkConfirm";
@@ -27,17 +28,22 @@ type Props = {
   onToggleSelected: (candidateId: number, visibleIds: number[], shiftKey: boolean) => void;
   onSelectPage: (candidateIds: number[]) => void;
   onClearSelected: () => void;
-  onSelectionPreview: (action: DuplicateSelectionAction) => void;
+  onSelectionPreview: (action: DuplicateSelectionAction, authoritativeBatchId?: number) => void;
   onHistoricalRefundPreview: () => void;
 };
 
 export function DuplicateReview({ pairs, busyAction, onResolve, onBulkPreview, totalCount, safeReimportCount, historicalRefundCount, selectedCandidateIds, onToggleSelected, onSelectPage, onClearSelected, onSelectionPreview, onHistoricalRefundPreview }: Props) {
-  const authoritativeHistoryFilename = "transaction history for private finance 7.14.26v2.csv";
+  const [authoritativeBatchId, setAuthoritativeBatchId] = useState<number | null>(null);
   const selectablePairs = pairs.filter((pair) => pair.tier === "exact" || pair.tier === "probable");
   const selectableIds = selectablePairs.map((pair) => pair.candidate.id);
   const selectedPairs = selectablePairs.filter((pair) => selectedCandidateIds.includes(pair.candidate.id));
+  const authoritativeBatches = Array.from(new Map(
+    selectablePairs
+      .filter((pair) => pair.candidate.import_batch_id !== null)
+      .map((pair) => [pair.candidate.import_batch_id!, pair.candidate.import_source])
+  ).entries());
   const selectedCanPreferHistory = selectedPairs.length === selectedCandidateIds.length && selectedPairs.length > 0 && selectedPairs.every((pair) =>
-    pair.original.import_source === "Manual entry" && pair.candidate.import_source.toLocaleLowerCase() === authoritativeHistoryFilename.toLocaleLowerCase()
+    pair.original.import_source === "Manual entry" && pair.candidate.import_batch_id === authoritativeBatchId
   );
   const allPageSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedCandidateIds.includes(id));
   return (
@@ -58,7 +64,14 @@ export function DuplicateReview({ pairs, busyAction, onResolve, onBulkPreview, t
         <button className="ghostButton compactButton" onClick={() => allPageSelected ? onClearSelected() : onSelectPage(selectableIds)} disabled={busyAction !== null}>{allPageSelected ? "Clear selection" : `Select exact/probable on page (${selectableIds.length})`}</button>
         <span>{selectedCandidateIds.length} selected</span>
         <button className="secondaryButton compactButton" onClick={() => onSelectionPreview("keep_both")} disabled={selectedCandidateIds.length === 0 || busyAction !== null}>Keep both selected</button>
-        <button className="primaryButton compactButton" title={selectedCanPreferHistory ? `Use ${authoritativeHistoryFilename} as the source of record while preserving established transaction annotations and links.` : `Available when every selected pair has Manual entry on the established side and ${authoritativeHistoryFilename} on the imported side.`} onClick={() => onSelectionPreview("prefer_authoritative_history")} disabled={!selectedCanPreferHistory || busyAction !== null}>Prefer authoritative history</button>
+        <label className="duplicateAuthoritativePicker">
+          <span>Source of record</span>
+          <select value={authoritativeBatchId ?? ""} onChange={(event) => setAuthoritativeBatchId(event.target.value ? Number(event.target.value) : null)} disabled={busyAction !== null}>
+            <option value="">Choose import batch</option>
+            {authoritativeBatches.map(([batchId, filename]) => <option key={batchId} value={batchId}>{filename} (batch {batchId})</option>)}
+          </select>
+        </label>
+        <button className="primaryButton compactButton" title={selectedCanPreferHistory ? "Use the chosen batch as the source of record while preserving established transaction annotations and links." : "Available when every selected pair has Manual entry on the established side and belongs to the chosen imported batch."} onClick={() => onSelectionPreview("prefer_authoritative_history", authoritativeBatchId!)} disabled={!selectedCanPreferHistory || busyAction !== null}>Prefer chosen source</button>
         <button className="primaryButton compactButton" title="Move the selected new copies to Trash, including probable matches." onClick={() => onSelectionPreview("remove_new")} disabled={selectedCandidateIds.length === 0 || busyAction !== null}>Remove selected new copies</button>
       </div> : null}
       <div className="duplicatePairList">

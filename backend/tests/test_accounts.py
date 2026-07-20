@@ -4,7 +4,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.main import UNASSIGNED_ACCOUNT_MARKER, _delete_account_tree
+from app.api.accounts import _delete_account_tree
+from app.services.accounts import UNASSIGNED_ACCOUNT_MARKER
 from app.models import Account, Category, HoldingLot, HoldingSnapshot, ImportBatch, ImportSignProfile, Transaction, TransactionSplit
 from app.services.accounts import cleanup_imported_accounts, infer_account_characterization, infer_last_four, merge_account_into
 from app.services.operation_history import undo_operation

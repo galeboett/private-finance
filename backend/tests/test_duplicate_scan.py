@@ -1,12 +1,11 @@
-import json
 from datetime import date
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db import Base
-from app.models import Account, AuditEvent, DuplicatePairDecision, RefundLink, Transaction, TransferLink
-from app.services.duplicate_scan import migrate_keep_both_decisions, scan_ledger_duplicates
+from app.models import Account, DuplicatePairDecision, RefundLink, Transaction, TransferLink
+from app.services.duplicate_scan import scan_ledger_duplicates
 from app.services.duplicates import pending_duplicate_pairs, resolve_duplicate
 
 
@@ -148,24 +147,6 @@ def test_scan_clears_queued_pair_covered_by_transitive_keep_both_decisions():
         assert third.review_status == "needs_review"
         assert third.duplicate_of_transaction_id is None
         assert pending_duplicate_pairs(db) == []
-
-
-def test_migrates_prior_keep_both_audit_events_into_pair_decisions():
-    with _session() as db:
-        card = Account(display_name="Card", account_type="credit_card")
-        db.add(card)
-        db.flush()
-        first = _transaction(card.id, -665, "AMAZON", "audit-a")
-        second = _transaction(card.id, -665, "AMAZON", "audit-b")
-        db.add_all([first, second])
-        db.flush()
-        db.add(AuditEvent(event_type="duplicate_resolve", actor="user:7", entity_type="transaction", entity_id=str(second.id), details_json=json.dumps({"action": "keep_both", "original_transaction_id": first.id})))
-        db.commit()
-
-        assert migrate_keep_both_decisions(db) == 1
-        db.commit()
-        decision = db.scalar(select(DuplicatePairDecision))
-        assert (decision.transaction_a_id, decision.transaction_b_id) == (first.id, second.id)
 
 
 def test_scan_excludes_transactions_in_confirmed_transfer_or_refund_links():

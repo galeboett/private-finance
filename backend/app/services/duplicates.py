@@ -18,7 +18,6 @@ from .mutation_log import MutationChange, changed_values, full_values, journal_m
 COMPARED_FIELDS = ("account", "reference", "date", "amount", "description", "category", "notes", "labels", "import_source")
 BANK_FIELDS = ("transaction_date", "posted_date", "amount_cents", "currency", "raw_description", "normalized_payee", "source_reference", "running_balance_cents")
 NEW_IMPORT_FIELDS = (*BANK_FIELDS, "import_batch_id", "source_ordinal")
-AUTHORITATIVE_HISTORY_FILENAME = "transaction history for private finance 7.14.26v2.csv"
 AUTHORITATIVE_HISTORY_FIELDS = (*NEW_IMPORT_FIELDS, "category_id", "transaction_type", "review_status")
 
 
@@ -177,7 +176,13 @@ def link_historical_refund_pairs(db: Session, *, preview_token: str, actor: str)
     return {"ok": True, "linked": len(pairs), "refund_total_cents": preview["refund_total_cents"], "operation_id": operation_id}
 
 
-def preview_duplicate_selection(db: Session, *, transaction_ids: list[int], action: str) -> dict[str, Any]:
+def preview_duplicate_selection(
+    db: Session,
+    *,
+    transaction_ids: list[int],
+    action: str,
+    authoritative_batch_id: int | None = None,
+) -> dict[str, Any]:
     selected = _selected_duplicate_pairs(db, transaction_ids)
     if action not in {"keep_both", "remove_new", "prefer_authoritative_history"}:
         raise ValueError("Choose keep_both, remove_new, or prefer_authoritative_history")
@@ -185,18 +190,22 @@ def preview_duplicate_selection(db: Session, *, transaction_ids: list[int], acti
     accounts = {row.id: row for row in db.scalars(select(Account).where(Account.id.in_(account_ids))).all()} if account_ids else {}
     batch_ids = {row.import_batch_id for candidate, original, _ in selected for row in (candidate, original) if row.import_batch_id is not None}
     batches = {row.id: row for row in db.scalars(select(ImportBatch).where(ImportBatch.id.in_(batch_ids))).all()} if batch_ids else {}
+    authoritative_batch = batches.get(authoritative_batch_id) if authoritative_batch_id is not None else None
     if action == "prefer_authoritative_history":
+        if authoritative_batch is None:
+            raise ValueError("Choose the imported batch that should be treated as authoritative.")
         ineligible = [
             candidate.id
             for candidate, original, _ in selected
             if (original.import_batch_id is not None and original.import_batch_id in batches)
-            or candidate.import_batch_id not in batches
-            or batches[candidate.import_batch_id].filename.casefold() != AUTHORITATIVE_HISTORY_FILENAME.casefold()
+            or candidate.import_batch_id != authoritative_batch.id
         ]
         if ineligible:
             raise ValueError(
-                f'Prefer authoritative history requires Manual entry on the established side and "{AUTHORITATIVE_HISTORY_FILENAME}" on the imported side for every selected pair.'
+                f'Prefer authoritative history requires Manual entry on the established side and "{authoritative_batch.filename}" on the imported side for every selected pair.'
             )
+    elif authoritative_batch_id is not None:
+        raise ValueError("An authoritative batch is only valid with prefer_authoritative_history.")
     account_counts = Counter(candidate.account_id for candidate, _, _ in selected)
     tier_counts = Counter(tier for _, _, tier in selected)
     source_counts = Counter(_source_label(candidate, batches) for candidate, _, _ in selected)
@@ -211,6 +220,7 @@ def preview_duplicate_selection(db: Session, *, transaction_ids: list[int], acti
     }
     token_material = [
         action,
+        f"authoritative_batch_id:{authoritative_batch_id}",
         "splits:" + ",".join(f"{row.id}:{row.transaction_id}:{row.category_id}:{row.amount_cents}:{row.note}" for row in splits),
         "allocations:" + ",".join(f"{row.id}:{row.transaction_id}:{row.category_id}:{row.allocation_date}:{row.amount_cents}" for row in allocations),
     ]
@@ -233,7 +243,8 @@ def preview_duplicate_selection(db: Session, *, transaction_ids: list[int], acti
         "balance_change_cents": -sum(candidate.amount_cents for candidate, _, _ in selected) if retires_rows else 0,
         "category_changes": sum(1 for candidate, original, _ in selected if candidate.category_id != original.category_id) if action == "prefer_authoritative_history" else 0,
         "type_changes": sum(1 for candidate, original, _ in selected if candidate.transaction_type != original.transaction_type) if action == "prefer_authoritative_history" else 0,
-        "authoritative_source": AUTHORITATIVE_HISTORY_FILENAME if action == "prefer_authoritative_history" else None,
+        "authoritative_batch_id": authoritative_batch.id if authoritative_batch else None,
+        "authoritative_source": authoritative_batch.filename if authoritative_batch else None,
         "annotations_preserved": annotation_summary,
         "uses_existing_record_identity": action == "prefer_authoritative_history",
         "date_from": min(dates).isoformat() if dates else None,
@@ -247,8 +258,21 @@ def preview_duplicate_selection(db: Session, *, transaction_ids: list[int], acti
     }
 
 
-def resolve_duplicate_selection(db: Session, *, transaction_ids: list[int], action: str, preview_token: str, actor: str) -> dict[str, Any]:
-    preview = preview_duplicate_selection(db, transaction_ids=transaction_ids, action=action)
+def resolve_duplicate_selection(
+    db: Session,
+    *,
+    transaction_ids: list[int],
+    action: str,
+    preview_token: str,
+    actor: str,
+    authoritative_batch_id: int | None = None,
+) -> dict[str, Any]:
+    preview = preview_duplicate_selection(
+        db,
+        transaction_ids=transaction_ids,
+        action=action,
+        authoritative_batch_id=authoritative_batch_id,
+    )
     if preview_token != preview["selection_token"]:
         raise ValueError("The selected duplicate pairs changed after preview. Review them again before confirming.")
     selected = _selected_duplicate_pairs(db, transaction_ids)
@@ -290,7 +314,7 @@ def resolve_duplicate_selection(db: Session, *, transaction_ids: list[int], acti
     description = (
         f"Kept both transactions in {len(selected)} reviewed pairs"
         if action == "keep_both"
-        else f'Preferred authoritative history from "{AUTHORITATIVE_HISTORY_FILENAME}" for {len(selected)} duplicate pairs'
+        else f'Preferred authoritative history from "{preview["authoritative_source"]}" for {len(selected)} duplicate pairs'
         if action == "prefer_authoritative_history"
         else f"Removed the new copy from {len(selected)} exact duplicate pairs"
     )
@@ -305,6 +329,7 @@ def resolve_duplicate_selection(db: Session, *, transaction_ids: list[int], acti
     record_audit_event(db, "duplicates_resolve_selection", actor, "transactions", f"bulk:{len(selected)}", {
         "transaction_ids": preview["transaction_ids"],
         "action": action,
+        "authoritative_batch_id": authoritative_batch_id,
         "operation_id": operation_id,
     })
     affected_card_account = bool(db.scalar(select(Account.id).where(Account.id.in_({candidate.account_id for candidate, _, _ in selected}), Account.account_type == "credit_card").limit(1)))
@@ -640,6 +665,7 @@ def _transaction_payload(
     institution = account.institution.name if account and account.institution else None
     return {
         "id": transaction.id,
+        "import_batch_id": transaction.import_batch_id,
         "account_id": transaction.account_id,
         "account": account_label,
         "institution": institution,
